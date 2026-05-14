@@ -1,0 +1,16 @@
+name: Feature Request
+description: 提出新功能或改进
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 功能描述
+      placeholder: 想要实现什么？解决什么问题？
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 上下文
+      placeholder: 相关的 ADR、现有代码、约束条件等
