@@ -91,7 +91,7 @@ git merge --squash "$OLD_BRANCH"
 # 检测 squash 是否产生了变更（可能旧分支内容已完全合并）
 if git diff --cached --quiet && git diff --quiet; then
   echo "ERROR: squash produced no changes — branch may already be merged"
-  git checkout -B master origin/master
+  git checkout "$ORIG_REF" 2>/dev/null || true
   git branch -D "$NEW_BRANCH" 2>/dev/null || true
   exit 1
 fi

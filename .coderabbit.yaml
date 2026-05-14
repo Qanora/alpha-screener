@@ -10,4 +10,4 @@ reviews:
     code smells. Prefer a longer complete review over a short incomplete one.
   auto_review:
     enabled: true
-    auto_pause_after_reviewed_commits: 10
+    auto_pause_after_reviewed_commits: 1

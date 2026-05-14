@@ -118,8 +118,8 @@ jobs:
           pip install pytest
       - name: Run tests
         run: |
-          if python -m pytest tests/ -v 2>/dev/null; then
-            echo "tests passed"
+          if [ -d tests ] && [ -n "$(find tests -name 'test_*.py' | head -1)" ]; then
+            python -m pytest tests/ -v
           else
             echo "no tests yet — skipping"
           fi
