@@ -77,10 +77,11 @@ else
   ORIG_REF=$(git rev-parse HEAD)
 fi
 
-# 先将旧分支 rebase 到最新 master，避免后续 squash 冲突
+# 先将旧分支 merge 到最新 master（不用 rebase 避免 force push 冲突）
 git checkout "$OLD_BRANCH"
-if ! git rebase origin/master; then
-  echo "ERROR: rebase conflict — resolve manually then re-run, or: git rebase --abort"
+if ! git merge origin/master --no-edit; then
+  echo "ERROR: merge conflict — resolve manually then re-run, or: git merge --abort"
+  git checkout "$ORIG_REF" 2>/dev/null || true
   exit 1
 fi
 

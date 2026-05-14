@@ -7,7 +7,7 @@ title = "alpha-screener gitleaks config"
 description = "Global allowlist"
 paths = [
   ".env.template",
-  "docs/prds/",
+  "docs/prds/*.md",
 ]
 
 # Allow placeholder values used in docs

@@ -114,8 +114,9 @@ git fetch origin master
 
 ```bash
 git checkout <BRANCH>
-if ! git rebase origin/master; then
-  echo "ERROR: rebase conflict — resolve manually before continuing"
+git fetch origin master
+if ! git merge origin/master --no-edit; then
+  echo "ERROR: merge conflict — resolve manually before continuing"
   exit 1
 fi
 ```
