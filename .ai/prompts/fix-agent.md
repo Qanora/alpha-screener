@@ -31,7 +31,7 @@ git push origin <branch>
 ```
 
 ### 5. 输出修复摘要
-```
+```markdown
 ## 修复摘要: PR #<N>
 - [x] <评论1简述>
 - [x] <评论2简述>

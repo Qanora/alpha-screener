@@ -54,9 +54,14 @@ jobs:
             cat /tmp/new_entry.md >> CHANGELOG.md
           fi
 
-          # Commit and push
+          # Commit, push to feature branch, and create PR
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          BRANCH="feature/changelog-${TAG//\//-}"
+          git checkout -b "$BRANCH"
           git add CHANGELOG.md
           git commit -m "docs: update CHANGELOG for $TAG" || exit 0
-          git push
+          git push origin "$BRANCH"
+          gh pr create --title "docs: update CHANGELOG for $TAG" \
+            --body "Automated changelog update for release $TAG." \
+            --base master || echo "PR creation skipped (may already exist)"

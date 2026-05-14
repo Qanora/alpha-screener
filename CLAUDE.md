@@ -39,6 +39,6 @@ Single-context layout: one `CONTEXT.md` + `docs/adr/` at the repo root. See `doc
 ## Git 约束
 
 - commit 必须关联 `#N`
-- `git push` 只允许 `git push origin feature/<name>`
+- `git push` 只允许 `git push [-u] origin feature/<name>`
 - feature 分支 → PR → squash merge
 - 禁止 force push；不要 `&&` 连接 push 和建 PR

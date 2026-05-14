@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     # 上游 AI Agent 框架（git+commit 锁定）
-    "tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@main",
+    "tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@a5cb7cbd61d217fb0bc43f017392a861257afe6a",
 
     # 核心数值与数据处理
     "numpy>=2.4.4,<3.0",

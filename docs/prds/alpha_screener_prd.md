@@ -99,7 +99,7 @@ AlphaScreener 是一个面向美股（V1.5 起扩展港股）的 **AI-Native 量
 ^ |
 | v
 +-------- 回测与进化反馈回路（双层） <-----------+
-```
+```text
 
 ### 2.2 功能清单
 
@@ -340,7 +340,7 @@ score_correction: float # 0.9-1.05，进入最终排序
 risk_tags: List[str] # enum: no_risk / data_conflict / liquidity_trap /
 # delisting_risk / earnings_timing_mismatch /
 # catalyst_already_passed
-data_conflict_detected: bool
+# data_conflict_detected 已移除，仅使用 risk_tags 中 data_conflict 标签
 catalyst_consistency: Literal["consistent", "ambiguous", "contradicted"]
 
 # 多空权重
@@ -367,7 +367,7 @@ stop_loss_trigger: str
 Refined_Score = Coarse_Final_Score
 × score_correction # ∈ [0.9, 1.05]
 × (0 if "delisting_risk" ∈ risk_tags else 1)
-× (0 if data_conflict_detected else 1)
+× (0 if "data_conflict" ∈ risk_tags else 1)
 ```
 
 ### 4.5 Prompt 模板设计
@@ -498,7 +498,6 @@ Refined_Score = Coarse_Final_Score
 "confidence": 72,
 "score_correction": 1.00,
 "risk_tags": ["no_risk"],
-"data_conflict_detected": false,
 "catalyst_consistency": "consistent",
 "bull_weight": 60,
 "bear_weight": 40,
@@ -519,8 +518,7 @@ Refined_Score = Coarse_Final_Score
 | 字段 | 类型 | 约束 | 进入最终排序 |
 |------|------|------|--------------|
 | **`score_correction`** | float | **0.90 ≤ x ≤ 1.05**，2 位小数 | ✅ |
-| **`risk_tags`** | string[] | 1-3 项，enum: `no_risk` / `data_conflict` / `liquidity_trap` / `delisting_risk` / `earnings_timing_mismatch` / `catalyst_already_passed` | ✅ |
-| **`data_conflict_detected`** | bool | true / false | ✅（=true 时 Refined_Score = 0） |
+| **`risk_tags`** | string[] | 1-3 项，enum: `no_risk` / `data_conflict` / `liquidity_trap` / `delisting_risk` / `earnings_timing_mismatch` / `catalyst_already_passed` | ✅（含 `data_conflict` 或 `delisting_risk` 时 Refined_Score = 0） |
 | **`catalyst_consistency`** | enum | `consistent` / `ambiguous` / `contradicted` | ❌ 决策辅助 |
 | `final_rating` | enum | `Strong Buy` / `Buy` / `Hold` / `Avoid` | ❌ 卡片展示 |
 | `breakout_probability` | float | 0.0 - 1.0 | ❌ 可解释性 |
@@ -565,7 +563,7 @@ Refined_Score = Coarse_Final_Score
 **score_correction 硬约束**：
 - 必须 `0.90 ≤ score_correction ≤ 1.05`，超出范围视为校验失败
 - 默认 1.00；下调路径：1.00 → 0.95（中等风险）→ 0.90（严重风险，需 risk_tags 至少 2 项非 `no_risk`）
-- 上调至 1.05 必须三项同时满足：`catalyst_consistency = "consistent"` + `risk_tags = ["no_risk"]` + `data_conflict_detected = false`
+- 上调至 1.05 必须两项同时满足：`catalyst_consistency = "consistent"` + `risk_tags = ["no_risk"]`
 
 #### 4.5.5 输出校验失败处理
 

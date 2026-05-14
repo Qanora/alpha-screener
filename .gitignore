@@ -22,7 +22,7 @@ env/
 .env
 
 # Data storage
-~/.alphascreener/
+/alphascreener_data/
 
 # macOS
 .DS_Store
