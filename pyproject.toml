@@ -1,0 +1,65 @@
+[project]
+name = "alpha-screener"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    # 上游 AI Agent 框架（git+commit 锁定）
+    "tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@main",
+
+    # 核心数值与数据处理
+    "numpy>=2.4.4,<3.0",
+    "polars>=0.20",
+    "pandas>=2.1",
+    "pyarrow>=14",
+
+    # 机器学习 / 聚类（V1.5 起使用）
+    "scikit-learn>=1.4",
+    "hdbscan>=0.8.33",
+    "faiss-cpu>=1.7",
+
+    # 回测
+    "backtrader>=1.9.78.123",
+
+    # 数据源
+    "yfinance>=0.2.40",
+    "requests>=2.31",
+    "httpx>=0.28.1",
+
+    # 调度与存储
+    "apscheduler>=3.10",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+
+    # 系统支持
+    "tenacity>=8.2",
+    "psutil>=5.9",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.14.1",
+    "python-dotenv>=1.0",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pytest-asyncio>=0.23", "ruff>=0.2", "mypy>=2.0.0"]
+
+[project.scripts]
+alphascreener = "alphascreener.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["alphascreener*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+# method-assign: needed for test monkeypatching (client.chat_with_json = mock)
+# var-annotated: needed for test helper locals without type annotations
+disable_error_code = ["operator", "union-attr", "method-assign", "var-annotated"]
