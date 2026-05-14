@@ -1,7 +1,7 @@
 language: zh-CN
 reviews:
   profile: chill
-  request_changes_workflow: false
+  request_changes_workflow: true
   high_level_summary: true
   instructions: |
     Perform a THOROUGH one-pass review. List ALL issues you find — do not hold
