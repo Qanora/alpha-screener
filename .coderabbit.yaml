@@ -1,0 +1,13 @@
+language: zh-CN
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  instructions: |
+    Perform a THOROUGH one-pass review. List ALL issues you find — do not hold
+    back for a second pass. Check: correctness, security, error handling,
+    edge cases, POSIX portability, documentation accuracy, formatting, and
+    code smells. Prefer a longer complete review over a short incomplete one.
+  auto_review:
+    enabled: true
+    auto_pause_after_reviewed_commits: 1

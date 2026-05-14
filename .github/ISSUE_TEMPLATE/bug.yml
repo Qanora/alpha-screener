@@ -1,0 +1,25 @@
+name: Bug Report
+description: 报告一个 bug
+labels: [bug, needs-triage]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      placeholder: 发生了什么？预期行为是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 运行命令 `...`
+        2. 观察结果
+  - type: textarea
+    id: context
+    attributes:
+      label: 环境信息
+      placeholder: |
+        - Python 版本:
+        - 操作系统:
