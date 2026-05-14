@@ -1,0 +1,20 @@
+# Gitleaks configuration — detect hardcoded secrets in PR diffs.
+# See https://github.com/gitleaks/gitleaks for reference.
+
+title = "alpha-screener gitleaks config"
+
+[allowlist]
+description = "Global allowlist"
+# Allow the .env.template placeholders
+paths = [
+  ".env.template",
+  "docs/prds/*",
+]
+
+# Allow placeholder values used in docs
+regexes = [
+  "sk-xxxx",
+  "your_fmp_api_key",
+  "cli_xxxx",
+  "ou_xxxx",
+]

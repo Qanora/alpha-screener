@@ -1,0 +1,62 @@
+name: AI Changelog
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Update CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          # Collect PRs since last release
+          prev_tag=$(git tag --sort=-v:refname | head -2 | tail -1)
+          if [ -z "$prev_tag" ]; then
+            prev_tag=$(git rev-list --max-parents=0 HEAD)
+          fi
+
+          commits=$(git log "$prev_tag..HEAD" --oneline --no-merges)
+
+          {
+            echo "## $TAG ($(date +%Y-%m-%d))"
+            echo ""
+            echo "$RELEASE_BODY"
+            echo ""
+            echo "### Changes"
+            echo ""
+            echo "$commits" | while read -r line; do
+              echo "- $line"
+            done
+            echo ""
+          } > /tmp/new_entry.md
+
+          if [ -f CHANGELOG.md ]; then
+            cat /tmp/new_entry.md CHANGELOG.md > /tmp/changelog.md
+            mv /tmp/changelog.md CHANGELOG.md
+          else
+            echo "# Changelog" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            cat /tmp/new_entry.md >> CHANGELOG.md
+          fi
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: update CHANGELOG for $TAG" || exit 0
+          git push
