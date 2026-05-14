@@ -7,9 +7,9 @@ dependencies = [
     "tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@a5cb7cbd61d217fb0bc43f017392a861257afe6a",
 
     # 核心数值与数据处理
-    "numpy>=2.4.4,<3.0",
+    "numpy>=2.0,<3.0",
     "polars>=0.20",
-    "pandas>=2.1",
+    "pandas>=2.2.3",
     "pyarrow>=14",
 
     # 机器学习 / 聚类（V1.5 起使用）

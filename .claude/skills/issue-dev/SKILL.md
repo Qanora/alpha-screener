@@ -50,8 +50,9 @@ git checkout -b "$BRANCH"
 ### 4. 本地验证
 
 ```bash
-ruff check . && ruff format --check . && mypy alphascreener/ tests/ || true
-python -m pytest tests/ -v || true
+ruff check . && ruff format --check .
+if [ -d alphascreener ]; then mypy alphascreener/ tests/; fi
+if [ -d tests ]; then python -m pytest tests/ -v; fi
 ```
 
 修复所有 lint / type / test 错误后再继续。
@@ -113,7 +114,10 @@ git fetch origin master
 
 ```bash
 git checkout <BRANCH>
-git rebase origin/master || echo "rebase conflict — resolve manually"
+if ! git rebase origin/master; then
+  echo "ERROR: rebase conflict — resolve manually before continuing"
+  exit 1
+fi
 ```
 
 ### 3. 获取评审意见

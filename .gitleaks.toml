@@ -5,16 +5,16 @@ title = "alpha-screener gitleaks config"
 
 [allowlist]
 description = "Global allowlist"
-# Allow the .env.template placeholders
+# Allow the .env.template placeholders and PRD docs
 paths = [
-  ".env.template",
-  "docs/prds/*",
+  "^\.env\.template$",
+  "^docs/prds/.*$",
 ]
 
-# Allow placeholder values used in docs
+# Allow placeholder values used in docs (anchored to prevent false negatives)
 regexes = [
-  "sk-xxxx",
-  "your_fmp_api_key",
-  "cli_xxxx",
-  "ou_xxxx",
+  "^sk-xxxx$",
+  "^your_fmp_api_key$",
+  "^cli_xxxx$",
+  "^ou_xxxx$",
 ]

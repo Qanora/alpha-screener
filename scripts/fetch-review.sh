@@ -36,7 +36,7 @@ echo "$REVIEWS" | jq -c '.[]' | while read -r review; do
   REVIEW_ID=$(echo "$review" | jq -r '.id // "N/A"')
   REVIEW_STATE=$(echo "$review" | jq -r '.state // "N/A"')
   REVIEW_BODY=$(echo "$review" | jq -r '.body // ""')
-  REVIEW_COMMIT=$(echo "$review" | jq -r '.commit.oid[:7] // "N/A"')
+  REVIEW_COMMIT=$(echo "$review" | jq -r '(.commit.oid // "")[:7] // "N/A"')
   SUBMITTED_AT=$(echo "$review" | jq -r '.submitted_at // "N/A"')
 
   echo "──────────────────────────────────────────"

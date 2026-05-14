@@ -27,7 +27,7 @@ git rebase origin/master  # 解决冲突（如有）
 git add -A
 git commit -m "fix: address review findings (#<N>)"
 # 分开执行，不要用 &&
-git push origin <branch>
+git push origin feature/<name>
 ```
 
 ### 5. 输出修复摘要

@@ -71,7 +71,11 @@ if [ -n "$LOCAL_MASTER" ] && [ "$LOCAL_MASTER" != "$REMOTE_MASTER" ]; then
 fi
 
 # 保存原始 ref，以便冲突时恢复
-ORIG_REF=$(git symbolic-ref --quiet --short HEAD || git rev-parse HEAD)
+if ORIG_REF=$(git symbolic-ref --quiet --short HEAD 2>/dev/null); then
+  : # got branch name
+else
+  ORIG_REF=$(git rev-parse HEAD)
+fi
 
 # 先将旧分支 rebase 到最新 master，避免后续 squash 冲突
 git checkout "$OLD_BRANCH"

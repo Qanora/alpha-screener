@@ -20,6 +20,8 @@ env/
 
 # Environment
 .env
+.env.*
+!.env.template
 
 # Data storage
 /alphascreener_data/

@@ -243,7 +243,7 @@ Breakout_Score = Σ(w_i × z_capped_i) # 加权 z-score 综合分
 
 | 项 | 设计 |
 |----|------|
-| 数据源 | yfinance `Ticker.info["sector"]` + `industry"]`（GICS 11 Sector / ~25 Industry） |
+| 数据源 | yfinance `Ticker.info["sector"]` + `Ticker.info["industry"]`（GICS 11 Sector / ~25 Industry） |
 | Sector 上限 | 同一 GICS Sector 最多保留 **3** 个标的 |
 | Industry 上限 | 同一 GICS Industry 最多保留 **2** 个标的 |
 | 排序优先 | Breakout_Score 降序 |
@@ -1612,7 +1612,7 @@ home: Path = Path("~/.alphascreener").expanduser()
 class Config:
 env_file = ".env"
 
-settings = Settings()
+    settings = Settings()
 ```
 
 ### 8.5 CLI

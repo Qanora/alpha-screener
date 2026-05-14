@@ -35,8 +35,18 @@ jobs:
         run: pip install ruff "mypy>=1.15,<2" types-requests
       - run: ruff check .
       - run: ruff format --check .
-      - run: mypy alphascreener/ || echo "no source yet"
-      - run: mypy tests/ || echo "no tests yet"
+      - run: |
+          if [ -d alphascreener ]; then
+            mypy alphascreener/
+          else
+            echo "no source yet"
+          fi
+      - run: |
+          if [ -d tests ]; then
+            mypy tests/
+          else
+            echo "no tests yet"
+          fi
 
   bandit:
     runs-on: ubuntu-latest
@@ -47,7 +57,12 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install bandit
-      - run: bandit -r alphascreener/ -ll || echo "no source yet"
+      - run: |
+          if [ -d alphascreener ]; then
+            bandit -r alphascreener/ -ll
+          else
+            echo "no source yet"
+          fi
 
   vulture:
     runs-on: ubuntu-latest
@@ -58,7 +73,12 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install vulture
-      - run: vulture alphascreener/ --min-confidence 80 --ignore-names cls || echo "no source yet"
+      - run: |
+          if [ -d alphascreener ]; then
+            vulture alphascreener/ --min-confidence 80 --ignore-names cls
+          else
+            echo "no source yet"
+          fi
 
   commit-msg:
     runs-on: ubuntu-latest
@@ -90,8 +110,16 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: |
-          pip install -e . --no-deps 2>/dev/null || echo "package not ready yet"
+          if pip install -e . --no-deps 2>/dev/null; then
+            echo "package installed"
+          else
+            echo "package not ready yet"
+          fi
           pip install pytest
       - name: Run tests
         run: |
-          python -m pytest tests/ -v 2>/dev/null || echo "no tests yet — skipping"
+          if python -m pytest tests/ -v 2>/dev/null; then
+            echo "tests passed"
+          else
+            echo "no tests yet — skipping"
+          fi

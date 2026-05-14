@@ -60,7 +60,8 @@ jobs:
           BRANCH="feature/changelog-${TAG//\//-}"
           git checkout -b "$BRANCH"
           git add CHANGELOG.md
-          git commit -m "docs: update CHANGELOG for $TAG" || exit 0
+          # commit-msg hook not active in CI; issue-ref requirement waived for release automation
+          git commit -m "docs: update CHANGELOG for $TAG [bot]" || exit 0
           git push origin "$BRANCH"
           gh pr create --title "docs: update CHANGELOG for $TAG" \
             --body "Automated changelog update for release $TAG." \
