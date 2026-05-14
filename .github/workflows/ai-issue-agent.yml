@@ -1,0 +1,50 @@
+name: AI Issue Agent
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.issue.user.type != 'Bot'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auto-triage new issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          # Determine category based on keywords
+          title_lower="$ISSUE_TITLE $ISSUE_BODY"
+          if echo "$title_lower" | grep -qiE 'bug|报错|异常|broken|error|fix|crash|失败|不对|不是'; then
+            category="bug"
+          else
+            category="enhancement"
+          fi
+
+          # Apply labels
+          gh issue edit "$ISSUE_NUMBER" \
+            --add-label "$category" \
+            --add-label "needs-triage"
+
+          # Post Chinese reply
+          gh issue comment "$ISSUE_NUMBER" --body "$(cat <<EOF
+          > *此回复由 AI 自动生成。*
+
+          欢迎提交！根据内容分析，此 Issue 已分类为 **$category**，并标记为待评估。
+
+          维护者将进行人工审核，请耐心等待。
+          EOF
+          )"
+
+          echo "Issue #$ISSUE_NUMBER triaged as $category"
