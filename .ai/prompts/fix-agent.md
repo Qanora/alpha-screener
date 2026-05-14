@@ -13,7 +13,7 @@
 ```bash
 git fetch origin master
 git checkout <feature-branch>
-git rebase origin/master  # 解决冲突（如有）
+git merge origin/master --no-edit  # 解决冲突（如有）
 ```
 
 ### 3. 修复
