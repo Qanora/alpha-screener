@@ -1,11 +1,14 @@
 ## Agent skills
 
-### Development flywheel
+### Development flywheel（三层）
 
-两层自动化开发飞轮，从需求到合入全流程驱动。
+三层自动化开发飞轮，从需求到合入全流程驱动。
 
-- **`/dev-flywheel`** — 外层 loop：需求分析 → 拆解 issue → 依赖分组 → 批次并发派活 → 追踪交付
-- **`/issue-dev`** — 内层 loop：单个 issue 的开发 + CI/CodeRabbit 修复循环
+| 层 | Skill | 职责 |
+|---|---|---|
+| 1 | `/issue-loop` | Issue 生命周期管理：拆解、创建、依赖、批次、追踪 |
+| 2 | `/pr-loop` | PR 全生命周期管理：commit、push、创建 PR、监控、收集 review、分配修复、追踪轮次 |
+| 3 | `/dev-loop` | 纯本地开发：实现/修复 → 本地验证 → 本地 cr review。不做任何 git 操作 |
 
 ### Issue tracker
 
