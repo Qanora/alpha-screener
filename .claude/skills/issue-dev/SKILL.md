@@ -120,6 +120,8 @@ EOF
 
 ## 修复模式 (`--fix <pr-number>`)
 
+修复循环：**同一 PR 上反复 push → CodeRabbit 自动 re-review（auto_pause: 10）→ 直到 approve。最多 6 轮，超过才 close-reopen。**
+
 ### 1. 进入 worktree
 
 ```bash
@@ -127,7 +129,7 @@ cd .claude/worktrees/issue-<N>
 git fetch origin master
 ```
 
-### 2. 同步分支
+### 2. 同步分支（使用 merge 避免 force push 冲突）
 
 ```bash
 git checkout <BRANCH>
@@ -138,39 +140,52 @@ if ! git merge origin/master --no-edit; then
 fi
 ```
 
-### 3. 获取评审意见
+### 3. 获取本轮评审意见
 
 ```bash
 bash scripts/fetch-review.sh <pr-number>
-```
-
-### 4. 检查 CI 失败
-
-```bash
 gh pr view <pr-number> --repo Qanora/alpha-screener --json statusCheckRollup --jq '
   [.statusCheckRollup[] | select(.status == "COMPLETED" and (.conclusion == "FAILURE" or .conclusion == "TIMED_OUT"))] |
   .[] | "\(.name): \(.conclusion)"
 '
 ```
 
-### 5. 修复
+### 4. 修复
 
 - 逐条过所有 CodeRabbit 行内评论，全部修复
 - 修复所有 CI 失败
 - 不改代码之外的逻辑（不新增功能，不重构）
 
-### 6. 提交 + 推送
+### 5. 提交 + 推送到**同一分支**
 
 ```bash
 git add -A
 git commit -m "fix: address review findings (#<N>)"
+# 推送到同一个 PR 的分支，CodeRabbit 自动 re-review（auto_pause: 10）
 git push origin <BRANCH>
 ```
 
-### 7. 输出修复摘要
+### 6. 等待 re-review
+
+push 后 CodeRabbit 会自动重新 review（因为 `auto_pause_after_reviewed_commits: 10`）。运行 `bash scripts/watch-pr.sh <pr-number>` 等待结果：
+- **APPROVED + CI 绿** → 等待 GitHub 自动 merge → 完成
+- **CHANGES_REQUESTED** → 回到步骤 1 继续下一轮修复
+- **CI 失败** → 修复后 push 同一分支
+
+### 7. 超过 6 轮仍未 approve
+
+如果同一 PR 上修复超过 **6 轮**（即 push 了 6 次修复 commit）CodeRabbit 仍未 approve：
+
+```bash
+bash scripts/close-reopen.sh <pr-number> <BRANCH>
+```
+
+这会创建全新 PR，触发一次干净的 review。然后回到步骤 3 继续循环。
+
+### 8. 输出修复摘要
 
 ```
-## 修复摘要: PR #<pr-number>
+## 修复摘要: PR #<pr-number> (第 <N> 轮)
 - [x] <评论1简述>
 - [x] <评论2简述>
 - CI: <pass/fail 状态>

@@ -96,7 +96,9 @@ gh issue create --repo Qanora/alpha-screener --title "<title>" --body "<body>" -
 
 ### 6. 内层循环监控
 
-每个 PR 创建后，监控其状态：
+每个 PR 创建后，监控其状态。**关键原则：修复 push 到同一 PR 分支，CodeRabbit 自动 re-review（auto_pause: 10）。超过 6 轮才 close-reopen。**
+
+对每个活跃 PR 维护轮次计数器 `round=0`。
 
 ```bash
 bash scripts/watch-pr.sh <pr-number>
@@ -104,18 +106,37 @@ bash scripts/watch-pr.sh <pr-number>
 
 **响应不同的退出码**：
 
-| watch-pr 退出码 | 含义              | 动作                                                  |
-| --------------- | ----------------- | ----------------------------------------------------- |
-| 0               | merged            | 清理 worktree，issue done                             |
-| 1               | CI failure        | 启动修复 Agent: `/issue-dev <N> --fix <PR>`           |
-| 2               | stuck/timeout     | `bash scripts/close-reopen.sh <PR> <branch>` 重新触发 |
-| 4               | changes requested | 启动修复 Agent: `/issue-dev <N> --fix <PR>`           |
+| watch-pr 退出码 | 含义           | 动作                                                         |
+| --------------- | -------------- | ------------------------------------------------------------ |
+| 0               | merged         | 清理 worktree，issue done                                    |
+| 1               | CI failure     | 启动修复 Agent: `/issue-dev <N> --fix <PR>` → `round++`     |
+| 4               | changes requested | 启动修复 Agent: `/issue-dev <N> --fix <PR>` → `round++` |
 
 **修复 Agent 启动时**：
 
 1. 读取 worktree 里的 `.handoff-issue-<N>.md` 作为上下文
 2. 传入 `--fix <pr-number>` flag
-3. 修复 Agent 退出后重新运行 watch-pr
+3. 修复 Agent 将 fix commit **push 到同一 PR 分支**
+4. CodeRabbit 自动 re-review（因为 `auto_pause_after_reviewed_commits: 10`）
+5. 修复 Agent 退出后重新运行 watch-pr
+
+**超过 6 轮仍未 approve**：
+
+如果 `round >= 6` 且 CodeRabbit 仍在 CHANGES_REQUESTED：
+
+```bash
+bash scripts/close-reopen.sh <PR> <branch>
+round=0  # 重置轮次
+```
+
+创建全新 PR 触发干净的单一 review。新 PR 继续监控。
+
+**超时/卡住**：
+
+```bash
+# 退出码 2 (stuck) — CodeRabbit 长时间不响应
+bash scripts/close-reopen.sh <PR> <branch>
+```
 
 ### 7. 批次完成
 
