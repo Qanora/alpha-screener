@@ -1,0 +1,20 @@
+language: zh-CN
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  path_filters:
+    - "!**/*.md"
+    - "!docs/**"
+    - "!**/dist/**"
+    - "!**/pnpm-lock.yaml"
+    - "!**/package-lock.json"
+  instructions: |
+    请进行一次性彻底审查，列出所有逻辑问题。
+    重点检查：正确性、安全性、错误处理、边界情况、POSIX 便携性和代码异味。
+    注意：完全忽略所有关于缩进、空格、括号换行等格式化（Formatting）问题。
+    不要针对变量命名风格提出建议，除非涉及严重的歧义。
+    提供深度完整的逻辑分析，避免琐碎的表层评论。
+  auto_review:
+    enabled: true
+    auto_pause_after_reviewed_commits: 10
