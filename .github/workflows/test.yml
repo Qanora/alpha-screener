@@ -1,0 +1,55 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config-path: .gitleaks.toml
+
+  commit-msg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate issue references in commits
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          invalid=""
+          for c in $(git rev-list "$base..$head"); do
+            author="$(git show -s --format=%an "$c")"
+            # Skip dependabot commits
+            if echo "$author" | grep -qi 'dependabot'; then
+              continue
+            fi
+            msg="$(git show -s --format=%B "$c")"
+            if ! echo "$msg" | grep -qiE '#[0-9]+'; then
+              invalid="${invalid}\n$c $(git show -s --format=%s "$c")"
+            fi
+          done
+          if [ -n "$invalid" ]; then
+            echo "BLOCKED: every commit must reference an issue (e.g. '#1', 'closes #2')."
+            echo "Offending commits:"
+            printf "%b\n" "$invalid"
+            exit 1
+          fi
