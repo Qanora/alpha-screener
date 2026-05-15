@@ -29,12 +29,12 @@ Single-context layout: one `CONTEXT.md` + `docs/adr/` at the repo root. See `doc
 
 ## Scripts
 
-| 脚本 | 用途 |
-|------|------|
-| `scripts/watch-pr.sh <N>` | 纯状态监控，轮询 PR 的 review + CI 状态直到 merge |
-| `scripts/fetch-review.sh <N> [--all]` | 拉取所有 CodeRabbit 评论，按 review_id 分组，默认最新一轮 |
-| `scripts/close-reopen.sh <old-N> <old-branch>` | 关旧开新，触发 CodeRabbit 重新 review |
-| `scripts/commit-msg` | 校验 commit message 含 issue reference |
+| 脚本                                           | 用途                                                      |
+| ---------------------------------------------- | --------------------------------------------------------- |
+| `scripts/watch-pr.sh <N>`                      | 纯状态监控，轮询 PR 的 review + CI 状态直到 merge         |
+| `scripts/fetch-review.sh <N> [--all]`          | 拉取所有 CodeRabbit 评论，按 review_id 分组，默认最新一轮 |
+| `scripts/close-reopen.sh <old-N> <old-branch>` | 关旧开新，触发 CodeRabbit 重新 review                     |
+| `scripts/commit-msg`                           | 校验 commit message 含 issue reference                    |
 
 ## Git 约束
 

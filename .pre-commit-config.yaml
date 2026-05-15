@@ -23,6 +23,20 @@ repos:
         types: [python]
         pass_filenames: true
 
+      - id: markdownlint
+        name: markdownlint
+        entry: markdownlint-cli2
+        language: system
+        types: [markdown]
+        pass_filenames: true
+
+      - id: prettier
+        name: prettier (markdown)
+        entry: prettier --write
+        language: system
+        types: [markdown]
+        pass_filenames: true
+
       - id: require-issue-ref
         name: Require issue reference in commit message
         entry: scripts/commit-msg

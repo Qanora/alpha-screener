@@ -22,6 +22,7 @@ Single-context repo (most repos):
 │   └── 0002-postgres-for-write-model.md
 └── src/
 ```
+
 Multi-context repo (presence of `CONTEXT-MAP.md` at the root):
 
 ```

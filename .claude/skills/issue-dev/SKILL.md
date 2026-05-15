@@ -57,6 +57,19 @@ if [ -d tests ]; then python -m pytest tests/ -v; fi
 
 修复所有 lint / type / test 错误后再继续。
 
+### 4.5 本地 CodeRabbit 评审
+
+```bash
+# 本地触发 CodeRabbit review，提前发现问题
+cr review --agent --base origin/master
+```
+
+- 查看输出，修复所有 Actionable comments
+- 重复运行 `cr review ...` 直到 0 actionable findings
+- **只有在本地 cr review 干净后才 push + 创建 PR**
+
+> 注意: cr CLI 需要 `coderabbit-cli` 已安装。若不可用则跳过此步，走 PR 后 fetch-review 修复循环。
+
 ### 5. 提交 + 推送 + 创建 PR
 
 ```bash
@@ -85,15 +98,19 @@ EOF
 ## Handoff: Issue #<N>
 
 ### 技术方案
+
 <3-5 句话：做了什么、为什么这个方案、关键取舍>
 
 ### 文件变更
+
 <git diff --stat origin/master 的输出>
 
 ### PR
+
 <PR URL>
 
 ### 已知限制
+
 <如有非本次 scope 的限制，列出>
 ```
 
