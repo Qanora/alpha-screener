@@ -92,7 +92,7 @@ jobs:
         run: |
           base="${{ github.event.pull_request.base.sha }}"
           head="${{ github.event.pull_request.head.sha }}"
-          invalid=$(git log --format="%H %s" "$base..$head" | grep -vE '#[0-9]+' || true)
+          invalid=$(git log --format="%H %B" "$base..$head" | grep -vE '#[0-9]+' | grep -v '^$' || true)
           if [ -n "$invalid" ]; then
             echo "BLOCKED: every commit must reference an issue (e.g. '#1', 'closes #2')."
             echo "Offending commits:"
@@ -110,10 +110,10 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: |
-          if pip install -e . --no-deps 2>/dev/null; then
-            echo "package installed"
+          if [ -f pyproject.toml ]; then
+            pip install -e . --no-deps
           else
-            echo "package not ready yet"
+            echo "no pyproject.toml — skipping install"
           fi
           pip install pytest
       - name: Run tests

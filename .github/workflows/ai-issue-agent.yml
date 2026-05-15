@@ -32,9 +32,12 @@ jobs:
             category="enhancement"
           fi
 
-          # Apply labels
+          # Apply labels (remove opposite category if present)
+          opposite="enhancement"
+          [ "$category" = "enhancement" ] && opposite="bug"
           gh issue edit "$ISSUE_NUMBER" \
             --add-label "$category" \
+            --remove-label "$opposite" \
             --add-label "needs-triage"
 
           # Post Chinese reply
