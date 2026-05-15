@@ -3,8 +3,6 @@ reviews:
   profile: chill
   request_changes_workflow: true
   high_level_summary: true
-  path_filters:
-    - "!**/*.md"
   instructions: |
     Perform a THOROUGH one-pass review. List ALL issues you find — do not hold
     back for a second pass. Check: correctness, security, error handling,
