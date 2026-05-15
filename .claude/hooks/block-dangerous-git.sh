@@ -31,7 +31,7 @@ done
 
 # git branch -D: only allow feature/ branches (not master/main)
 # Normalize command first (strip path, git -c/-C flags) like push check
-BRANCH_DEL_CMD=$(echo "$COMMAND" | sed 's/ *2>&1 *$//; s/ *>[^ ]* *$//; s|^.*/git |git |; s/^git\( -[cC] [^ ]*\)\+/git /')
+BRANCH_DEL_CMD=$(echo "$COMMAND" | sed -E 's/ *2>&1 *$//; s/ *>[^ ]* *$//; s|^.*/git |git |; s/^git( -[cC] [^ ]*)+/git /')
 if echo "$BRANCH_DEL_CMD" | grep -qE 'git[[:space:]]+branch[[:space:]]+-D([[:space:]]|$)'; then
   # Require exact format: git branch -D feature/<name> [feature/<name> ...]
   if ! echo "$BRANCH_DEL_CMD" | grep -qE '^git[[:space:]]+branch[[:space:]]+-D([[:space:]]+feature/[A-Za-z0-9._/-]+)+[[:space:]]*$'; then
@@ -43,7 +43,7 @@ if echo "$BRANCH_DEL_CMD" | grep -qE 'git[[:space:]]+branch[[:space:]]+-D([[:spa
     exit 2
   fi
   # Extract branch names after -D flag
-  BRANCHES=$(echo "$BRANCH_DEL_CMD" | sed -n 's/.*git[[:space:]]\+branch[[:space:]]\+-D[[:space:]]\+//p')
+  BRANCHES=$(echo "$BRANCH_DEL_CMD" | sed -nE 's/.*git[[:space:]]+branch[[:space:]]+-D[[:space:]]+//p')
   for branch in $BRANCHES; do
     case "$branch" in
       master|main)
@@ -60,7 +60,7 @@ if echo "$BRANCH_DEL_CMD" | grep -qE 'git[[:space:]]+branch[[:space:]]+-D([[:spa
 fi
 
 # Only check git push commands (strip leading path and git config flags)
-PUSH_CMD=$(echo "$COMMAND" | sed 's/^[[:space:]]*//; s/ *2>&1 *$//; s/ *>[^ ]* *$//; s|^.*/git |git |; s/^git\( -[cC] [^ ]*\)\+/git /')
+PUSH_CMD=$(echo "$COMMAND" | sed -E 's/^[[:space:]]*//; s/ *2>&1 *$//; s/ *>[^ ]* *$//; s|^.*/git |git |; s/^git( -[cC] [^ ]*)+/git /')
 if echo "$PUSH_CMD" | grep -qE '^git push'; then
 
   if echo "$PUSH_CMD" | grep -qE '(&&|;)\s*git\s+push|git\s+push.*(&&|;)'; then
