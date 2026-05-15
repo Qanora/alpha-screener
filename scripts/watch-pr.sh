@@ -65,7 +65,7 @@ while true; do
   # Terminal: CI failure
   if [ -n "$FAILING" ]; then
     echo "=== CI FAILURES: $FAILING ==="
-    echo "Actions: fix issues → commit → push → re-run monitor"
+    echo "Actions: 1) collect CI logs 2) hand off to dev-loop for fix 3) commit and push 4) re-run this script"
     exit 1
   fi
 
