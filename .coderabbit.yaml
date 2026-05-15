@@ -1,0 +1,17 @@
+language: zh-CN
+reviews:
+  profile: chill
+  request_changes_workflow: true
+  high_level_summary: true
+  path_filters:
+    - "!**/*.md"          # 排除所有 Markdown 文件
+    - "!docs/**"          # 排除 docs 文件夹下的内容
+    - "!**/dist/**"       # 排除构建后的产物
+  instructions: |
+    Perform a THOROUGH one-pass review. List ALL issues you find — do not hold
+    back for a second pass. Check: correctness, security, error handling,
+    edge cases, POSIX portability, documentation accuracy, formatting, and
+    code smells. Prefer a longer complete review over a short incomplete one.
+  auto_review:
+    enabled: true
+    auto_pause_after_reviewed_commits: 1

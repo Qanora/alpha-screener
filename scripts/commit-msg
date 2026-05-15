@@ -1,0 +1,11 @@
+#!/bin/bash
+# Require issue reference (#N or closes/fixes/resolves #N) in commit messages
+
+COMMIT_MSG=$(cat "$1")
+
+if ! echo "$COMMIT_MSG" | grep -qE '#[0-9]+'; then
+    echo "BLOCKED: Commit message must reference at least one issue (e.g. '#1', 'closes #2')." >&2
+    exit 1
+fi
+
+exit 0
