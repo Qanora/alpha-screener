@@ -1,0 +1,125 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config-path: .gitleaks.toml
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: pip install ruff "mypy>=1.15,<2" types-requests
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: |
+          if [ -d alphascreener ]; then
+            mypy alphascreener/
+          else
+            echo "no source yet"
+          fi
+      - run: |
+          if [ -d tests ]; then
+            mypy tests/
+          else
+            echo "no tests yet"
+          fi
+
+  bandit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install bandit
+      - run: |
+          if [ -d alphascreener ]; then
+            bandit -r alphascreener/ -ll
+          else
+            echo "no source yet"
+          fi
+
+  vulture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install vulture
+      - run: |
+          if [ -d alphascreener ]; then
+            vulture alphascreener/ --min-confidence 80 --ignore-names cls
+          else
+            echo "no source yet"
+          fi
+
+  commit-msg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate issue references in commits
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          invalid=$(git log --format="%H %B" "$base..$head" | grep -vE '#[0-9]+' | grep -v '^$' || true)
+          if [ -n "$invalid" ]; then
+            echo "BLOCKED: every commit must reference an issue (e.g. '#1', 'closes #2')."
+            echo "Offending commits:"
+            echo "$invalid"
+            exit 1
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          if [ -f pyproject.toml ]; then
+            pip install -e . --no-deps
+          else
+            echo "no pyproject.toml — skipping install"
+          fi
+          pip install pytest
+      - name: Run tests
+        run: |
+          if [ -d tests ] && [ -n "$(find tests -name 'test_*.py' | head -1)" ]; then
+            python -m pytest tests/ -v
+          else
+            echo "no tests yet — skipping"
+          fi
