@@ -1,6 +1,6 @@
 #!/bin/bash
 # PR status monitor — pure state polling, no severity analysis.
-# Usage: ./watch-pr.sh <pr_number> [timeout_rounds]
+# Usage: ./watch-pr.sh <pr_number>
 # Exit: 0=merged, 1=CI failure, 2=stuck/timeout, 4=changes requested (fresh), 5=missing tools
 set -euo pipefail
 
@@ -12,16 +12,48 @@ for cmd in gh jq; do
 done
 
 REPO="${REPO:-Qanora/alpha-screener}"
-PR="${1:?Usage: $0 <pr_number> [timeout_rounds]}"
-TIMEOUT="${2:-40}"
-
-case "$TIMEOUT" in
-  ''|*[!0-9]*|0) echo "ERROR: timeout_rounds must be a positive integer, got: $TIMEOUT"; exit 6 ;;
-esac
-
-ROUND=0
+PR="${1:?Usage: $0 <pr_number>}"
 STDERR_FILE=$(mktemp)
 trap 'rm -f "$STDERR_FILE"' EXIT INT TERM
+
+# Calculate dynamic timeout based on PR diff size
+# Base: 20 rounds for up to 300 lines, +5 rounds per additional 100 lines, max 60
+# Globals set for reuse: ADDITIONS, DELETIONS
+ADDITIONS=0
+DELETIONS=0
+calculate_timeout() {
+  local pr_meta total_lines
+  if ! pr_meta=$(gh pr view "$PR" --repo "$REPO" --json additions,deletions 2>"$STDERR_FILE"); then
+    echo "[INIT] $(date +%H:%M:%S) gh pr view failed while calculating timeout"
+    cat "$STDERR_FILE"
+    exit 3
+  fi
+  ADDITIONS=$(echo "$pr_meta" | jq -r '.additions // 0')
+  DELETIONS=$(echo "$pr_meta" | jq -r '.deletions // 0')
+  total_lines=$((ADDITIONS + DELETIONS))
+
+  if [ "$total_lines" -le 300 ]; then
+    TIMEOUT=20
+  else
+    local extra_lines=$((total_lines - 300))
+    local extra_rounds=$((((extra_lines + 99) / 100) * 5))
+    local timeout=$((20 + extra_rounds))
+    if [ "$timeout" -gt 60 ]; then
+      TIMEOUT=60
+    else
+      TIMEOUT="$timeout"
+    fi
+  fi
+}
+
+calculate_timeout
+echo "[INFO] Dynamic timeout: $TIMEOUT rounds ($ADDITIONS additions, $DELETIONS deletions)"
+
+ROUND=0
+
+# Stuck detection: track review decision stability
+LAST_REVIEW=""
+REVIEW_STABLE_SINCE=""
 
 while true; do
   ROUND=$((ROUND + 1))
@@ -93,8 +125,27 @@ while true; do
     echo "=== COMMENTED (chill) — check with fetch-review.sh $PR if needed ==="
   fi
 
+  # Stuck detection: track review decision stability for refined stuck detection
+  if [ "$REVIEW" != "$LAST_REVIEW" ]; then
+    LAST_REVIEW="$REVIEW"
+    REVIEW_STABLE_SINCE=$(date +%s)
+  fi
+
+  # Refined stuck detection: truly stuck = no pending CI AND review decision unchanged for 10 minutes
+  STUCK_MINUTES=10
+  if [ -z "$PENDING" ] && [ -z "$FAILING" ] && [ -n "$REVIEW_STABLE_SINCE" ]; then
+    CURRENT_TIME=$(date +%s)
+    STABLE_SECONDS=$((CURRENT_TIME - REVIEW_STABLE_SINCE))
+    if [ "$STABLE_SECONDS" -ge $((STUCK_MINUTES * 60)) ]; then
+      if [ "$REVIEW" != "APPROVED" ]; then
+        echo "=== STUCK (review=$REVIEW stable for $((STABLE_SECONDS / 60)) min, no pending CI) — consider close-reopen ==="
+        exit 2
+      fi
+    fi
+  fi
+
   if [ "$ROUND" -ge "$TIMEOUT" ]; then
-    echo "=== STUCK after ${ROUND} rounds — consider close-reopen ==="
+    echo "=== TIMEOUT after ${ROUND} rounds (max $TIMEOUT) — consider close-reopen ==="
     exit 2
   fi
 
