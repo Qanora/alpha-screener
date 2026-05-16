@@ -214,5 +214,4 @@ Error types 同开发模式。
 - **不做任何 git 操作**：不 add、不 commit、不 push（全部由第二层负责）
 - 只做本地开发：写代码 + 验证 + cr review
 - 修复模式只修问题，不新增功能
-- 不修改 `.claude/` 配置
 - 步骤 6（cr review）是阻塞步骤

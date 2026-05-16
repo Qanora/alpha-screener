@@ -78,6 +78,9 @@ bash scripts/watch-pr.sh <mr-number>
 | 2      | stuck             | **检查 close_reopen_count** → close-reopen.sh → 重置 round=0 |
 | 4      | changes requested | 写 `BLOCKED_REVIEW` → 收集 review → **检查 fix_round**       |
 
+**COMMENTED 状态**：watch-pr.sh 对 COMMENTED 不退出，继续等待。
+CodeRabbit 已完成 review 但未请求修改（chill profile），无需干预。
+
 **重要**：exit code 1 (CI failure) 和 exit code 4 (changes requested) 都需要**通过 dev-loop** 修复，不得在 mr-loop 中直接修改代码。
 
 **重试上限检查**：
