@@ -45,6 +45,28 @@ gh issue create --repo Qanora/alpha-screener --title "<title>" --body "<body>" -
 
 ### 4. 依赖分析 + 批次规划
 
+#### 4.1 构建依赖图
+
+从 issue 拆解结果中提取依赖关系，构建有向图：
+
+```text
+节点 = Issue 编号
+边 A → B = Issue A 依赖 Issue B
+```
+
+#### 4.2 环检测
+
+使用 DFS 检测依赖环。若发现环，**立即停止**并报告：
+
+```text
+❌ 检测到依赖环:
+   Issue #A → Issue #B → Issue #C → Issue #A
+
+请重新拆解需求，消除循环依赖。
+```
+
+#### 4.3 批次规划（无环时）
+
 - 无依赖 → 第 1 批次并发
 - 仅依赖第 1 批的 → 第 2 批次并发
 - 以此类推
