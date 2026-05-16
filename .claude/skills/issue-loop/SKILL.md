@@ -157,14 +157,14 @@ Session 中断后，从 GitHub 反推当前状态继续执行。
 
 查询 milestone 下所有 issues，根据 GitHub 状态推断恢复动作：
 
-| Issue 状态      | MR 状态            | 恢复动作                                   |
-| --------------- | ------------------ | ------------------------------------------ |
-| open, 无 MR     | —                  | 启动 `/mr-loop <issue>`                    |
-| open, 有 MR     | CHANGES_REQUESTED  | `/mr-loop --resume` (fetch-review → fix)   |
-| open, 有 MR     | CI_FAILURE         | 收集 CI log → `/mr-loop --resume`          |
-| open, 有 MR     | PENDING            | 继续监控 (`watch-pr.sh`)                   |
-| closed          | MR merged          | 跳过                                       |
-| closed          | 无 MR              | 跳过                                       |
+| Issue 状态  | MR 状态           | 恢复动作                                 |
+| ----------- | ----------------- | ---------------------------------------- |
+| open, 无 MR | —                 | 启动 `/mr-loop <issue>`                  |
+| open, 有 MR | CHANGES_REQUESTED | `/mr-loop --resume` (fetch-review → fix) |
+| open, 有 MR | CI_FAILURE        | 收集 CI log → `/mr-loop --resume`        |
+| open, 有 MR | PENDING           | 继续监控 (`watch-pr.sh`)                 |
+| closed      | MR merged         | 跳过                                     |
+| closed      | 无 MR             | 跳过                                     |
 
 ### 恢复流程
 

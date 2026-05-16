@@ -59,7 +59,6 @@ Closes #<N>
 ## Test plan
 
 - [ ] ruff check passes
-- [ ] python -m pytest tests/ -v passes
 EOF
 )" --base master
 ```

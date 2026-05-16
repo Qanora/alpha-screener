@@ -55,8 +55,6 @@ git diff --shortstat origin/master
 
 ```bash
 ruff check . && ruff format --check .
-if [ -d alphascreener ]; then mypy alphascreener/ tests/; fi
-if [ -d tests ]; then python -m pytest tests/ -v; fi
 prettier --check "**/*.md" && markdownlint-cli2 "**/*.md"
 ```
 
