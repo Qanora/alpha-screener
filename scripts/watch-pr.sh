@@ -13,14 +13,24 @@ done
 
 REPO="${REPO:-Qanora/alpha-screener}"
 PR="${1:?Usage: $0 <pr_number>}"
+STDERR_FILE=$(mktemp)
+trap 'rm -f "$STDERR_FILE"' EXIT INT TERM
 
 # Calculate dynamic timeout based on PR diff size
 # Base: 20 rounds for up to 300 lines, +5 rounds per additional 100 lines, max 60
+# Globals set for reuse: ADDITIONS, DELETIONS
+ADDITIONS=0
+DELETIONS=0
 calculate_timeout() {
-  local additions deletions total_lines
-  additions=$(gh pr view "$PR" --repo "$REPO" --json additions --jq '.additions // 0')
-  deletions=$(gh pr view "$PR" --repo "$REPO" --json deletions --jq '.deletions // 0')
-  total_lines=$((additions + deletions))
+  local pr_meta total_lines
+  if ! pr_meta=$(gh pr view "$PR" --repo "$REPO" --json additions,deletions 2>"$STDERR_FILE"); then
+    echo "[INIT] $(date +%H:%M:%S) gh pr view failed while calculating timeout"
+    cat "$STDERR_FILE"
+    exit 3
+  fi
+  ADDITIONS=$(echo "$pr_meta" | jq -r '.additions // 0')
+  DELETIONS=$(echo "$pr_meta" | jq -r '.deletions // 0')
+  total_lines=$((ADDITIONS + DELETIONS))
 
   if [ "$total_lines" -le 300 ]; then
     echo 20
@@ -37,11 +47,9 @@ calculate_timeout() {
 }
 
 TIMEOUT=$(calculate_timeout)
-echo "[INFO] Dynamic timeout: $TIMEOUT rounds ($(gh pr view "$PR" --repo "$REPO" --json additions,deletions --jq '"\(.additions) additions, \(.deletions) deletions"'))"
+echo "[INFO] Dynamic timeout: $TIMEOUT rounds ($ADDITIONS additions, $DELETIONS deletions)"
 
 ROUND=0
-STDERR_FILE=$(mktemp)
-trap 'rm -f "$STDERR_FILE"' EXIT INT TERM
 
 # Stuck detection: track review decision stability
 LAST_REVIEW=""
