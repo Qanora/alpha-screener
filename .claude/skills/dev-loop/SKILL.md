@@ -30,7 +30,7 @@ if [ ! -d "$WT" ]; then
   git worktree add "$WT" origin/master
 fi
 cd "$WT"
-BRANCH="feature/issue-<N>-<slug>"
+BRANCH="feature/issue-<N>"
 git checkout -b "$BRANCH"
 ```
 

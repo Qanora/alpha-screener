@@ -24,6 +24,17 @@ if ! echo "$OLD_BRANCH" | grep -q '^feature/'; then
   exit 2
 fi
 
+# 检查 PR 是否存在且为 open 状态
+PR_STATE=$(gh pr view "$OLD_PR" --repo "$REPO" --json state --jq '.state' 2>/dev/null || echo "")
+if [ -z "$PR_STATE" ]; then
+  echo "ERROR: PR #$OLD_PR does not exist"
+  exit 2
+fi
+if [ "$PR_STATE" != "OPEN" ]; then
+  echo "ERROR: PR #$OLD_PR is not open (state: $PR_STATE)"
+  exit 2
+fi
+
 # 检查旧分支是否存在
 if ! git rev-parse --verify "$OLD_BRANCH" >/dev/null 2>&1; then
   echo "ERROR: branch '$OLD_BRANCH' does not exist"
