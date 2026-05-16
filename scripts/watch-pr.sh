@@ -33,20 +33,20 @@ calculate_timeout() {
   total_lines=$((ADDITIONS + DELETIONS))
 
   if [ "$total_lines" -le 300 ]; then
-    echo 20
+    TIMEOUT=20
   else
     local extra_lines=$((total_lines - 300))
     local extra_rounds=$((extra_lines / 100 * 5))
     local timeout=$((20 + extra_rounds))
     if [ "$timeout" -gt 60 ]; then
-      echo 60
+      TIMEOUT=60
     else
-      echo "$timeout"
+      TIMEOUT="$timeout"
     fi
   fi
 }
 
-TIMEOUT=$(calculate_timeout)
+calculate_timeout
 echo "[INFO] Dynamic timeout: $TIMEOUT rounds ($ADDITIONS additions, $DELETIONS deletions)"
 
 ROUND=0
