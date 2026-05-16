@@ -107,6 +107,7 @@ Error types：
 | CR_UNFIXABLE          | cr review 有 findings 无法修复 |
 | CONFLICT_UNRESOLVABLE | merge conflict 无法解决        |
 | ENV_ERROR             | 环境问题（cr CLI 未安装等）    |
+| API_ERROR             | gh API 调用失败                |
 | UNKNOWN               | 其他异常                       |
 
 ---
