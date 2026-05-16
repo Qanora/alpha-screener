@@ -67,15 +67,13 @@ gh issue create --repo Qanora/alpha-screener --title "<title>" --body "<body>" -
 
 #### 4.3 批次规划（无环时）
 
-- 无依赖 → 第 1 批次并发
-- 仅依赖第 1 批的 → 第 2 批次并发
+- 无依赖 → 第 1 批次
+- 仅依赖第 1 批的 → 第 2 批次
 - 以此类推
 
 ### 5. 派发执行
 
-对每个批次中的每个 issue，交给第二层：
-
-在当前上下文直接执行第二层（无需 subagent）：
+批次内 **串行执行**，每个 issue 依次交给第二层：
 
 ```text
 /mr-loop <issue-number>
