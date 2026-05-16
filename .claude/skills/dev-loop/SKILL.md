@@ -70,16 +70,44 @@ cr review --agent --base origin/master
 ## Handoff: Issue #<N>
 
 ### 技术方案
+
 <3-5 句话>
 
 ### 文件变更
+
 <git diff --stat origin/master>
 
 ### branch
+
 <BRANCH>
 ```
 
-**终端输出**: `DEV_DONE=<branch>` — 通知第二层代码就绪，可以 commit + push + 创建 MR。
+**终端输出**（标准化信号格式）：
+
+成功时：
+
+```text
+---HANDOFF---
+DEV_DONE=<BRANCH>
+---HANDOFF_END---
+```
+
+失败时：
+
+```text
+---HANDOFF---
+FAIL_DONE=<error-type>
+---HANDOFF_END---
+```
+
+Error types：
+
+| Error type            | 含义                           |
+| --------------------- | ------------------------------ |
+| CR_UNFIXABLE          | cr review 有 findings 无法修复 |
+| CONFLICT_UNRESOLVABLE | merge conflict 无法解决        |
+| ENV_ERROR             | 环境问题（cr CLI 未安装等）    |
+| UNKNOWN               | 其他异常                       |
 
 ---
 
@@ -127,7 +155,25 @@ cr review --agent --base origin/master
 - [x] <评论2简述>
 ```
 
-终端输出 `FIX_DONE=<branch>` — 通知第二层可以 commit + push。
+**终端输出**（标准化信号格式）：
+
+成功时：
+
+```text
+---HANDOFF---
+FIX_DONE=<BRANCH>
+---HANDOFF_END---
+```
+
+失败时：
+
+```text
+---HANDOFF---
+FAIL_DONE=<error-type>
+---HANDOFF_END---
+```
+
+Error types 同开发模式。
 
 ---
 
