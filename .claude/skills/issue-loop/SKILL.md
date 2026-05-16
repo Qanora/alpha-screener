@@ -86,14 +86,14 @@ gh pr list --repo Qanora/alpha-screener --state open
 
 Issues live as GitHub issues on `Qanora/alpha-screener`。使用 `gh` CLI 进行所有操作。
 
-| 操作 | 命令 |
-|---|---|
-| 创建 issue | `gh issue create --title "..." --body "..."` |
-| 查看 issue | `gh issue view <number> --comments` |
-| 列出 issues | `gh issue list --state open --json number,title,body,labels` |
-| 评论 issue | `gh issue comment <number> --body "..."` |
+| 操作            | 命令                                                                |
+| --------------- | ------------------------------------------------------------------- |
+| 创建 issue      | `gh issue create --title "..." --body "..."`                        |
+| 查看 issue      | `gh issue view <number> --comments`                                 |
+| 列出 issues     | `gh issue list --state open --json number,title,body,labels`        |
+| 评论 issue      | `gh issue comment <number> --body "..."`                            |
 | 添加/删除 label | `gh issue edit <number> --add-label "..."` / `--remove-label "..."` |
-| 关闭 issue | `gh issue close <number> --comment "..."` |
+| 关闭 issue      | `gh issue close <number> --comment "..."`                           |
 
 ---
 
@@ -101,10 +101,10 @@ Issues live as GitHub issues on `Qanora/alpha-screener`。使用 `gh` CLI 进行
 
 五种 triage 标签：
 
-| Label | 含义 |
-|---|---|
-| `needs-triage` | Maintainer 需要评估 |
-| `needs-info` | 等待更多信息 |
+| Label             | 含义                       |
+| ----------------- | -------------------------- |
+| `needs-triage`    | Maintainer 需要评估        |
+| `needs-info`      | 等待更多信息               |
 | `ready-for-agent` | 完整定义，可交给 AFK agent |
-| `ready-for-human` | 需要人工实现 |
-| `wontfix` | 不处理 |
+| `ready-for-human` | 需要人工实现               |
+| `wontfix`         | 不处理                     |

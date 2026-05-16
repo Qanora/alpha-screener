@@ -64,12 +64,12 @@ bash scripts/watch-pr.sh <mr-number>
 
 ### 4. 响应状态
 
-| 退出码 | 含义              | 动作                                         |
-| ------ | ----------------- | -------------------------------------------- |
-| 0      | merged            | 清理 worktree → `ISSUE_DONE=<N>`             |
-| 1      | CI failure        | 收集 CI 日志 → **交给 dev-loop**（见步骤 5） |
-| 2      | stuck             | close-reopen.sh → 重置 round=0               |
-| 4      | changes requested | 收集 review → **交给 dev-loop**（见步骤 5）  |
+| 退出码 | 含义              | 动作                                                           |
+| ------ | ----------------- | -------------------------------------------------------------- |
+| 0      | merged            | 写 `MERGED` → 清理 worktree → `ISSUE_DONE=<N>`                 |
+| 1      | CI failure        | 写 `BLOCKED_CI` → 收集 CI 日志 → **交给 dev-loop**（步骤5）    |
+| 2      | stuck             | close-reopen.sh → 重置 round=0                                 |
+| 4      | changes requested | 写 `BLOCKED_REVIEW` → 收集 review → **交给 dev-loop**（步骤5） |
 
 **重要**：exit code 1 (CI failure) 和 exit code 4 (changes requested) 都需要**通过 dev-loop** 修复，不得在 mr-loop 中直接修改代码。
 
@@ -123,6 +123,8 @@ FAIL_DONE=<error-type>
 
 ```bash
 cd .claude/worktrees/issue-<N>
+# 清除阻塞状态文件
+rm -f .status
 git add -A
 git commit -m "fix: address review findings (#<N>)"
 git push origin <BRANCH>
@@ -152,8 +154,9 @@ round=0
 ```text
 [开始] → /dev-loop → commit+push+mr create
     → watch-pr
-        ├─ merged → [issue done]
-        ├─ CI fail / changes → fetch-review(fresh) → /dev-loop --fix → [WAIT: FIX_DONE] → commit+push → watch-pr
+        ├─ merged → 写 MERGED → 清理 worktree → [issue done]
+        ├─ CI fail → 写 BLOCKED_CI → fetch-review → /dev-loop --fix → [WAIT: FIX_DONE] → 清除状态 → commit+push → watch-pr
+        ├─ changes → 写 BLOCKED_REVIEW → fetch-review → /dev-loop --fix → [WAIT: FIX_DONE] → 清除状态 → commit+push → watch-pr
         ├─ stuck → close-reopen
         └─ round>=6 → close-reopen
 ```
@@ -168,6 +171,55 @@ round=0
 - **步骤 5→6 衔接**：必须等待 dev-loop 完成（检测 FIX_DONE 信号），否则跳过步骤 6
 - fetch-review 默认 fresh 模式，防止重复修复旧评论
 
+## Worktree 生命周期管理
+
+每个 issue 对应一个 worktree，通过状态标记文件管理生命周期。
+
+### 状态标记文件
+
+`.claude/worktrees/issue-<N>/.status`：
+
+| 状态           | 含义             | 清理 |
+| -------------- | ---------------- | ---- |
+| MERGED         | MR 已合入        | 可   |
+| CONFLICT       | 合并冲突无法解决 | 否   |
+| ABANDONED      | Issue 关闭无 MR  | 可   |
+| BLOCKED_CI     | CI 失败阻塞      | 否   |
+| BLOCKED_REVIEW | Review 阻塞      | 否   |
+
+### 清理策略
+
+| 场景                    | 动作                                    |
+| ----------------------- | --------------------------------------- |
+| MR merged               | 写 `MERGED` → 清理 worktree             |
+| Issue 手动关闭无 MR     | 写 `ABANDONED` → 清理 worktree          |
+| Merge conflict 无法解决 | 写 `CONFLICT` → 保留 worktree，人工介入 |
+| CI 失败需修复           | 写 `BLOCKED_CI` → 保留 worktree         |
+| Review 阻塞             | 写 `BLOCKED_REVIEW` → 保留 worktree     |
+| Dev-loop 异常退出       | 不写状态 → 保留 worktree                |
+
+### 清理命令
+
+```bash
+# 写入状态
+echo "MERGED" > .claude/worktrees/issue-<N>/.status
+
+# 执行清理（仅当状态为 MERGED 或 ABANDONED）
+STATUS=$(cat .claude/worktrees/issue-<N>/.status 2>/dev/null || echo "")
+if [ "$STATUS" = "MERGED" ] || [ "$STATUS" = "ABANDONED" ]; then
+  git worktree remove .claude/worktrees/issue-<N> --force
+  git branch -D <branch> 2>/dev/null || true
+fi
+```
+
+### 状态写入时机
+
+- **步骤 4 (merged)**：写 `MERGED`，执行清理
+- **步骤 5 (CI failure)**：写 `BLOCKED_CI`
+- **步骤 5 (changes requested)**：写 `BLOCKED_REVIEW`
+- **错误处理 (CONFLICT_UNRESOLVABLE)**：写 `CONFLICT`
+- **外部事件 (Issue 关闭无 MR)**：写 `ABANDONED`，执行清理
+
 ## 错误处理
 
 当 dev-loop 返回 `FAIL_DONE=<error-type>` 信号时：
@@ -175,7 +227,7 @@ round=0
 | Error type            | 含义                           | 处理方式                     |
 | --------------------- | ------------------------------ | ---------------------------- |
 | CR_UNFIXABLE          | cr review 有 findings 无法修复 | 人工介入，记录到 issue       |
-| CONFLICT_UNRESOLVABLE | merge conflict 无法解决        | 人工介入，记录到 issue       |
+| CONFLICT_UNRESOLVABLE | merge conflict 无法解决        | 写 `CONFLICT`，人工介入      |
 | ENV_ERROR             | 环境问题（cr CLI 未安装等）    | 检查环境配置，安装依赖后重试 |
 | UNKNOWN               | 其他异常                       | 记录日志，人工介入           |
 
