@@ -122,11 +122,29 @@ Error types：
 cd .claude/worktrees/issue-<N>
 git checkout <BRANCH>
 git fetch origin master
-if ! git merge origin/master --no-edit; then
-  echo "ERROR: merge conflict — resolve manually"
-  exit 1
-fi
+git merge origin/master --no-edit
 ```
+
+若 merge 成功，继续步骤 2。
+
+**若 merge 失败（冲突）**，自动解决：
+
+1. 查看冲突文件：
+
+   ```bash
+   git status --porcelain | grep "^UU\|^AA\|^DD"
+   ```
+
+2. 逐个 Read 冲突文件，识别 `<<<<<<<`, `=======`, `>>>>>>>` 标记
+3. 使用 Edit 解决冲突（保留正确的代码片段，移除冲突标记）
+4. 冲突全部解决后：
+
+   ```bash
+   git add .
+   git merge --continue
+   ```
+
+5. 若无法解决冲突，输出 `FAIL_DONE=CONFLICT_UNRESOLVABLE` 并退出
 
 ### 2. 获取评审意见
 
