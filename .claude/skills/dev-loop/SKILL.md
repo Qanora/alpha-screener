@@ -39,7 +39,19 @@ git checkout -b "$BRANCH"
 - 实现代码，遵循现有风格
 - 如有测试要求，编写测试
 
-### 4. 本地验证
+### 4. 300 行约束检查
+
+```bash
+git diff --shortstat origin/master
+```
+
+若改动超过 300 行，输出警告（soft constraint，不阻塞）：
+
+```text
+⚠️ 当前改动超过 300 行，建议考虑拆分为多个 issue
+```
+
+### 5. 本地验证
 
 ```bash
 ruff check . && ruff format --check .
@@ -48,7 +60,7 @@ if [ -d tests ]; then python -m pytest tests/ -v; fi
 prettier --check "**/*.md" && markdownlint-cli2 "**/*.md"
 ```
 
-### 5. 本地 cr review（必须，阻塞步骤）
+### 6. 本地 cr review（必须，阻塞步骤）
 
 ```bash
 if ! command -v cr &> /dev/null; then
@@ -62,7 +74,7 @@ cr review --agent --base origin/master
 
 > cr CLI 未装时 `exit 1`，不继续。
 
-### 6. 输出 Handoff
+### 7. 输出 Handoff
 
 在 worktree 根目录写入 `.handoff-issue-<N>.md`：
 
@@ -156,9 +168,9 @@ git merge origin/master --no-edit
 - 修复所有 CI 失败
 - 不新增功能，不重构
 
-### 4. 本地验证（同开发模式步骤 4）
+### 4. 本地验证（同开发模式步骤 5）
 
-### 5. 本地 cr review（同开发模式步骤 5，必须）
+### 5. 本地 cr review（同开发模式步骤 6，必须）
 
 ```bash
 cr review --agent --base origin/master
@@ -203,4 +215,4 @@ Error types 同开发模式。
 - 只做本地开发：写代码 + 验证 + cr review
 - 修复模式只修问题，不新增功能
 - 不修改 `.claude/` 配置
-- 步骤 5（cr review）是阻塞步骤
+- 步骤 6（cr review）是阻塞步骤
