@@ -36,7 +36,7 @@ calculate_timeout() {
     TIMEOUT=20
   else
     local extra_lines=$((total_lines - 300))
-    local extra_rounds=$((extra_lines / 100 * 5))
+    local extra_rounds=$((((extra_lines + 99) / 100) * 5))
     local timeout=$((20 + extra_rounds))
     if [ "$timeout" -gt 60 ]; then
       TIMEOUT=60
