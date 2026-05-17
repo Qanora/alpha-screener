@@ -27,8 +27,8 @@ jobs:
         # Codium-ai/pr-agent main @ 2026-05-17
         uses: Codium-ai/pr-agent@0bd56c0508504c718cc03d504cd4ceb6725ba3c7
         env:
-          OPENAIAPI_BASE: "https://api.deepseek.com"
-          OPENAIKEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_BASE: "https://api.deepseek.com"
+          OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          config.model: "deepseek/deepseek-chat"
+          config.model: "openai/deepseek-chat"
           config.custom_model_max_tokens: "128000"
