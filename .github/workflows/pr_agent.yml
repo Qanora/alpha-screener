@@ -33,6 +33,9 @@ jobs:
           CONFIG.MODEL: "openai/deepseek-v4-pro"
           CONFIG.CUSTOM_MODEL_MAX_TOKENS: "128000"
 
+          # 添加 synchronize 到 PR_ACTIONS，使 PR-Agent 处理 PR 更新事件
+          GITHUB_ACTION_CONFIG.PR_ACTIONS: "opened,reopened,synchronize,ready_for_review"
+
           # 保持 GitHub Token 和其他业务配置
           GITHUB_TOKEN: ${{ steps.generate_token.outputs.token }}
           PR_REVIEWER.AUTOMATIC_REVIEW_APPROVAL: "true"
