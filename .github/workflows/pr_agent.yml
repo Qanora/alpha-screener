@@ -1,4 +1,4 @@
-name: PR-Agent Reviewer (DeepSeek V4 Pro via Anthropic)
+name: PR-Agent Reviewer (DeepSeek V4 Pro via OpenAI-compatible)
 
 on:
   pull_request:
@@ -9,14 +9,14 @@ on:
 permissions:
   issues: write
   pull-requests: write
-  contents: write
+  contents: read
 
 jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
     steps:
       - name: Generate GitHub App Token
-        id: app_token
+        id: generate_token
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.APP_ID }}
@@ -25,10 +25,17 @@ jobs:
       - name: Run PR-Agent
         uses: Codium-ai/pr-agent@main
         env:
-          ANTHROPIC_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          ANTHROPIC_API_BASE: "https://api.deepseek.com/anthropic"
-          GITHUB_TOKEN: ${{ steps.app_token.outputs.token }}
-          CONFIG.MODEL: "deepseek-v4-pro"
-          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "128000"
+          # 使用自定义提供商模式，告诉 PR-Agent 不要用官方的校验逻辑
+          CONFIG.CUSTOM_PROVIDER: "openai"
+
+          # 统一使用这两个通用的环境变量，不要用 OPENAI_KEY 或 ANTHROPIC_KEY
+          OPENAI_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_BASE: "https://api.deepseek.com"
+
+          # 模型名称必须严格加上前缀，强制声明使用 openai 兼容格式请求
+          CONFIG.MODEL: "openai/deepseek-v4-pro"
+
+          # 保持 GitHub Token 和其他业务配置
+          GITHUB_TOKEN: ${{ steps.generate_token.outputs.token }}
           PR_REVIEWER.AUTOMATIC_REVIEW_APPROVAL: "true"
           PR_REVIEWER.LANGUAGE: "zh"

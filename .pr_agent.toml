@@ -1,7 +1,7 @@
 language = "zh"
 
 [config]
-model = "deepseek-v4-pro"
+model = "openai/deepseek-v4-pro"
 
 [pr_reviewer]
 automatic_review_approval = true
