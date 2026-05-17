@@ -96,7 +96,19 @@ gh issue list --repo Qanora/alpha-screener --state open --limit 20
 gh pr list --repo Qanora/alpha-screener --state open
 ```
 
-### 7. 交付报告
+### 7. 关闭 Milestone
+
+检查 milestone 下所有 issues 是否已合入，若全部完成则关闭 milestone。
+
+```bash
+# 1. 获取 milestone 下所有 issues
+gh issue list --state all --milestone "<N>" --json number,state
+
+# 2. 若全部 closed，关闭 milestone
+gh api -X PATCH repos/Qanora/alpha-screener/milestones/<N> -f state=closed
+```
+
+### 8. 交付报告
 
 ```text
 ## 交付报告
@@ -104,6 +116,7 @@ gh pr list --repo Qanora/alpha-screener --state open
 - Issue 总数: <N>
 - 已合入: <list>
 - MR 列表: <list>
+- Milestone: #<N> (closed)
 ```
 
 ## 约束
@@ -205,3 +218,18 @@ gh api repos/Qanora/alpha-screener/pulls/<pr-number>/timeline --paginate \
 1. 恢复 #26: 修复 review comments
 2. 启动 #28: 新建 MR
 ```
+
+---
+
+## 附录 D: Milestone 操作
+
+Milestones 通过 `gh api` 操作。
+
+| 操作      | 呇令                                                          |
+| --------- | ------------------------------------------------------------- |
+| 创建      | `gh api repos/{repo}/milestones -f title="..."`               |
+| 列出      | `gh api repos/{repo}/milestones --jq '.[]\|.number'`          |
+| 关闭      | `gh api -X PATCH repos/{repo}/milestones/N -f state=closed`   |
+| 查 issues | `gh issue list --milestone N --state all --json number,state` |
+
+注：`{repo}` = `Qanora/alpha-screener`
