@@ -29,5 +29,6 @@ jobs:
           ANTHROPIC_API_BASE: "https://api.deepseek.com/anthropic"
           GITHUB_TOKEN: ${{ steps.app_token.outputs.token }}
           CONFIG.MODEL: "deepseek-v4-pro"
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "128000"
           PR_REVIEWER.AUTOMATIC_REVIEW_APPROVAL: "true"
           PR_REVIEWER.LANGUAGE: "zh"
