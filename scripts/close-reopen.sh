@@ -129,10 +129,10 @@ git push origin "$NEW_BRANCH"
 TITLE="$COMMIT_MSG"
 
 # 从 title/commit message 提取 issue reference (closes/fixes #XX)
-ISSUE_REF=$(echo "$TITLE" | grep -oE '(closes|fixes|resolves) #[0-9]+' || true)
+ISSUE_REF=$(echo "$TITLE" | grep -oiE '(closes|fixes|resolves) #[0-9]+' || true)
 PR_BODY="Replaces PR #$OLD_PR."
 if [ -n "$ISSUE_REF" ]; then
-  PR_BODY="$ISSUE_REF\n\n$PR_BODY"
+  PR_BODY="$(printf '%s\n\n%s' "$ISSUE_REF" "$PR_BODY")"
 fi
 
 echo "Creating new PR..."
