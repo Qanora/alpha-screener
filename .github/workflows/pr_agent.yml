@@ -1,4 +1,4 @@
-name: PR-Agent Reviewer
+name: PR-Agent Reviewer (DeepSeek V4 Pro)
 
 on:
   pull_request:
@@ -6,19 +6,21 @@ on:
   issue_comment:
     types: [created]
 
-permissions:
-  issues: write
-  pull-requests: write
-  contents: read
-
 jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: write
     steps:
       - name: Run PR-Agent
         uses: the-pr-agent/pr-agent@main
         env:
           OPENAI_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          OPENAI_API_BASE: "https://api.deepseek.com/v1"
-          CONFIG.MODEL: "deepseek-v4-pro"
+          OPENAI_API_BASE: "https://api.deepseek.com"
+          CONFIG__MODEL: "deepseek-v4-pro"
+          CONFIG__CUSTOM_MODEL_MAX_TOKENS: "128000"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_REVIEWER__AUTOMATIC_REVIEW_APPROVAL: "true"
+          PR_REVIEWER__LANGUAGE: "zh"
