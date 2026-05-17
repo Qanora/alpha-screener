@@ -16,6 +16,3 @@ review = """
 
 [pr_reviewer.ignore]
 glob = ["**/*.md"]
-
-[pr_approver]
-enable_auto_approval = true
