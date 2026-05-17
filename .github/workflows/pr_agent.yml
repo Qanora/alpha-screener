@@ -20,3 +20,4 @@ jobs:
           OPENAIKEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           config.model: "deepseek-v4-pro"
+          config.custom_model_max_tokens: "128000"
