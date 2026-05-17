@@ -1,0 +1,22 @@
+name: PR-Agent (Qodo Merge)
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  pr-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR Agent
+        # Codium-ai/pr-agent main @ 2026-05-17
+        uses: Codium-ai/pr-agent@0bd56c0508504c718cc03d504cd4ceb6725ba3c7
+        env:
+          OPENAIAPI_BASE: "https://api.deepseek.com/v1"
+          OPENAIKEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          config.model: "deepseek-v4-pro"
