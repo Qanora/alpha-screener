@@ -1,23 +1,42 @@
-name: PR-Agent (Qodo Merge)
+name: PR-Agent Reviewer (DeepSeek V4 Pro via OpenAI-compatible)
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
 
 permissions:
-  pull-requests: write
   issues: write
+  pull-requests: write
+  contents: read
 
 jobs:
-  pr-agent:
+  pr_agent_job:
     runs-on: ubuntu-latest
     steps:
-      - name: PR Agent
-        # Codium-ai/pr-agent main @ 2026-05-17
-        uses: Codium-ai/pr-agent@0bd56c0508504c718cc03d504cd4ceb6725ba3c7
+      - name: Generate GitHub App Token
+        id: generate_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Run PR-Agent
+        uses: Codium-ai/pr-agent@main
         env:
-          OPENAIAPI_BASE: "https://api.deepseek.com"
-          OPENAIKEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          config.model: "deepseek/deepseek-chat"
-          config.custom_model_max_tokens: "128000"
+          # PR-Agent 内部检查的是 OPENAI_KEY（非标准命名）
+          OPENAI_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_BASE: "https://api.deepseek.com"
+
+          # 模型名称必须严格加上前缀，强制声明使用 openai 兼容格式请求
+          CONFIG.MODEL: "openai/deepseek-v4-pro"
+          CONFIG.CUSTOM_MODEL_MAX_TOKENS: "128000"
+
+          # 添加 synchronize 到 PR_ACTIONS，使 PR-Agent 处理 PR 更新事件
+          GITHUB_ACTION_CONFIG.PR_ACTIONS: "opened,reopened,synchronize,ready_for_review"
+
+          # 保持 GitHub Token 和其他业务配置
+          GITHUB_TOKEN: ${{ steps.generate_token.outputs.token }}
+          PR_REVIEWER.AUTOMATIC_REVIEW_APPROVAL: "true"
+          PR_REVIEWER.LANGUAGE: "zh"
