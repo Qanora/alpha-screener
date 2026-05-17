@@ -19,5 +19,5 @@ jobs:
           OPENAIAPI_BASE: "https://api.deepseek.com"
           OPENAIKEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          config.model: "deepseek-v4-pro"
+          config.model: "deepseek/deepseek-chat"
           config.custom_model_max_tokens: "128000"
