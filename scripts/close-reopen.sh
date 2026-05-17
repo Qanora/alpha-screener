@@ -127,8 +127,16 @@ git push origin "$NEW_BRANCH"
 
 # 先创建新 PR，成功后再关闭旧 PR 和删除旧分支
 TITLE="$COMMIT_MSG"
+
+# 从 title/commit message 提取 issue reference (closes/fixes #XX)
+ISSUE_REF=$(echo "$TITLE" | grep -oE '(closes|fixes|resolves) #[0-9]+' || true)
+PR_BODY="Replaces PR #$OLD_PR."
+if [ -n "$ISSUE_REF" ]; then
+  PR_BODY="$ISSUE_REF\n\n$PR_BODY"
+fi
+
 echo "Creating new PR..."
-NEW_PR=$(gh pr create --repo "$REPO" --title "$TITLE" --body "Replaces PR #$OLD_PR." --base master)
+NEW_PR=$(gh pr create --repo "$REPO" --title "$TITLE" --body "$PR_BODY" --base master)
 echo "New PR: $NEW_PR"
 echo "Monitor with: bash scripts/watch-pr.sh ${NEW_PR##*/}"
 
