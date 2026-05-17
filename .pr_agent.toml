@@ -1,13 +1,15 @@
-language = "zh"
-
-[config]
-model = "deepseek-v4-pro"
-custom_model_max_tokens = 128000
-
 [pr_reviewer]
+# 开启自动批准
 automatic_review_approval = true
+
+# 自动批准的严格门槛："Low" 表示只有当 PR 几乎没风险时才给过
 automatic_review_approval_threshold = "Low"
+
+# 开启代码行内评论
 inline_code_comments = true
+
+# 使用中文回复
+language = "zh"
 
 [pr_reviewer.extra_instructions]
 review = """

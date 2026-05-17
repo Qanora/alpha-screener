@@ -14,13 +14,19 @@ jobs:
       pull-requests: write
       contents: write
     steps:
+      - name: Generate GitHub App Token
+        id: generate_token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Run PR-Agent
         uses: the-pr-agent/pr-agent@main
         env:
           OPENAI_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           OPENAI_API_BASE: "https://api.deepseek.com"
-          CONFIG__MODEL: "deepseek-v4-pro"
-          CONFIG__CUSTOM_MODEL_MAX_TOKENS: "128000"
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_REVIEWER__AUTOMATIC_REVIEW_APPROVAL: "true"
-          PR_REVIEWER__LANGUAGE: "zh"
+          CONFIG.MODEL: "deepseek-v4-pro"
+          GITHUB_TOKEN: ${{ steps.generate_token.outputs.token }}
+          PR_REVIEWER.AUTOMATIC_REVIEW_APPROVAL: "true"
+          PR_REVIEWER.LANGUAGE: "zh"
