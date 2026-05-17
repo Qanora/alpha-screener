@@ -1,6 +1,6 @@
 ---
 name: dev-loop
-description: 第三层飞轮——纯本地开发：实现/修复 → 本地验证 → 本地 cr review。不做任何 git 或 MR 操作。
+description: 第三层飞轮——纯本地开发：实现/修复 → 本地验证 → simplify。不做任何 git 或 MR 操作。
 ---
 
 # Dev Loop（第三层）
@@ -58,19 +58,15 @@ ruff check . && ruff format --check .
 prettier --check "**/*.md" && markdownlint-cli2 "**/*.md"
 ```
 
-### 6. 本地 cr review（必须，阻塞步骤）
+### 6. Simplify（启动新 agent）
 
-```bash
-if ! command -v cr &> /dev/null; then
-  echo "ERROR: cr CLI (coderabbit-cli) 未安装。请运行: npm install -g coderabbit-cli"
-  exit 1
-fi
-cr review --agent --base origin/master
+启动一个新的 claude agent 执行 simplify skill：
+
+```
+Agent(subagent_type="claude", prompt="执行 /simplify 对当前改动进行代码审查")
 ```
 
-修复所有 Actionable comments，重复直到 **0 actionable findings**。
-
-> cr CLI 未装时 `exit 1`，不继续。
+修复所有发现的问题，重复直到 simplify 返回无问题。
 
 ### 7. 输出 Handoff
 
@@ -114,17 +110,15 @@ Error types：
 
 | Error type            | 含义                           |
 | --------------------- | ------------------------------ |
-| CR_UNFIXABLE          | cr review 有 findings 无法修复 |
+| SIMPLIFY_UNFIXABLE    | simplify 发现有问题无法修复    |
 | CONFLICT_UNRESOLVABLE | merge conflict 无法解决        |
-| ENV_ERROR             | 环境问题（cr CLI 未安装等）    |
-| API_ERROR             | gh API 调用失败                |
 | UNKNOWN               | 其他异常                       |
 
 ---
 
 ## 修复模式 (`--fix <mr-number>`)
 
-由第二层 `/mr-loop` 调用。获取上下文 → 修复 → 验证 → cr review → 退出。**不 commit，不 push。**
+由第二层 `/mr-loop` 调用。获取上下文 → 修复 → 验证 → simplify → 退出。**不 commit，不 push。**
 
 ### 1. 进入 worktree + 同步
 
@@ -168,13 +162,9 @@ git merge origin/master --no-edit
 
 ### 4. 本地验证（同开发模式步骤 5）
 
-### 5. 本地 cr review（同开发模式步骤 6，必须）
+### 5. Simplify（启动新 agent，同开发模式步骤 6）
 
-```bash
-cr review --agent --base origin/master
-```
-
-修复所有新发现的 comments，重复直到 0 findings。
+启动一个新的 claude agent 执行 simplify skill，修复所有发现的问题。
 
 ### 6. 输出修复摘要
 
@@ -210,6 +200,6 @@ Error types 同开发模式。
 
 - 始终在 worktree 内工作
 - **不做任何 git 操作**：不 add、不 commit、不 push（全部由第二层负责）
-- 只做本地开发：写代码 + 验证 + cr review
+- 只做本地开发：写代码 + 验证 + simplify
 - 修复模式只修问题，不新增功能
-- 步骤 6（cr review）是阻塞步骤
+- 步骤 6（simplify）是阻塞步骤

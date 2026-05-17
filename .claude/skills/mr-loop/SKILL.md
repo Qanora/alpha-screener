@@ -423,10 +423,8 @@ fi
 
 | Error type            | 含义                           | 处理方式                     |
 | --------------------- | ------------------------------ | ---------------------------- |
-| CR_UNFIXABLE          | cr review 有 findings 无法修复 | 人工介入，记录到 issue       |
+| SIMPLIFY_UNFIXABLE    | simplify 发现有问题无法修复    | 人工介入，记录到 issue       |
 | CONFLICT_UNRESOLVABLE | merge conflict 无法解决        | 写 `CONFLICT`，人工介入      |
-| ENV_ERROR             | 环境问题（cr CLI 未安装等）    | 检查环境配置，安装依赖后重试 |
-| API_ERROR             | gh API 调用失败                | 写 `API_ERROR`，人工介入     |
 | UNKNOWN               | 其他异常                       | 记录日志，人工介入           |
 
 处理流程：
