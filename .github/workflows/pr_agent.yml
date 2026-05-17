@@ -12,6 +12,17 @@ jobs:
   pr-agent:
     runs-on: ubuntu-latest
     steps:
+      - name: Debug env vars
+        run: |
+          echo "OPENAIAPI_BASE: $OPENAIAPI_BASE"
+          echo "OPENAIKEY set: $(if [ -n \"$OPENAIKEY\" ]; then echo 'YES (length: '${#OPENAIKEY}')'; else echo 'NO'; fi)"
+          echo "config.model: $config_model"
+          echo "config.custom_model_max_tokens: $config_custom_model_max_tokens"
+        env:
+          OPENAIAPI_BASE: "https://api.deepseek.com"
+          OPENAIKEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          config_model: "deepseek/deepseek-chat"
+          config_custom_model_max_tokens: "128000"
       - name: PR Agent
         # Codium-ai/pr-agent main @ 2026-05-17
         uses: Codium-ai/pr-agent@0bd56c0508504c718cc03d504cd4ceb6725ba3c7
