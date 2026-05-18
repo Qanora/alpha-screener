@@ -1,17 +1,17 @@
 ---
-name: issue-loop
+name: lp-ms
 description: 第一层飞轮——需求拆解、Issue 创建、依赖分析、批次编排、进度追踪
 ---
 
-# Issue Loop（第一层）
+# LP-MS（第一层）
 
 Issue 生命周期管理。只负责 issue 层面编排，不直接操作代码或 MR。
 
 ## 调用方式
 
 ```text
-/issue-loop <需求描述>
-/issue-loop --resume <milestone-number>
+/lp-ms <需求描述>
+/lp-ms --resume <milestone-number>
 ```
 
 **`--resume`**: 从 milestone 恢复中断的飞轮执行。查询 milestone 下所有 issues，根据状态表推断恢复动作。
@@ -86,7 +86,7 @@ gh issue create --repo Qanora/alpha-screener --title "<title>" --body "<body>" -
 批次内 **串行执行**，每个 issue 依次交给第二层：
 
 ```text
-/mr-loop <issue-number>
+/lp-mr <issue-number>
 ```
 
 ### 6. 查看进度
@@ -163,7 +163,7 @@ Session 中断后，从 GitHub 反推当前状态继续执行。
 ### 恢复入口
 
 ```text
-/issue-loop --resume <milestone-number>
+/lp-ms --resume <milestone-number>
 ```
 
 ### 状态恢复策略
@@ -172,9 +172,9 @@ Session 中断后，从 GitHub 反推当前状态继续执行。
 
 | Issue 状态  | MR 状态           | 恢复动作                                 |
 | ----------- | ----------------- | ---------------------------------------- |
-| open, 无 MR | —                 | 启动 `/mr-loop <issue>`                  |
-| open, 有 MR | CHANGES_REQUESTED | `/mr-loop --resume` (fetch-review → fix) |
-| open, 有 MR | CI_FAILURE        | 收集 CI log → `/mr-loop --resume`        |
+| open, 无 MR | —                 | 启动 `/lp-mr <issue>`                  |
+| open, 有 MR | CHANGES_REQUESTED | `/lp-mr --resume` (fetch-review → fix) |
+| open, 有 MR | CI_FAILURE        | 收集 CI log → `/lp-mr --resume`        |
 | open, 有 MR | PENDING           | 继续监控 (`watch-pr.sh`)                 |
 | closed      | MR merged         | 跳过                                     |
 | closed      | 无 MR             | 跳过                                     |
@@ -211,8 +211,8 @@ gh api repos/Qanora/alpha-screener/pulls/<pr-number>/timeline --paginate \
 ### Issue 状态分析
 | Issue | MR | 状态 | 恢复动作 |
 |-------|-----|------|----------|
-| #26 | #27 | CHANGES_REQUESTED | /mr-loop 26 --resume |
-| #28 | — | open | /mr-loop 28 |
+| #26 | #27 | CHANGES_REQUESTED | /lp-mr 26 --resume |
+| #28 | — | open | /lp-mr 28 |
 
 ### 执行计划
 1. 恢复 #26: 修复 review comments

@@ -1,16 +1,16 @@
 ---
-name: dev-loop
+name: lp-dev
 description: 第三层飞轮——纯本地开发：实现/修复 → 本地验证 → simplify。不做任何 git 或 MR 操作。
 ---
 
-# Dev Loop（第三层）
+# LP-DEV（第三层）
 
 纯本地开发管理。只负责写代码和验证，**不做 commit/push/MR 等任何 git 操作**（全部由第二层负责）。
 
 ## 调用方式
 
 ```text
-/dev-loop <issue-number> [--fix <mr-number>]
+/lp-dev <issue-number> [--fix <mr-number>]
 ```
 
 ## 开发模式 (无 `--fix` flag)
@@ -118,7 +118,7 @@ Error types：
 
 ## 修复模式 (`--fix <mr-number>`)
 
-由第二层 `/mr-loop` 调用。获取上下文 → 修复 → 验证 → simplify → 退出。**不 commit，不 push。**
+由第二层 `/lp-mr` 调用。获取上下文 → 修复 → 验证 → simplify → 退出。**不 commit，不 push。**
 
 ### 1. 进入 worktree + 同步
 
