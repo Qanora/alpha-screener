@@ -68,7 +68,7 @@ if echo "$PUSH_CMD" | grep -qE '^git push'; then
     exit 2
   fi
 
-  if echo "$PUSH_CMD" | grep -qE 'git[[:space:]]+push.*(--force|-f)'; then
+  if echo "$PUSH_CMD" | grep -qE 'git[[:space:]]+push.*(--force|-f([[:space:]]|$))'; then
     echo "BLOCKED: git push --force is forbidden." >&2
     exit 2
   fi
