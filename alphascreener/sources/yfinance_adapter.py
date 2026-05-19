@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -254,14 +254,18 @@ def _insider_to_polars(pd_df: pd.DataFrame, ticker: str) -> pl.DataFrame:
         return pl.DataFrame()
     records = []
     for _, row in pd_df.iterrows():
+        shares_val = row.get("Shares", 0)
+        shares = 0 if pd.isna(shares_val) else int(shares_val)
+        value_val = row.get("Value", 0)
+        value = 0.0 if pd.isna(value_val) else float(value_val)
         records.append(
             {
                 "ticker": ticker,
                 "insider_name": str(row.get("Insider", "")),
                 "title": str(row.get("Title", "")),
                 "transaction_type": str(row.get("Transaction", "")),
-                "shares": int(row.get("Shares", 0) or 0),
-                "value": float(row.get("Value", 0) or 0),
+                "shares": shares,
+                "value": value,
                 "start_date": str(row.get("Start Date", "")),
             }
         )
@@ -275,7 +279,7 @@ def _news_to_polars(news_list: list[dict[str, Any]], ticker: str) -> pl.DataFram
     records = []
     for item in news_list:
         ts = item.get("providerPublishTime", 0)
-        dt_str = datetime.fromtimestamp(ts).isoformat() if ts else ""
+        dt_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else ""  # noqa: UP017
         records.append(
             {
                 "ticker": ticker,
@@ -320,7 +324,7 @@ class YFinanceAdapter:
     def __post_init__(self) -> None:
         """Validate constructor parameters."""
         if not (1 <= self.batch_size <= BATCH_SIZE_MAX):
-            raise ValueError(f"batch_size must be 1–{BATCH_SIZE_MAX}, got {self.batch_size}")
+            raise ValueError(f"batch_size must be 1-{BATCH_SIZE_MAX}, got {self.batch_size}")
         if self.rps < 1:
             raise ValueError(f"rps must be >= 1, got {self.rps}")
         if self.max_retries < 1:
