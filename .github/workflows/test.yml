@@ -64,11 +64,8 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Set up Python
-        run: uv python install 3.11
-
       - name: Install project with dev deps
-        run: uv pip install --system -e ".[dev]"
+        run: uv sync --group dev
 
       - name: Run full test suite
-        run: python -m pytest -v
+        run: uv run pytest -v
