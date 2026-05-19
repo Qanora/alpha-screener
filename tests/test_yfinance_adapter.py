@@ -282,6 +282,27 @@ class TestCircuitBreaker:
         assert ticker in circuits
         assert circuits[ticker] == today + timedelta(days=1)
 
+    def test_open_circuits_cleans_up_expired_entries(self, adapter):
+        """open_circuits must clean up expired breakers before returning.
+
+        Issue #121 — the property must call _is_circuit_open on each ticker
+        (which internally cleans up expired entries) so callers never see
+        stale breakers.
+        """
+        yesterday = _utc_today() - timedelta(days=1)
+        # Manually inject an expired _skip_until entry
+        adapter._skip_until["EXPIRED"] = yesterday
+        # Also inject a valid (not yet expired) entry
+        tomorrow = _utc_today() + timedelta(days=1)
+        adapter._skip_until["ACTIVE"] = tomorrow
+
+        circuits = adapter.open_circuits
+        # Expired entry must be cleaned up
+        assert "EXPIRED" not in circuits
+        # Active entry must still be present
+        assert "ACTIVE" in circuits
+        assert circuits["ACTIVE"] == tomorrow
+
     def test_reset_all(self, adapter):
         today = _utc_today()
         for _ in range(CIRCUIT_BREAKER_THRESHOLD):
@@ -819,6 +840,42 @@ class TestPartialBatchTracking:
             assert not key.startswith("batch:")
         for key in adapter_fast._skip_until:
             assert not key.startswith("batch:")
+
+    async def test_retry_reacquires_semaphore_slot(self, adapter_fast, monkeypatch):
+        """Each retry must go through _acquire_slot to respect RPS limits.
+
+        Issue #121 — the retry policy is applied at the async level so that
+        every tenacity retry calls _call_with_slot, which acquires a fresh
+        semaphore slot.
+        """
+        acquire_count = 0
+        call_count = 0
+
+        async def counting_acquire(_self):
+            nonlocal acquire_count
+            acquire_count += 1
+            if _self._semaphore is None:
+                _self._semaphore = asyncio.Semaphore(_self.rps)
+            await _self._semaphore.acquire()
+
+        def counting_release(_self):
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.05, _self._semaphore.release)
+
+        monkeypatch.setattr(YFinanceAdapter, "_acquire_slot", counting_acquire)
+        monkeypatch.setattr(YFinanceAdapter, "_release_after_delay", counting_release)
+
+        def flaky_func():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionError("transient")
+            return {"symbol": "AAPL"}
+
+        result = await adapter_fast._rate_limited_call("AAPL", flaky_func, track_circuit=True)
+        assert result == {"symbol": "AAPL"}
+        assert call_count == 3  # 2 failures + 1 success
+        assert acquire_count == 3  # each attempt acquired a slot
 
 
 # ============================================================================
