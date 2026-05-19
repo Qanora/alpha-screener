@@ -77,6 +77,13 @@ def write_parquet(df: pl.DataFrame, category: str) -> None:
     if "dt" not in df.columns:
         raise ValueError("DataFrame must contain a 'dt' column")
 
+    # Validate and coerce dt column type
+    dt_dtype = df.schema["dt"]
+    if dt_dtype == pl.Datetime:
+        df = df.with_columns(pl.col("dt").dt.date())
+    elif dt_dtype != pl.Date:
+        raise ValueError(f"DataFrame 'dt' column must be pl.Date or pl.Datetime, got {dt_dtype!r}")
+
     # Group rows by partition key and write each group to its own directory
     for (dt_val,) in df.select("dt").unique().sort("dt").iter_rows():
         part_key = _partition_key(dt_val, category)
@@ -158,6 +165,9 @@ def archive_old_data(category: str, *, before_date: date | str) -> None:
     archive_dir = get_archive_dir(category)
     archive_dir.mkdir(parents=True, exist_ok=True)
 
+    if not data_dir.exists():
+        return  # idempotent no-op: nothing to archive
+
     for part_dir in sorted(data_dir.iterdir()):
         if not part_dir.is_dir():
             continue
@@ -195,8 +205,11 @@ def archive_old_data(category: str, *, before_date: date | str) -> None:
         dfs = [pl.read_parquet(str(f)) for f in parquet_files]
         merged = pl.concat(dfs)
 
-        # Write to archive as zstd Parquet
-        archive_file = archive_dir / f"{part_name}.parquet"
+        # Write to archive as zstd Parquet with unique timestamp suffix
+        import time
+
+        ts = int(time.time() * 1_000_000)
+        archive_file = archive_dir / f"{part_name}_{ts}.parquet"
         merged.write_parquet(archive_file, compression="zstd")
 
         # Remove the original partition directory
