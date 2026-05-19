@@ -53,14 +53,22 @@ class CircuitBreakerOpenError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _default_retry_policy():
-    """Exponential backoff: 2s, 4s, 8s, up to 60s, with 3 attempts."""
+def _default_retry_policy(
+    max_retries: int = MAX_RETRIES,
+    wait_init: float = RETRY_WAIT_INIT_S,
+    wait_max: float = RETRY_WAIT_MAX_S,
+):
+    """Exponential backoff: 2s, 4s, 8s, up to 60s.
+
+    Parameters are exposed so callers (e.g. ``YFinanceAdapter._rate_limited_call``)
+    can override with per-instance values.
+    """
     return retry(
         retry=retry_if_exception_type(
             (ConnectionError, TimeoutError, OSError, asyncio.TimeoutError, RuntimeError)
         ),
-        stop=stop_after_attempt(MAX_RETRIES),
-        wait=wait_exponential(multiplier=1, min=RETRY_WAIT_INIT_S, max=RETRY_WAIT_MAX_S),
+        stop=stop_after_attempt(max_retries),
+        wait=wait_exponential(multiplier=1, min=wait_init, max=wait_max),
         reraise=True,
     )
 
@@ -132,11 +140,19 @@ def _fetch_news(ticker: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _ohlcv_to_polars(pd_df: pd.DataFrame) -> pl.DataFrame:
+def _ohlcv_to_polars(
+    pd_df: pd.DataFrame, fallback_ticker: str | None = None
+) -> pl.DataFrame:
     """Convert yfinance download output to a tidy polars DataFrame.
 
     Handles both single-ticker (plain columns) and multi-ticker (MultiIndex columns)
     outputs from ``yf.download()``.
+
+    Args:
+        pd_df: Raw DataFrame from ``yf.download()``.
+        fallback_ticker: Ticker symbol used in the ``"ticker"`` column when
+            ``pd_df`` has plain (non-MultiIndex) columns.  Required for correct
+            output when the caller downloads a single ticker.
     """
     records: list[dict[str, Any]] = []
     columns = pd_df.columns
@@ -167,7 +183,7 @@ def _ohlcv_to_polars(pd_df: pd.DataFrame) -> pl.DataFrame:
         for idx, row in sub.iterrows():
             dt_val = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
             records.append({
-                "ticker": tickers[0] if "tickers" in dir() else "",
+                "ticker": fallback_ticker or "",
                 "dt": dt_val,
                 "open": float(row.get("Open", 0)),
                 "high": float(row.get("High", 0)),
@@ -358,7 +374,11 @@ class YFinanceAdapter:
                 f"Circuit breaker open for {ticker} — skipping for the day"
             )
 
-        retried_func = _default_retry_policy()(func)
+        retried_func = _default_retry_policy(
+            max_retries=self.max_retries,
+            wait_init=self.retry_wait_init_s,
+            wait_max=self.retry_wait_max_s,
+        )(func)
 
         await self._acquire_slot()
         try:
@@ -392,6 +412,9 @@ class YFinanceAdapter:
         downloaded via ``yf.download(threads=False)`` with rate limiting and
         exponential-backoff retry.
 
+        Circuit breaker state is tracked **per ticker** so that a healthy ticker
+        is never blocked because it shared a batch with a failing ticker.
+
         Args:
             tickers: List of ticker symbols (e.g. ``["AAPL", "GOOGL"]``).
             start_date: Start date (inclusive), ISO string or ``date``.
@@ -400,6 +423,8 @@ class YFinanceAdapter:
         Returns:
             polars DataFrame with columns: ticker, dt, open, high, low, close, volume.
         """
+        today = date.today()
+
         if end_date is None:
             end_date = date.today().isoformat()
         if isinstance(start_date, date):
@@ -407,29 +432,59 @@ class YFinanceAdapter:
         if isinstance(end_date, date):
             end_date = end_date.isoformat()
 
-        batches = self._split_batches(tickers)
+        # -- Per-ticker circuit breaker filtering -------------------------------
+        active_tickers: list[str] = []
+        for t in tickers:
+            if not self._is_circuit_open(t, today):
+                active_tickers.append(t)
+        skipped = len(tickers) - len(active_tickers)
+        if skipped > 0:
+            self._logger.warning(
+                "Skipping %d tickers with open circuit breakers", skipped
+            )
+
+        if not active_tickers:
+            return pl.DataFrame(
+                schema={
+                    "ticker": pl.Utf8, "dt": pl.Date,
+                    "open": pl.Float64, "high": pl.Float64,
+                    "low": pl.Float64, "close": pl.Float64, "volume": pl.Int64,
+                }
+            )
+
+        batches = self._split_batches(active_tickers)
         self._logger.info(
             "Downloading OHLCV for %d tickers in %d batches (batch_size=%d)",
-            len(tickers),
+            len(active_tickers),
             len(batches),
             self.batch_size,
         )
 
         results: list[pl.DataFrame] = []
         for batch in batches:
-            # Use the batch id as "ticker" for circuit breaker tracking
             batch_label = f"batch:{batch[0]}..{batch[-1]}"
             try:
                 pd_df = await self._rate_limited_call(
                     batch_label, _download_batch, batch, start_date, end_date
                 )
-                pl_df = _ohlcv_to_polars(pd_df)
+                fallback = batch[0] if len(batch) == 1 else None
+                pl_df = _ohlcv_to_polars(pd_df, fallback_ticker=fallback)
                 if pl_df.height > 0:
                     results.append(pl_df)
-            except (CircuitBreakerOpenError, RuntimeError) as e:
+                # Per-ticker success
+                for t in batch:
+                    self._record_success(t)
+            except CircuitBreakerOpenError as e:
+                self._logger.warning(
+                    "OHLCV batch %s skipped (circuit breaker): %s", batch_label, e
+                )
+            except Exception as e:
                 self._logger.warning(
                     "OHLCV batch %s failed: %s", batch_label, e
                 )
+                # Per-ticker failure tracking
+                for t in batch:
+                    self._record_failure(t, today)
 
         if not results:
             return pl.DataFrame(
@@ -463,7 +518,9 @@ class YFinanceAdapter:
             try:
                 info = await self._rate_limited_call(ticker, _fetch_ticker_info, ticker)
                 results.append(_info_to_dict(info))
-            except (CircuitBreakerOpenError, RuntimeError) as e:
+            except CircuitBreakerOpenError:
+                pass  # silently skip tickers whose breaker is open
+            except Exception as e:
                 self._logger.warning("Fundamental fetch for %s failed: %s", ticker, e)
         return results
 
@@ -487,7 +544,9 @@ class YFinanceAdapter:
                 pl_df = _earnings_to_polars(pd_df, ticker)
                 if pl_df.height > 0:
                     results.append(pl_df)
-            except (CircuitBreakerOpenError, RuntimeError) as e:
+            except CircuitBreakerOpenError:
+                pass  # silently skip tickers whose breaker is open
+            except Exception as e:
                 self._logger.warning("Earnings fetch for %s failed: %s", ticker, e)
         if not results:
             return pl.DataFrame(
@@ -518,7 +577,9 @@ class YFinanceAdapter:
                 pl_df = _insider_to_polars(pd_df, ticker)
                 if pl_df.height > 0:
                     results.append(pl_df)
-            except (CircuitBreakerOpenError, RuntimeError) as e:
+            except CircuitBreakerOpenError:
+                pass  # silently skip tickers whose breaker is open
+            except Exception as e:
                 self._logger.warning("Insider fetch for %s failed: %s", ticker, e)
         if not results:
             return pl.DataFrame(
@@ -548,7 +609,9 @@ class YFinanceAdapter:
                 pl_df = _news_to_polars(news_list, ticker)
                 if pl_df.height > 0:
                     results.append(pl_df)
-            except (CircuitBreakerOpenError, RuntimeError) as e:
+            except CircuitBreakerOpenError:
+                pass  # silently skip tickers whose breaker is open
+            except Exception as e:
                 self._logger.warning("News fetch for %s failed: %s", ticker, e)
         if not results:
             return pl.DataFrame(

@@ -298,10 +298,10 @@ class TestOhlcvToPolars:
     """yf.download DataFrame → polars OHLCV tidy format."""
 
     def test_single_ticker(self, single_ticker_ohlcv):
-        # Inject the ticker name
-        result = _ohlcv_to_polars(single_ticker_ohlcv)
+        result = _ohlcv_to_polars(single_ticker_ohlcv, fallback_ticker="AAPL")
         assert result.height == 3
         assert set(result.columns) == {"ticker", "dt", "open", "high", "low", "close", "volume"}
+        assert result["ticker"].to_list() == ["AAPL", "AAPL", "AAPL"]
         assert result["close"].to_list() == [151.5, 152.5, 153.5]
 
     def test_multi_ticker(self, multi_ticker_ohlcv):
@@ -437,7 +437,7 @@ class TestDownloadOhlcvAsync:
         # Each batch returns 3 rows; we have 2 batches (size=2), so 6 rows
         # Wait actually the fixture returns for AAPL, and we're using the same fixture
         # for all batches. Each batch gets the same 3 rows.
-        assert result.height == 6  # 2 batches × 3 rows
+        assert result.height == 6  # 2 batches x 3 rows
 
     async def test_download_empty_tickers(self, adapter_fast):
         result = await adapter_fast.download_ohlcv([], "2025-01-01", "2025-01-05")
