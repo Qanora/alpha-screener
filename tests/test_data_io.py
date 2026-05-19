@@ -151,9 +151,7 @@ class TestParquetRoundTrip:
 
     def test_write_and_read_ohlcv(self, tmp_path, sample_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(sample_df, "ohlcv")
 
@@ -172,9 +170,7 @@ class TestParquetRoundTrip:
 
     def test_write_and_read_signals(self, tmp_path, sample_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(sample_df, "signals")
 
@@ -197,9 +193,7 @@ class TestMonthlyPartition:
 
     def test_write_and_read_monthly(self, tmp_path, multi_month_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(multi_month_df, "backtest")
 
@@ -214,9 +208,7 @@ class TestMonthlyPartition:
     def test_monthly_partition_aggregates_dates(self, tmp_path, monkeypatch):
         """Multiple dates within same month land in same partition."""
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         df = pl.DataFrame(
             {
@@ -245,9 +237,7 @@ class TestScanParquet:
 
     def test_scan_returns_lazyframe(self, tmp_path, sample_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(sample_df, "ohlcv")
 
@@ -260,9 +250,7 @@ class TestScanParquet:
 
     def test_scan_with_date_filter(self, tmp_path, sample_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(sample_df, "ohlcv")
 
@@ -270,20 +258,18 @@ class TestScanParquet:
         lf = scan_parquet("ohlcv", date_filter=date(2025, 1, 2))
         result = lf.collect()
         assert result.height == 2  # AAPL + GOOGL
-        assert (result["dt"].to_list() == [date(2025, 1, 2)] * 2)
+        assert result["dt"].to_list() == [date(2025, 1, 2)] * 2
 
     def test_scan_with_polars_predicate(self, tmp_path, sample_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(sample_df, "ohlcv")
 
         lf = scan_parquet("ohlcv")
         result = lf.filter(pl.col("ticker") == "AAPL").collect()
         assert result.height == 2
-        assert (result["ticker"].to_list() == ["AAPL"] * 2)
+        assert result["ticker"].to_list() == ["AAPL"] * 2
 
 
 # ============================================================================
@@ -296,9 +282,7 @@ class TestReadParquet:
 
     def test_returns_lazyframe(self, tmp_path, sample_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(sample_df, "ohlcv")
         lf = read_parquet("ohlcv")
@@ -307,9 +291,7 @@ class TestReadParquet:
     def test_read_empty_raises_or_empty(self, tmp_path, monkeypatch):
         """Reading a category with no data should raise FileNotFoundError."""
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         with pytest.raises(FileNotFoundError):
             read_parquet("ohlcv")
@@ -325,9 +307,7 @@ class TestWriteParquet:
 
     def test_creates_parquet_files(self, tmp_path, sample_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(sample_df, "ohlcv")
 
@@ -338,9 +318,7 @@ class TestWriteParquet:
     def test_append_mode(self, tmp_path, monkeypatch):
         """Appending data to an existing partition should not lose existing data."""
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         df1 = pl.DataFrame(
             {
@@ -366,18 +344,14 @@ class TestWriteParquet:
 
     def test_rejects_unknown_category(self, tmp_path, sample_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         with pytest.raises(ValueError, match="Unknown data category"):
             write_parquet(sample_df, "random_cat")
 
     def test_rejects_missing_dt_column(self, tmp_path, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         df_no_dt = pl.DataFrame({"ticker": ["AAPL"], "value": [1.0]})
         with pytest.raises(ValueError, match="must contain a 'dt' column"):
@@ -394,9 +368,7 @@ class TestArchive:
 
     def test_archive_moves_old_partitions(self, tmp_path, multi_date_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(multi_date_df, "ohlcv")
 
@@ -418,9 +390,7 @@ class TestArchive:
 
     def test_archive_uses_zstd_compression(self, tmp_path, multi_date_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(multi_date_df, "ohlcv")
         archive_old_data("ohlcv", before_date=date(2025, 3, 1))
@@ -434,9 +404,7 @@ class TestArchive:
 
     def test_archive_noop_when_nothing_to_archive(self, tmp_path, multi_date_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(multi_date_df, "ohlcv")
 
@@ -449,9 +417,7 @@ class TestArchive:
 
     def test_archive_backtest_monthly(self, tmp_path, multi_month_df, monkeypatch):
         home = tmp_path / ".alphascreener"
-        monkeypatch.setattr(
-            "alphascreener.data.paths.get_data_home", lambda: home
-        )
+        monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
         write_parquet(multi_month_df, "backtest")
         archive_old_data("backtest", before_date=date(2025, 2, 1))

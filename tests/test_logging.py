@@ -74,6 +74,18 @@ class TestJsonFormatter:
         record = _capture_one(logging.INFO, "alpha_analysis_completed")
         assert record["event"] == "alpha_analysis_completed"
 
+    def test_handles_non_serializable_objects_in_data(self):
+        """Non-serializable objects in data are converted via default=str."""
+        from datetime import UTC, datetime
+
+        dt = datetime(2026, 1, 15, 10, 30, tzinfo=UTC)
+        record = _capture_one(
+            logging.INFO,
+            "scan_completed",
+            data={"tickers": ["AAPL"], "scanned_at": dt},
+        )
+        assert record["data"] == {"tickers": ["AAPL"], "scanned_at": str(dt)}
+
     def test_data_field_defaults_to_empty_object(self):
         record = _capture_one(logging.INFO, "test")
         assert record["data"] == {}
@@ -152,8 +164,8 @@ class TestGetLogger:
     """Module-level logger factory for screening/refining/backtesting/evolution."""
 
     @pytest.mark.parametrize("module", ["screening", "refining", "backtesting", "evolution"])
-    def test_valid_modules_return_logger(self, module):
-        logger = get_logger(module)
+    def test_valid_modules_return_logger(self, module, tmp_path):
+        logger = _fresh_get_logger(module, log_dir=str(tmp_path))
         assert isinstance(logger, logging.Logger)
         assert logger.name == module
 
@@ -161,20 +173,20 @@ class TestGetLogger:
         with pytest.raises(ValueError, match="Unknown module"):
             get_logger("invalid_module")
 
-    def test_logger_has_json_formatter(self):
-        logger = get_logger("screening")
+    def test_logger_has_json_formatter(self, tmp_path):
+        logger = _fresh_get_logger("screening", log_dir=str(tmp_path))
         assert len(logger.handlers) >= 1
         formatters = {type(h.formatter) for h in logger.handlers if h.formatter}
         assert JsonFormatter in formatters
 
-    def test_same_module_returns_same_logger(self):
-        logger1 = get_logger("screening")
-        logger2 = get_logger("screening")
+    def test_same_module_returns_same_logger(self, tmp_path):
+        logger1 = _fresh_get_logger("screening", log_dir=str(tmp_path))
+        logger2 = _fresh_get_logger("screening", log_dir=str(tmp_path))
         assert logger1 is logger2
 
-    def test_different_modules_return_different_loggers(self):
-        logger1 = get_logger("screening")
-        logger2 = get_logger("refining")
+    def test_different_modules_return_different_loggers(self, tmp_path):
+        logger1 = _fresh_get_logger("screening", log_dir=str(tmp_path))
+        logger2 = _fresh_get_logger("refining", log_dir=str(tmp_path))
         assert logger1 is not logger2
 
 
@@ -183,13 +195,15 @@ class TestGetLogger:
 # ============================================================================
 
 
-def _fresh_get_logger(
-    module: str, log_dir: str | None = None
-) -> logging.Logger:
+def _fresh_get_logger(module: str, log_dir: str | None = None) -> logging.Logger:
     """Return a get_logger result with handlers forcibly refreshed
     (needed when earlier tests have already created singleton loggers)."""
     logger = logging.getLogger(module)
-    logger.handlers.clear()
+    for handler in list(logger.handlers):
+        handler.close()
+        logger.removeHandler(handler)
+    if hasattr(logger, "_alphascreener_configured"):
+        delattr(logger, "_alphascreener_configured")
     return get_logger(module, log_dir=log_dir)
 
 
@@ -201,10 +215,7 @@ class TestLogRotation:
         log_dir = tmp_path / "logs"
         logger = _fresh_get_logger("backtesting", log_dir=str(log_dir))
 
-        file_handlers = [
-            h for h in logger.handlers
-            if isinstance(h, TimedRotatingFileHandler)
-        ]
+        file_handlers = [h for h in logger.handlers if isinstance(h, TimedRotatingFileHandler)]
         assert len(file_handlers) == 1, "Expected one TimedRotatingFileHandler"
 
         handler = file_handlers[0]
@@ -247,10 +258,7 @@ class TestLogRotation:
         log_dir = tmp_path / "mylogs"
         logger = _fresh_get_logger("refining", log_dir=str(log_dir))
 
-        file_handlers = [
-            h for h in logger.handlers
-            if isinstance(h, TimedRotatingFileHandler)
-        ]
+        file_handlers = [h for h in logger.handlers if isinstance(h, TimedRotatingFileHandler)]
         assert len(file_handlers) == 1
         assert file_handlers[0].baseFilename.startswith(str(log_dir))
 

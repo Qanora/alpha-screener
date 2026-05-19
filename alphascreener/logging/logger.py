@@ -44,7 +44,7 @@ class JsonFormatter(logging.Formatter):
             "data": getattr(record, "data", {}),
             "cost_usd": getattr(record, "cost_usd", 0.0),
         }
-        return json.dumps(entry, ensure_ascii=False)
+        return json.dumps(entry, ensure_ascii=False, default=str)
 
     @staticmethod
     def _now_iso() -> str:
@@ -70,18 +70,16 @@ def get_logger(module: str, log_dir: str | None = None) -> logging.Logger:
         and a :class:`~logging.handlers.TimedRotatingFileHandler` (30-day retention).
     """
     if module not in VALID_MODULES:
-        raise ValueError(
-            f"Unknown module: {module!r}. "
-            f"Valid modules: {sorted(VALID_MODULES)}"
-        )
+        raise ValueError(f"Unknown module: {module!r}. Valid modules: {sorted(VALID_MODULES)}")
 
     logger = logging.getLogger(module)
 
     # Guard: handlers are only attached once per logger.
-    if logger.handlers:
+    if getattr(logger, "_alphascreener_configured", False):
         return logger
 
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False
     formatter = JsonFormatter()
 
     # Console / stream handler
@@ -107,4 +105,5 @@ def get_logger(module: str, log_dir: str | None = None) -> logging.Logger:
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
+    logger._alphascreener_configured = True
     return logger
