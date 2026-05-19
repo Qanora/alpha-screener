@@ -38,27 +38,21 @@ git log -1 --oneline origin/master
 
 **验证点**：本地 master 的 HEAD 必须等于 origin/master 的 HEAD。
 
-### 3. 检查分支冲突（阻塞步骤）
+### 3. 检查分支冲突（阻塞步骤，自动清理）
 
-**检查目标分支是否已存在**：
+**检查目标分支是否已存在，若存在则自动删除**：
 
 ```bash
 BRANCH="feature/issue-<N>"
-# 检查本地
+# 自动清理本地旧分支
 if git branch | grep -q "$BRANCH"; then
-  echo "ERROR: 本地已存在分支 $BRANCH"
-  echo "请先删除旧分支: git branch -D $BRANCH"
-  exit 1
+  git branch -D "$BRANCH"
 fi
-# 检查远程
+# 自动清理远程旧分支
 if git branch -r | grep -q "origin/$BRANCH"; then
-  echo "ERROR: 远程已存在分支 $BRANCH"
-  echo "请先删除远程分支: gh api repos/Qanora/alpha-screener/git/refs/heads/$BRANCH -X DELETE"
-  exit 1
+  gh api repos/Qanora/alpha-screener/git/refs/heads/$BRANCH -X DELETE
 fi
 ```
-
-若任何检查失败，输出错误并退出，等待人工处理。
 
 ### 4. 创建新分支
 
@@ -73,10 +67,22 @@ git log -1 --oneline
 
 分支起点必须是当前 master 的 HEAD。
 
-### 5. 实现
+### 5. TDD 实现（红 → 绿循环）
 
-- 实现代码，遵循现有风格
-- 如有测试要求，编写测试
+严格遵循 TDD 模式：
+
+**5.1 写失败的测试（RED）**：
+- 根据 issue 需求，先编写测试用例
+- 测试需覆盖正常路径、边界条件、异常情况
+- 运行 `python -m pytest tests/ -v -k "<test_name>"` 验证测试失败
+
+**5.2 写实现（GREEN）**：
+- 编写最小实现代码使测试通过
+- 运行 `python -m pytest tests/ -v` 全量验证所有测试通过
+- 不通过则继续修复，直到全绿
+
+**5.3 重构（REFACTOR）**：
+- 消除重复、改善可读性，保持测试全绿
 
 ### 6. 300 行约束检查
 
@@ -90,11 +96,16 @@ git diff --shortstat origin/master
 ⚠️ 当前改动超过 300 行，建议考虑拆分为多个 issue
 ```
 
-### 7. 本地验证
+### 7. 本地验证（全部阻塞步骤）
+
+必须全部通过才能继续：
 
 ```bash
+# 代码质量
 ruff check . && ruff format --check .
-prettier --check "**/*.md" && markdownlint-cli2 "**/*.md"
+
+# 全量测试（阻塞 — 失败则修复后重试）
+python -m pytest tests/ -v
 ```
 
 ### 8. Simplify（启动新 agent）
@@ -180,10 +191,11 @@ git merge origin/master --no-edit
 - 逐条过所有 CodeRabbit 行内评论，全部修复
 - 修复所有 CI 失败
 - 不新增功能，不重构
+- 每条修复先更新对应测试（保证测试覆盖修复点），再修改代码
 
-### 4. 本地验证（同开发模式步骤 7）
+### 4. 本地验证（同开发模式步骤 7，全部阻塞）
 
-### 5. Simplify（启动新 agent，同开发模式步骤 8）
+### 5. Simplify（同开发模式步骤 8）
 
 启动一个新的 claude agent 执行 simplify skill，修复所有发现的问题。
 
@@ -217,6 +229,9 @@ Error types 同开发模式。
 - **不做任何 git 操作**：不 add、不 commit、不 push（全部由第二层负责）
 - 只做本地开发：写代码 + 验证 + simplify
 - 修复模式只修问题，不新增功能
-- 步骤 8（simplify）是阻塞步骤
-- **强制同步 master**：开发前必须 `git reset --hard origin/master`，确保基于最新代码
-- **禁止复用分支**：每次开发必须从 master 创建全新 feature 分支，若已存在同名分支则报错退出
+- **TDD 开发**：严格先写测试 → 测试失败 → 实现 → 测试通过 → 重构
+- **全量测试阻塞**：`pytest -v` 必须全部通过才能输出 HANDOFF
+- **Simplify 阻塞**：simplify 发现的问题必须全部修复
+- **强制同步 master**：开发前必须同步到最新 origin/master
+- **自动清理分支**：同名旧分支自动删除，不询问
+- **零人工中断**：遇到可自动处理的问题直接处理（分支冲突、测试失败重试等），只有真正需要人类决策的才停止
