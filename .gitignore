@@ -34,5 +34,8 @@ env/
 .coverage
 htmlcov/
 
+# Claude state tracking
+.claude/state/
+
 # Type checking
 .mypy_cache/
