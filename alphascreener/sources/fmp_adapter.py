@@ -488,7 +488,7 @@ class FmpAdapter:
             self._logger.warning(
                 "FMP fallback: yfinance earnings fetch for %s also failed: %s", ticker, e
             )
-            return pl.DataFrame()
+            return self._analyst_estimates_to_polars([])
 
     async def fetch_insider_trading(self, ticker: str, limit: int = 50) -> pl.DataFrame:
         """Fetch detailed insider trading transactions.
