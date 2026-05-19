@@ -48,9 +48,6 @@ dev = [
     "mypy>=1.8",
 ]
 
-[project.scripts]
-alphascreener = "alphascreener.cli:main"
-
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
