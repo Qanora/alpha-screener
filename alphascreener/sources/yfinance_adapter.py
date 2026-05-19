@@ -418,6 +418,18 @@ class YFinanceAdapter:
 
     # -- Core execution wrapper --------------------------------------------------
 
+    async def _call_with_slot(self, func, *args, **kwargs) -> Any:
+        """Acquire a rate-limit slot, run *func* in a thread, release after delay.
+
+        The semaphore slot is held for at least 1 s (via ``_release_after_delay``)
+        regardless of success or failure, enforcing the configured RPS ceiling.
+        """
+        await self._acquire_slot()
+        try:
+            return await asyncio.to_thread(func, *args, **kwargs)
+        finally:
+            self._release_after_delay()
+
     async def _rate_limited_call(
         self,
         ticker: str,
@@ -428,8 +440,10 @@ class YFinanceAdapter:
     ) -> Any:
         """Execute a synchronous function with rate limiting and circuit breaker.
 
-        The function ``func(*args, **kwargs)`` runs in a thread executor.
-        Circuit breaker is checked before invocation and updated on result.
+        The retry policy is applied at the **async** level (wrapping
+        ``_call_with_slot``) so that each tenacity retry re-acquires a
+        semaphore slot, respecting the configured RPS limit even during
+        backoff-and-retry cycles.
 
         Args:
             ticker: Ticker symbol used for circuit-breaker tracking.
@@ -443,15 +457,14 @@ class YFinanceAdapter:
                 f"Circuit breaker open for {ticker} — skipping for the day"
             )
 
-        retried_func = _default_retry_policy(
+        retried_call = _default_retry_policy(
             max_retries=self.max_retries,
             wait_init=self.retry_wait_init_s,
             wait_max=self.retry_wait_max_s,
-        )(func)
+        )(self._call_with_slot)
 
-        await self._acquire_slot()
         try:
-            result = await asyncio.to_thread(retried_func, *args, **kwargs)
+            result = await retried_call(func, *args, **kwargs)
             if track_circuit:
                 self._record_success(ticker)
             return result
@@ -459,8 +472,6 @@ class YFinanceAdapter:
             if track_circuit:
                 self._record_failure(ticker, today)
             raise
-        finally:
-            self._release_after_delay()
 
     # -- Batched OHLCV -----------------------------------------------------------
 
@@ -764,5 +775,11 @@ class YFinanceAdapter:
 
     @property
     def open_circuits(self) -> dict[str, date]:
-        """Return a copy of currently open circuit breakers (ticker → skip_until date)."""
+        """Return a copy of currently open circuit breakers (ticker → skip_until date).
+
+        Expired entries are cleaned up before returning so that callers only
+        see currently-active breakers.
+        """
+        for ticker in list(self._skip_until.keys()):
+            self._is_circuit_open(ticker)
         return dict(self._skip_until)
