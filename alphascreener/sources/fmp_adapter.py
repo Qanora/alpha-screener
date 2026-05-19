@@ -230,6 +230,7 @@ class FmpAdapter:
             merged_params["apikey"] = self.api_key
 
             response = await retried_get(path, params=merged_params)
+            self._track_request()
 
             # Handle rate limiting (429)
             if response.status_code == 429:
@@ -237,6 +238,7 @@ class FmpAdapter:
                 self._logger.warning("FMP rate limit (429) — waiting 60s before retry")
                 await asyncio.sleep(60)
                 response = await client.get(path, params=merged_params)
+                self._track_request()
                 if response.status_code == 429:
                     raise RuntimeError("FMP rate limit (429) persisted after 60s wait")
                 response.raise_for_status()
@@ -453,17 +455,16 @@ class FmpAdapter:
         """
         if self.is_budget_exhausted:
             self._logger.warning("FMP budget exhausted — skipping analyst estimates for %s", ticker)
-            return pl.DataFrame()
+            return self._analyst_estimates_to_polars([])
 
         try:
             response = await self._get(f"v3/analyst-estimates/{ticker}", params={"period": period})
-            self._track_request()
             data: list[dict[str, Any]] = response.json()
             if data:
                 return self._analyst_estimates_to_polars(data)
             # FMP returned empty results — fall through to yfinance fallback
         except FmpBudgetExhaustedError:
-            return pl.DataFrame()
+            return self._analyst_estimates_to_polars([])
         except Exception as e:
             self._logger.warning("FMP analyst-estimates fetch for %s failed: %s", ticker, e)
             # FMP failed — fall through to yfinance fallback
@@ -503,17 +504,16 @@ class FmpAdapter:
         """
         if self.is_budget_exhausted:
             self._logger.warning("FMP budget exhausted — skipping insider trading for %s", ticker)
-            return pl.DataFrame()
+            return self._insider_trading_to_polars([])
 
         try:
             response = await self._get(
                 "v4/insider-trading", params={"symbol": ticker, "limit": limit}
             )
-            self._track_request()
             data: list[dict[str, Any]] = response.json()
             return self._insider_trading_to_polars(data)
         except FmpBudgetExhaustedError:
-            return pl.DataFrame()
+            return self._insider_trading_to_polars([])
         except Exception as e:
             self._logger.warning("FMP insider-trading fetch for %s failed: %s", ticker, e)
             return pl.DataFrame()
@@ -532,15 +532,14 @@ class FmpAdapter:
         """
         if self.is_budget_exhausted:
             self._logger.warning("FMP budget exhausted — skipping grade for %s", ticker)
-            return pl.DataFrame()
+            return self._grade_to_polars([])
 
         try:
             response = await self._get(f"v3/grade/{ticker}", params={"limit": limit})
-            self._track_request()
             data: list[dict[str, Any]] = response.json()
             return self._grade_to_polars(data)
         except FmpBudgetExhaustedError:
-            return pl.DataFrame()
+            return self._grade_to_polars([])
         except Exception as e:
             self._logger.warning("FMP grade fetch for %s failed: %s", ticker, e)
             return pl.DataFrame()
@@ -559,18 +558,17 @@ class FmpAdapter:
         """
         if self.is_budget_exhausted:
             self._logger.warning("FMP budget exhausted — skipping stock news")
-            return pl.DataFrame()
+            return self._stock_news_to_polars([])
 
         try:
             ticker_str = ",".join(tickers)
             response = await self._get(
                 "v3/stock_news", params={"tickers": ticker_str, "limit": limit}
             )
-            self._track_request()
             data: list[dict[str, Any]] = response.json()
             return self._stock_news_to_polars(data)
         except FmpBudgetExhaustedError:
-            return pl.DataFrame()
+            return self._stock_news_to_polars([])
         except Exception as e:
             self._logger.warning("FMP stock_news fetch for %s failed: %s", tickers, e)
             return pl.DataFrame()
@@ -591,7 +589,7 @@ class FmpAdapter:
         """
         if self.is_budget_exhausted:
             self._logger.warning("FMP budget exhausted — skipping earning calendar")
-            return pl.DataFrame()
+            return self._earning_calendar_to_polars([])
 
         if isinstance(start_date, date):
             start_date = start_date.isoformat()
@@ -602,11 +600,10 @@ class FmpAdapter:
             response = await self._get(
                 "v3/earning_calendar", params={"from": start_date, "to": end_date}
             )
-            self._track_request()
             data: list[dict[str, Any]] = response.json()
             return self._earning_calendar_to_polars(data)
         except FmpBudgetExhaustedError:
-            return pl.DataFrame()
+            return self._earning_calendar_to_polars([])
         except Exception as e:
             self._logger.warning(
                 "FMP earning_calendar fetch (%s → %s) failed: %s", start_date, end_date, e
@@ -629,17 +626,16 @@ class FmpAdapter:
             self._logger.warning(
                 "FMP budget exhausted — skipping historical earning for %s", ticker
             )
-            return pl.DataFrame()
+            return self._historical_earning_to_polars([])
 
         try:
             response = await self._get(
                 f"v3/historical-earning-calendar/{ticker}", params={"limit": limit}
             )
-            self._track_request()
             data: list[dict[str, Any]] = response.json()
             return self._historical_earning_to_polars(data)
         except FmpBudgetExhaustedError:
-            return pl.DataFrame()
+            return self._historical_earning_to_polars([])
         except Exception as e:
             self._logger.warning(
                 "FMP historical-earning-calendar fetch for %s failed: %s", ticker, e

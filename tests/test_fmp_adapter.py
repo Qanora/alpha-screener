@@ -598,7 +598,11 @@ class TestBudgetTrackingAcrossRequests:
         mock_response.json.return_value = sample_analyst_estimates_json
         mock_response.raise_for_status = Mock()
 
-        with patch.object(adapter_fast, "_get", return_value=mock_response):
+        async def mock_get(*args, **kwargs):
+            adapter_fast._track_request()
+            return mock_response
+
+        with patch.object(adapter_fast, "_get", side_effect=mock_get):
             assert adapter_fast.requests_used_today == 0
             await adapter_fast.fetch_analyst_estimates("AAPL")
             assert adapter_fast.requests_used_today == 1
