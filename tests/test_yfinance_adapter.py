@@ -6,7 +6,7 @@ Issue #89: yfinance adapter.
 from __future__ import annotations
 
 import asyncio
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 import polars as pl
@@ -27,6 +27,9 @@ from alphascreener.sources.yfinance_adapter import (
     _insider_to_polars,
     _news_to_polars,
     _ohlcv_to_polars,
+    _safe_float,
+    _safe_int,
+    _utc_today,
 )
 
 # ============================================================================
@@ -232,7 +235,7 @@ class TestCircuitBreaker:
     """Circuit breaker: 3 consecutive failures → skip for the day."""
 
     def test_open_after_three_failures(self, adapter):
-        today = date.today()
+        today = _utc_today()
         ticker = "FAIL"
         assert not adapter._is_circuit_open(ticker, today)
         adapter._record_failure(ticker, today)
@@ -243,7 +246,7 @@ class TestCircuitBreaker:
         assert adapter._is_circuit_open(ticker, today)
 
     def test_reset_on_success(self, adapter):
-        today = date.today()
+        today = _utc_today()
         ticker = "RECOVER"
         adapter._record_failure(ticker, today)
         adapter._record_failure(ticker, today)
@@ -253,7 +256,7 @@ class TestCircuitBreaker:
         assert adapter._failures.get(ticker, 0) == 0
 
     def test_ttl_expiry(self, adapter):
-        today = date.today()
+        today = _utc_today()
         ticker = "EXPIRE"
         # Force 3 failures
         for _ in range(CIRCUIT_BREAKER_THRESHOLD):
@@ -271,7 +274,7 @@ class TestCircuitBreaker:
         assert not adapter._is_circuit_open(ticker, day_after)
 
     def test_open_circuits_property(self, adapter):
-        today = date.today()
+        today = _utc_today()
         ticker = "PROP"
         for _ in range(CIRCUIT_BREAKER_THRESHOLD):
             adapter._record_failure(ticker, today)
@@ -280,7 +283,7 @@ class TestCircuitBreaker:
         assert circuits[ticker] == today + timedelta(days=1)
 
     def test_reset_all(self, adapter):
-        today = date.today()
+        today = _utc_today()
         for _ in range(CIRCUIT_BREAKER_THRESHOLD):
             adapter._record_failure("A", today)
             adapter._record_failure("B", today)
@@ -646,7 +649,7 @@ class TestDateHandling:
 
         await adapter_fast.download_ohlcv(["AAPL"], "2025-01-01")
         assert len(captured_end) == 1
-        assert captured_end[0] == (date.today() + timedelta(days=1)).isoformat()
+        assert captured_end[0] == (_utc_today() + timedelta(days=1)).isoformat()
 
     async def test_end_date_adjusted_for_inclusivity(
         self, adapter_fast, single_ticker_ohlcv, monkeypatch
@@ -768,6 +771,7 @@ class TestPartialBatchTracking:
             for col, vals in zip(
                 arrays,
                 [[150.0, 151.0], [152.0, 153.0], [149.0, 150.0], [151.5, 152.5], [100000, 120000]],
+                strict=True,
             )
         }
         cols = pd.MultiIndex.from_tuples(arrays)
@@ -815,3 +819,67 @@ class TestPartialBatchTracking:
             assert not key.startswith("batch:")
         for key in adapter_fast._skip_until:
             assert not key.startswith("batch:")
+
+
+# ============================================================================
+# _safe_float / _safe_int — Issue #121 NaN-safe conversion helpers
+# ============================================================================
+
+
+class TestSafeFloat:
+    """_safe_float returns float(v) with NaN/None safety."""
+
+    def test_valid_float(self):
+        assert _safe_float(3.14) == 3.14
+        assert _safe_float(42) == 42.0
+
+    def test_none_returns_default(self):
+        assert _safe_float(None) == 0.0
+        assert _safe_float(None, default=1.0) == 1.0
+
+    def test_nan_returns_default(self):
+        assert _safe_float(float("nan")) == 0.0
+        assert _safe_float(float("nan"), default=-1.0) == -1.0
+
+    def test_pandas_na_returns_default(self):
+        assert _safe_float(pd.NA) == 0.0
+
+
+class TestSafeInt:
+    """_safe_int returns int(v) with NaN/None safety."""
+
+    def test_valid_int(self):
+        assert _safe_int(42) == 42
+        assert _safe_int(3.14) == 3
+
+    def test_none_returns_default(self):
+        assert _safe_int(None) == 0
+        assert _safe_int(None, default=5) == 5
+
+    def test_nan_returns_default(self):
+        assert _safe_int(float("nan")) == 0
+        assert _safe_int(float("nan"), default=-1) == -1
+
+    def test_pandas_na_returns_default(self):
+        assert _safe_int(pd.NA) == 0
+
+
+# ============================================================================
+# _utc_today — Issue #121 UTC date helper
+# ============================================================================
+
+
+class TestUtcToday:
+    """_utc_today returns today's date in UTC, not local timezone."""
+
+    def test_returns_date_object(self):
+        result = _utc_today()
+        assert isinstance(result, date)
+        # Must not be a datetime (should be date only)
+        assert not isinstance(result, datetime)
+
+    def test_near_utc_now(self):
+        """_utc_today should be within 1 day of actual UTC now."""
+        utc_now = datetime.now(UTC).date()
+        result = _utc_today()
+        assert abs((result - utc_now).days) <= 1
