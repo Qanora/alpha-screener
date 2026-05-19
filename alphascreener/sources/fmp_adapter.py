@@ -516,7 +516,7 @@ class FmpAdapter:
             return self._insider_trading_to_polars([])
         except Exception as e:
             self._logger.warning("FMP insider-trading fetch for %s failed: %s", ticker, e)
-            return pl.DataFrame()
+            return self._insider_trading_to_polars([])
 
     async def fetch_grade(self, ticker: str, limit: int = 20) -> pl.DataFrame:
         """Fetch analyst rating grades.
@@ -542,7 +542,7 @@ class FmpAdapter:
             return self._grade_to_polars([])
         except Exception as e:
             self._logger.warning("FMP grade fetch for %s failed: %s", ticker, e)
-            return pl.DataFrame()
+            return self._grade_to_polars([])
 
     async def fetch_stock_news(self, tickers: list[str], limit: int = 50) -> pl.DataFrame:
         """Fetch stock news for one or more tickers.
@@ -571,7 +571,7 @@ class FmpAdapter:
             return self._stock_news_to_polars([])
         except Exception as e:
             self._logger.warning("FMP stock_news fetch for %s failed: %s", tickers, e)
-            return pl.DataFrame()
+            return self._stock_news_to_polars([])
 
     async def fetch_earning_calendar(
         self, start_date: str | date, end_date: str | date
@@ -608,7 +608,7 @@ class FmpAdapter:
             self._logger.warning(
                 "FMP earning_calendar fetch (%s → %s) failed: %s", start_date, end_date, e
             )
-            return pl.DataFrame()
+            return self._earning_calendar_to_polars([])
 
     async def fetch_historical_earning_calendar(self, ticker: str, limit: int = 8) -> pl.DataFrame:
         """Fetch historical earnings calendar for a ticker.
@@ -640,7 +640,7 @@ class FmpAdapter:
             self._logger.warning(
                 "FMP historical-earning-calendar fetch for %s failed: %s", ticker, e
             )
-            return pl.DataFrame()
+            return self._historical_earning_to_polars([])
 
     # -- Bulk fetch ---------------------------------------------------------------
 

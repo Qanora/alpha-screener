@@ -435,10 +435,14 @@ class TestFmpBudgetExhaustedError:
 class TestHttpClient:
     """HTTP client creation and configuration."""
 
-    def test_client_has_api_key_header(self, adapter):
+    @pytest.mark.asyncio
+    async def test_client_has_api_key_header(self, adapter):
         client = adapter._create_client()
-        assert client.headers.get("x-api-key") == "test_key"
-        assert client.base_url == adapter.base_url
+        try:
+            assert client.headers.get("x-api-key") == "test_key"
+            assert client.base_url == adapter.base_url
+        finally:
+            await client.aclose()
 
     def test_client_base_url_trailing_slash(self):
         """Base URL should always end with a single slash."""
@@ -661,7 +665,10 @@ class TestRateLimiting:
         assert sem.locked()
 
         adapter._release_after_delay()
-        await asyncio.sleep(1.05)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (1 / adapter.rps) + 0.5
+        while sem.locked() and loop.time() < deadline:
+            await asyncio.sleep(0.01)
         assert not sem.locked()
 
 
