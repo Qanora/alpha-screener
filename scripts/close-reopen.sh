@@ -126,14 +126,18 @@ echo "Pushing $NEW_BRANCH..."
 git push origin "$NEW_BRANCH"
 
 # 先创建新 PR，成功后再关闭旧 PR 和删除旧分支
+# 从 branch 名提取 issue 编号（feature/issue-<N> 或 feature/issue-<N>-v<M>）
+if [[ "$OLD_BRANCH" =~ ^feature/issue-([0-9]+)(-v[0-9]+)?$ ]]; then
+  ISSUE_NUM="${BASH_REMATCH[1]}"
+else
+  echo "ERROR: cannot extract issue number from branch '$OLD_BRANCH' (expected feature/issue-<N>[-v<M>])"
+  exit 2
+fi
 TITLE="$COMMIT_MSG"
 
-# 从 title/commit message 提取 issue reference (closes/fixes #XX)
-ISSUE_REF=$(echo "$TITLE" | grep -oiE '(closes|fixes|resolves) #[0-9]+' || true)
-PR_BODY="Replaces PR #$OLD_PR."
-if [ -n "$ISSUE_REF" ]; then
-  PR_BODY="$(printf '%s\n\n%s' "$ISSUE_REF" "$PR_BODY")"
-fi
+PR_BODY="Closes #${ISSUE_NUM}
+
+Replaces PR #$OLD_PR."
 
 echo "Creating new PR..."
 NEW_PR=$(gh pr create --repo "$REPO" --title "$TITLE" --body "$PR_BODY" --base master)
