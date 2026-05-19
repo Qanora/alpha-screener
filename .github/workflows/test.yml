@@ -53,3 +53,22 @@ jobs:
             printf "%b\n" "$invalid"
             exit 1
           fi
+
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [gitleaks]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install project with dev deps
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run full test suite
+        run: python -m pytest -v
