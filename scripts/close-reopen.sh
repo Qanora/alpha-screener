@@ -127,10 +127,15 @@ git push origin "$NEW_BRANCH"
 
 # 先创建新 PR，成功后再关闭旧 PR 和删除旧分支
 # 从 branch 名提取 issue 编号（feature/issue-<N> 或 feature/issue-<N>-v<M>）
-ISSUE_NUM=$(echo "$OLD_BRANCH" | grep -oP 'feature/issue-\K[0-9]+' || true)
+if [[ "$OLD_BRANCH" =~ ^feature/issue-([0-9]+)(-v[0-9]+)?$ ]]; then
+  ISSUE_NUM="${BASH_REMATCH[1]}"
+else
+  echo "ERROR: cannot extract issue number from branch '$OLD_BRANCH' (expected feature/issue-<N>[-v<M>])"
+  exit 2
+fi
 TITLE="$COMMIT_MSG"
 
-PR_BODY="Closes #${ISSUE_NUM:-?}
+PR_BODY="Closes #${ISSUE_NUM}
 
 Replaces PR #$OLD_PR."
 
