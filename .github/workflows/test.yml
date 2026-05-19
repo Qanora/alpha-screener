@@ -53,3 +53,22 @@ jobs:
             printf "%b\n" "$invalid"
             exit 1
           fi
+
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [gitleaks]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Run full test suite
+        run: |
+          set -e
+          # Pin to Python 3.11 to avoid resolution failures with 3.12+ deps
+          uv python install 3.11
+          uv python pin 3.11
+          uv sync --group dev
+          uv run pytest -v
