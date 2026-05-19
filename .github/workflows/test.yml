@@ -70,5 +70,5 @@ jobs:
           # Pin to Python 3.11 to avoid resolution failures with 3.12+ deps
           uv python install 3.11
           uv python pin 3.11
-          uv sync --group dev
+          uv sync --extra dev
           uv run pytest -v
