@@ -114,7 +114,7 @@ def upgrade() -> None:
     sa.Column('lock_name', sa.Text(), nullable=False),
     sa.Column('pid', sa.Integer(), nullable=False),
     sa.Column('task_id', sa.Text(), nullable=False),
-    sa.Column('acquired_at', sa.Text(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('acquired_at', sa.Text(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.Column('expires_at', sa.Text(), nullable=False),
     sa.Column('meta_json', sa.Text(), nullable=True),
     sa.PrimaryKeyConstraint('lock_name')
@@ -131,7 +131,7 @@ def upgrade() -> None:
     sa.Column('exit_reason', sa.Text(), nullable=True),
     sa.Column('pnl_pct', sa.Float(), nullable=True),
     sa.Column('factor_version', sa.Text(), nullable=False),
-    sa.Column('created_at', sa.Text(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=True),
+    sa.Column('created_at', sa.Text(), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=True),
     sa.ForeignKeyConstraint(['factor_version'], ['factor_versions.version'], name='fk_paper_trades_factor_version'),
     sa.PrimaryKeyConstraint('id'),
     comment='Paper Trading / 实盘虚拟交易记录'

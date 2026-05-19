@@ -308,12 +308,17 @@ class TestWalMode:
             assert result == 1, f"Expected synchronous=1 (NORMAL), got {result}"
         engine.dispose()
 
-    def test_in_memory_db_does_not_crash_on_wal_pragma(self, fresh_sqlite_db):
-        """In-memory DB should silently accept WAL pragma (no-op)."""
-        with fresh_sqlite_db.connect() as conn:
-            result = conn.execute(text("PRAGMA journal_mode")).scalar()
-            # In-memory always returns 'memory'; just verify no error
-            assert result in ("memory", "wal")
+    def test_in_memory_db_does_not_crash_on_wal_pragma(self, tmp_path: Path):
+        """WAL pragma is applied via create_db_engine and does not crash."""
+        db_path = tmp_path / "test_wal.db"
+        engine = create_db_engine(str(db_path))
+        try:
+            Base.metadata.create_all(engine)
+            with engine.connect() as conn:
+                result = conn.execute(text("PRAGMA journal_mode")).scalar()
+                assert result == "wal", f"Expected WAL mode, got {result}"
+        finally:
+            engine.dispose()
 
 
 # ============================================================================
@@ -327,7 +332,7 @@ class TestDataRetentionDocumentation:
     def test_alpha_acceptance_daily_permanent_retention_documented(self):
         """alpha_acceptance_daily is permanent (small table)."""
         table = Base.metadata.tables["alpha_acceptance_daily"]
-        assert table.comment is None or "永久" in (table.comment or ""), (
+        assert table.comment is not None and "永久" in table.comment, (
             "alpha_acceptance_daily should have permanent retention documented"
         )
 
