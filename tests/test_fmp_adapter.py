@@ -466,11 +466,27 @@ class TestFetchAnalystEstimates:
             assert result.height == 2
             assert result["estimated_eps_avg"].to_list() == [2.0, 1.7]
 
-    async def test_fetch_empty_result(self, adapter_fast):
+    async def test_fetch_empty_result(self, adapter_fast, monkeypatch):
+        """When FMP returns empty data and yfinance also returns empty."""
+        import alphascreener.sources.yfinance_adapter as yf_mod
+
         mock_response = Mock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = []
         mock_response.raise_for_status = Mock()
+
+        async def mock_yf_empty(self, tickers):
+            return pl.DataFrame(
+                schema={
+                    "ticker": pl.Utf8,
+                    "earnings_date": pl.Utf8,
+                    "eps_estimate": pl.Float64,
+                    "reported_eps": pl.Float64,
+                    "surprise_pct": pl.Float64,
+                }
+            )
+
+        monkeypatch.setattr(yf_mod.YFinanceAdapter, "download_earnings_dates", mock_yf_empty)
 
         with patch.object(adapter_fast, "_get", return_value=mock_response):
             result = await adapter_fast.fetch_analyst_estimates("AAPL")
@@ -697,27 +713,58 @@ class TestYFinanceFallback:
                 "surprise_pct": [6.7],
             }
         )
+        call_args = []
 
         async def mock_yf_earnings(self, tickers):
+            call_args.append(tickers)
             return sample_earnings_df
 
         monkeypatch.setattr(yf_mod.YFinanceAdapter, "download_earnings_dates", mock_yf_earnings)
 
         result = await adapter_fast.fetch_analyst_estimates("AAPL")
-        # FMP failed, fallback to yfinance → empty is returned, but circuit breaker
-        # should record the failure (this test checks graceful degradation)
-        assert result.height == 0
+        # Fallback was exercised
+        assert len(call_args) == 1
+        assert call_args[0] == ["AAPL"]
+        # Result reflects fallback data
+        assert result.height == 1
+        assert result["ticker"].to_list() == ["AAPL"]
+        assert result["earnings_date"].to_list() == ["2025-01-30"]
 
     async def test_fmp_returns_empty_uses_yfinance_fallback(self, adapter_fast, monkeypatch):
-        """When FMP returns empty results, adapter gracefully handles it."""
+        """When FMP returns empty results, fallback to yfinance."""
+        import alphascreener.sources.yfinance_adapter as yf_mod
+
         mock_response = Mock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = []
         mock_response.raise_for_status = Mock()
 
+        # Mock yfinance fallback
+        sample_earnings_df = pl.DataFrame(
+            {
+                "ticker": ["GOOGL"],
+                "earnings_date": ["2025-02-05"],
+                "eps_estimate": [2.1],
+                "reported_eps": [2.3],
+                "surprise_pct": [9.5],
+            }
+        )
+        call_args = []
+
+        async def mock_yf_earnings(self, tickers):
+            call_args.append(tickers)
+            return sample_earnings_df
+
+        monkeypatch.setattr(yf_mod.YFinanceAdapter, "download_earnings_dates", mock_yf_earnings)
+
         with patch.object(adapter_fast, "_get", return_value=mock_response):
             result = await adapter_fast.fetch_analyst_estimates("AAPL")
-            assert result.height == 0
+            # Fallback was exercised
+            assert len(call_args) == 1
+            assert call_args[0] == ["AAPL"]
+            # Result reflects fallback data
+            assert result.height == 1
+            assert result["ticker"].to_list() == ["GOOGL"]
 
 
 # ============================================================================
@@ -738,4 +785,5 @@ class TestDateNormalization:
         """FMP datetime strings like '2025-01-20T10:30:00.000Z' parse correctly."""
         result = adapter._parse_fmp_datetime("2025-01-20T10:30:00.000Z")
         assert isinstance(result, str)
-        assert "2025" in result
+        assert result.startswith("2025-01-20")
+        assert "10:30:00" in result

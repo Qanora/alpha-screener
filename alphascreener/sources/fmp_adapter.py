@@ -459,11 +459,34 @@ class FmpAdapter:
             response = await self._get(f"v3/analyst-estimates/{ticker}", params={"period": period})
             self._track_request()
             data: list[dict[str, Any]] = response.json()
-            return self._analyst_estimates_to_polars(data)
+            if data:
+                return self._analyst_estimates_to_polars(data)
+            # FMP returned empty results — fall through to yfinance fallback
         except FmpBudgetExhaustedError:
             return pl.DataFrame()
         except Exception as e:
             self._logger.warning("FMP analyst-estimates fetch for %s failed: %s", ticker, e)
+            # FMP failed — fall through to yfinance fallback
+
+        # Fallback to yfinance when FMP is unavailable or returns empty data
+        try:
+            from alphascreener.sources.yfinance_adapter import YFinanceAdapter
+
+            yf = YFinanceAdapter()
+            result = await yf.download_earnings_dates([ticker])
+            if result.height > 0:
+                self._logger.info(
+                    "FMP fallback: yfinance returned %d earnings rows for %s",
+                    result.height,
+                    ticker,
+                )
+                return result
+            self._logger.warning("FMP fallback: yfinance returned empty earnings for %s", ticker)
+            return result
+        except Exception as e:
+            self._logger.warning(
+                "FMP fallback: yfinance earnings fetch for %s also failed: %s", ticker, e
+            )
             return pl.DataFrame()
 
     async def fetch_insider_trading(self, ticker: str, limit: int = 50) -> pl.DataFrame:
