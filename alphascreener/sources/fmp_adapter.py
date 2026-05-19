@@ -483,7 +483,7 @@ class FmpAdapter:
                 )
                 return result
             self._logger.warning("FMP fallback: yfinance returned empty earnings for %s", ticker)
-            return result
+            return self._analyst_estimates_to_polars([])
         except Exception as e:
             self._logger.warning(
                 "FMP fallback: yfinance earnings fetch for %s also failed: %s", ticker, e
