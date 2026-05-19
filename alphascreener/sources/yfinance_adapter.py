@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -136,6 +136,30 @@ def _fetch_news(ticker: str) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# NaN-safe conversion helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_float(v, default=0.0):
+    """Return float(v) or *default* when *v* is None or NaN."""
+    if v is None or pd.isna(v):
+        return default
+    return float(v)
+
+
+def _safe_int(v, default=0):
+    """Return int(v) or *default* when *v* is None or NaN."""
+    if v is None or pd.isna(v):
+        return default
+    return int(v)
+
+
+def _utc_today() -> date:
+    """Return today's date in UTC, avoiding local timezone discrepancies."""
+    return datetime.now(UTC).date()
+
+
+# ---------------------------------------------------------------------------
 # Polars helpers
 # ---------------------------------------------------------------------------
 
@@ -170,11 +194,11 @@ def _ohlcv_to_polars(pd_df: pd.DataFrame, fallback_ticker: str | None = None) ->
                     {
                         "ticker": ticker,
                         "dt": dt_val,
-                        "open": float(row.get("Open", 0)),
-                        "high": float(row.get("High", 0)),
-                        "low": float(row.get("Low", 0)),
-                        "close": float(row.get("Close", 0)),
-                        "volume": int(row.get("Volume", 0)),
+                        "open": _safe_float(row.get("Open", 0)),
+                        "high": _safe_float(row.get("High", 0)),
+                        "low": _safe_float(row.get("Low", 0)),
+                        "close": _safe_float(row.get("Close", 0)),
+                        "volume": _safe_int(row.get("Volume", 0)),
                     }
                 )
     else:
@@ -186,11 +210,11 @@ def _ohlcv_to_polars(pd_df: pd.DataFrame, fallback_ticker: str | None = None) ->
                 {
                     "ticker": fallback_ticker or "",
                     "dt": dt_val,
-                    "open": float(row.get("Open", 0)),
-                    "high": float(row.get("High", 0)),
-                    "low": float(row.get("Low", 0)),
-                    "close": float(row.get("Close", 0)),
-                    "volume": int(row.get("Volume", 0)),
+                    "open": _safe_float(row.get("Open", 0)),
+                    "high": _safe_float(row.get("High", 0)),
+                    "low": _safe_float(row.get("Low", 0)),
+                    "close": _safe_float(row.get("Close", 0)),
+                    "volume": _safe_int(row.get("Volume", 0)),
                 }
             )
 
@@ -279,7 +303,10 @@ def _news_to_polars(news_list: list[dict[str, Any]], ticker: str) -> pl.DataFram
     records = []
     for item in news_list:
         ts = item.get("providerPublishTime", 0)
-        dt_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else ""  # noqa: UP017
+        if ts is None or pd.isna(ts):
+            dt_str = ""
+        else:
+            dt_str = datetime.fromtimestamp(float(ts), tz=UTC).isoformat()
         records.append(
             {
                 "ticker": ticker,
@@ -361,7 +388,7 @@ class YFinanceAdapter:
     def _is_circuit_open(self, ticker: str, today: date | None = None) -> bool:
         """Check whether a ticker's circuit breaker is open."""
         if today is None:
-            today = date.today()
+            today = _utc_today()
         if ticker in self._skip_until:
             if today < self._skip_until[ticker]:
                 return True
@@ -373,7 +400,7 @@ class YFinanceAdapter:
     def _record_failure(self, ticker: str, today: date | None = None) -> None:
         """Record a failure for a ticker; open circuit breaker on threshold."""
         if today is None:
-            today = date.today()
+            today = _utc_today()
         self._failures[ticker] = self._failures.get(ticker, 0) + 1
         if self._failures[ticker] >= CIRCUIT_BREAKER_THRESHOLD:
             skip_until = today + timedelta(days=CIRCUIT_BREAKER_TTL_DAYS)
@@ -410,7 +437,7 @@ class YFinanceAdapter:
             track_circuit: When False, circuit-breaker success/failure tracking
                 is skipped (caller handles per-ticker tracking itself).
         """
-        today = date.today()
+        today = _utc_today()
         if track_circuit and self._is_circuit_open(ticker, today):
             raise CircuitBreakerOpenError(
                 f"Circuit breaker open for {ticker} — skipping for the day"
@@ -464,7 +491,7 @@ class YFinanceAdapter:
         Returns:
             polars DataFrame with columns: ticker, dt, open, high, low, close, volume.
         """
-        today = date.today()
+        today = _utc_today()
 
         # -- Normalize end_date to a date object -------------------------------
         if end_date is None:
