@@ -79,11 +79,11 @@ def multi_ticker_ohlcv() -> pd.DataFrame:
         "Close": {"AAPL": [151.5, 152.5], "GOOGL": [141.0, 142.0]},
         "Volume": {"AAPL": [100000, 120000], "GOOGL": [200000, 210000]},
     }
-    cols = pd.MultiIndex.from_tuples([
-        (price, ticker) for price, tickers in arrays.items() for ticker in tickers
-    ])
+    cols = pd.MultiIndex.from_tuples(
+        [(price, ticker) for price, tickers in arrays.items() for ticker in tickers]
+    )
     data = {}
-    for (price, ticker) in cols:
+    for price, ticker in cols:
         data[(price, ticker)] = arrays[price][ticker]
     return pd.DataFrame(data, index=idx)
 
@@ -174,8 +174,9 @@ class TestYFinanceAdapterInit:
         assert adapter.retry_wait_max_s == RETRY_WAIT_MAX_S  # 60.0
 
     def test_custom_values(self):
-        a = YFinanceAdapter(batch_size=10, rps=3, max_retries=5,
-                            retry_wait_init_s=1.0, retry_wait_max_s=30.0)
+        a = YFinanceAdapter(
+            batch_size=10, rps=3, max_retries=5, retry_wait_init_s=1.0, retry_wait_max_s=30.0
+        )
         assert a.batch_size == 10
         assert a.rps == 3
         assert a.max_retries == 5
@@ -423,6 +424,7 @@ class TestDownloadOhlcvAsync:
 
     async def test_download_single_ticker(self, adapter_fast, single_ticker_ohlcv, monkeypatch):
         import alphascreener.sources.yfinance_adapter as mod
+
         monkeypatch.setattr(mod, "_download_batch", lambda tickers, start, end: single_ticker_ohlcv)
 
         result = await adapter_fast.download_ohlcv(["AAPL"], "2025-01-01", "2025-01-05")
@@ -431,6 +433,7 @@ class TestDownloadOhlcvAsync:
 
     async def test_download_multiple_batches(self, adapter_fast, single_ticker_ohlcv, monkeypatch):
         import alphascreener.sources.yfinance_adapter as mod
+
         monkeypatch.setattr(mod, "_download_batch", lambda tickers, start, end: single_ticker_ohlcv)
 
         result = await adapter_fast.download_ohlcv(["A", "B", "C"], "2025-01-01", "2025-01-05")
@@ -451,6 +454,7 @@ class TestDownloadFundamentalsAsync:
 
     async def test_download_fundamentals(self, adapter_fast, sample_info, monkeypatch):
         import alphascreener.sources.yfinance_adapter as mod
+
         monkeypatch.setattr(mod, "_fetch_ticker_info", lambda t: sample_info)
 
         results = await adapter_fast.download_fundamentals(["AAPL"])
@@ -478,6 +482,7 @@ class TestDownloadEarningsAsync:
 
     async def test_download_earnings(self, adapter_fast, sample_earnings, monkeypatch):
         import alphascreener.sources.yfinance_adapter as mod
+
         monkeypatch.setattr(mod, "_fetch_earnings_dates", lambda t: sample_earnings)
 
         result = await adapter_fast.download_earnings_dates(["AAPL"])
@@ -491,6 +496,7 @@ class TestDownloadInsiderAsync:
 
     async def test_download_insider(self, adapter_fast, sample_insider, monkeypatch):
         import alphascreener.sources.yfinance_adapter as mod
+
         monkeypatch.setattr(mod, "_fetch_insider_transactions", lambda t: sample_insider)
 
         result = await adapter_fast.download_insider_transactions(["AAPL"])
@@ -504,6 +510,7 @@ class TestDownloadNewsAsync:
 
     async def test_download_news(self, adapter_fast, sample_news, monkeypatch):
         import alphascreener.sources.yfinance_adapter as mod
+
         monkeypatch.setattr(mod, "_fetch_news", lambda t: sample_news)
 
         result = await adapter_fast.download_news(["AAPL"])
@@ -515,8 +522,16 @@ class TestDownloadNewsAsync:
 class TestDownloadAllAsync:
     """Bulk download_all combines all data types."""
 
-    async def test_download_all(self, adapter_fast, single_ticker_ohlcv, sample_info,
-                                sample_earnings, sample_insider, sample_news, monkeypatch):
+    async def test_download_all(
+        self,
+        adapter_fast,
+        single_ticker_ohlcv,
+        sample_info,
+        sample_earnings,
+        sample_insider,
+        sample_news,
+        monkeypatch,
+    ):
         import alphascreener.sources.yfinance_adapter as mod
 
         monkeypatch.setattr(mod, "_download_batch", lambda tickers, start, end: single_ticker_ohlcv)
@@ -608,6 +623,7 @@ class TestDateHandling:
 
     async def test_date_objects_accepted(self, adapter_fast, single_ticker_ohlcv, monkeypatch):
         import alphascreener.sources.yfinance_adapter as mod
+
         monkeypatch.setattr(mod, "_download_batch", lambda tickers, start, end: single_ticker_ohlcv)
 
         result = await adapter_fast.download_ohlcv(
@@ -630,4 +646,172 @@ class TestDateHandling:
 
         await adapter_fast.download_ohlcv(["AAPL"], "2025-01-01")
         assert len(captured_end) == 1
-        assert captured_end[0] == date.today().isoformat()
+        assert captured_end[0] == (date.today() + timedelta(days=1)).isoformat()
+
+    async def test_end_date_adjusted_for_inclusivity(
+        self, adapter_fast, single_ticker_ohlcv, monkeypatch
+    ):
+        """end_date is documented as inclusive; yfinance treats it as exclusive.
+        The adapter must add 1 day before passing to _download_batch."""
+        import alphascreener.sources.yfinance_adapter as mod
+
+        captured: list[tuple] = []
+
+        def capture(tickers, start, end):
+            captured.append((start, end))
+            return single_ticker_ohlcv
+
+        monkeypatch.setattr(mod, "_download_batch", capture)
+
+        end = date(2025, 1, 5)
+        await adapter_fast.download_ohlcv(["AAPL"], "2025-01-01", end)
+        assert len(captured) == 1
+        assert captured[0][0] == "2025-01-01"
+        # yfinance expects exclusive end — so Jan 5 inclusive → Jan 6
+        assert captured[0][1] == "2025-01-06"
+
+        # Also test with string end_date
+        captured.clear()
+        await adapter_fast.download_ohlcv(["AAPL"], "2025-03-01", "2025-03-10")
+        assert len(captured) == 1
+        assert captured[0][0] == "2025-03-01"
+        assert captured[0][1] == "2025-03-11"
+
+
+# ============================================================================
+# __post_init__ validation — Issue #120 round 2
+# ============================================================================
+
+
+class TestPostInitValidation:
+    """Constructor must reject illegal parameter values with ValueError."""
+
+    def test_batch_size_zero_raises(self):
+        with pytest.raises(ValueError, match="batch_size must be 1"):
+            YFinanceAdapter(batch_size=0)
+
+    def test_batch_size_negative_raises(self):
+        with pytest.raises(ValueError, match="batch_size must be 1"):
+            YFinanceAdapter(batch_size=-5)
+
+    def test_batch_size_exceeds_max_raises(self):
+        with pytest.raises(ValueError, match="batch_size must be 1"):
+            YFinanceAdapter(batch_size=51)
+
+    def test_rps_zero_raises(self):
+        with pytest.raises(ValueError, match="rps must be >= 1"):
+            YFinanceAdapter(rps=0)
+
+    def test_rps_negative_raises(self):
+        with pytest.raises(ValueError, match="rps must be >= 1"):
+            YFinanceAdapter(rps=-1)
+
+    def test_max_retries_zero_raises(self):
+        with pytest.raises(ValueError, match="max_retries must be >= 1"):
+            YFinanceAdapter(max_retries=0)
+
+    def test_retry_wait_init_s_zero_raises(self):
+        with pytest.raises(ValueError, match="retry_wait_init_s must be > 0"):
+            YFinanceAdapter(retry_wait_init_s=0.0)
+
+    def test_retry_wait_init_s_negative_raises(self):
+        with pytest.raises(ValueError, match="retry_wait_init_s must be > 0"):
+            YFinanceAdapter(retry_wait_init_s=-1.0)
+
+    def test_retry_wait_max_s_less_than_init_raises(self):
+        with pytest.raises(ValueError, match="retry_wait_max_s"):
+            YFinanceAdapter(retry_wait_init_s=5.0, retry_wait_max_s=3.0)
+
+    def test_valid_custom_values_accepted(self):
+        """Ensure valid values do not raise."""
+        a = YFinanceAdapter(
+            batch_size=10,
+            rps=3,
+            max_retries=5,
+            retry_wait_init_s=1.0,
+            retry_wait_max_s=30.0,
+        )
+        assert a.batch_size == 10
+        assert a.rps == 3
+
+    def test_retry_wait_max_s_equals_init_accepted(self):
+        """retry_wait_max_s == retry_wait_init_s is allowed."""
+        a = YFinanceAdapter(retry_wait_init_s=5.0, retry_wait_max_s=5.0)
+        assert a.retry_wait_max_s == 5.0
+
+
+# ============================================================================
+# Partial batch success — per-ticker tracking
+# ============================================================================
+
+
+@pytest.mark.asyncio
+class TestPartialBatchTracking:
+    """When a batch download succeeds but returns data for only some tickers,
+    only those tickers get _record_success; the missing ones get _record_failure."""
+
+    async def test_missing_ticker_gets_failure_not_success(self, adapter_fast, monkeypatch):
+        """Batch with AAPL+GOOGL, but yfinance only returns AAPL data."""
+        import alphascreener.sources.yfinance_adapter as mod
+
+        # Build a MultiIndex DataFrame that only has AAPL
+        idx = pd.date_range("2025-01-02", periods=2, freq="B")
+        arrays = [
+            ("Open", "AAPL"),
+            ("High", "AAPL"),
+            ("Low", "AAPL"),
+            ("Close", "AAPL"),
+            ("Volume", "AAPL"),
+        ]
+        data = {
+            col: vals
+            for col, vals in zip(
+                arrays,
+                [[150.0, 151.0], [152.0, 153.0], [149.0, 150.0], [151.5, 152.5], [100000, 120000]],
+            )
+        }
+        cols = pd.MultiIndex.from_tuples(arrays)
+        aapl_only_df = pd.DataFrame(data, index=idx, columns=cols)
+
+        monkeypatch.setattr(mod, "_download_batch", lambda t, s, e: aapl_only_df)
+
+        # AAPL should succeed, GOOGL should fail
+        await adapter_fast.download_ohlcv(["AAPL", "GOOGL"], "2025-01-01", "2025-01-05")
+
+        # AAPL: success recorded → no failure counter
+        assert "AAPL" not in adapter_fast._failures
+        # GOOGL: NOT in result → failure recorded
+        assert adapter_fast._failures.get("GOOGL", 0) == 1
+
+    async def test_all_tickers_present_all_succeed(
+        self, adapter_fast, multi_ticker_ohlcv, monkeypatch
+    ):
+        """When all tickers are present in the result, all get _record_success."""
+        import alphascreener.sources.yfinance_adapter as mod
+
+        monkeypatch.setattr(mod, "_download_batch", lambda t, s, e: multi_ticker_ohlcv)
+
+        # Pre-seed a failure to make sure success clears it
+        adapter_fast._failures["AAPL"] = 2
+        adapter_fast._failures["GOOGL"] = 1
+
+        await adapter_fast.download_ohlcv(["AAPL", "GOOGL"], "2025-01-01", "2025-01-05")
+
+        assert "AAPL" not in adapter_fast._failures
+        assert "GOOGL" not in adapter_fast._failures
+
+    async def test_no_synthetic_batch_key_in_circuit_state(
+        self, adapter_fast, single_ticker_ohlcv, monkeypatch
+    ):
+        """Verify batch downloads don't leave synthetic keys in circuit state."""
+        import alphascreener.sources.yfinance_adapter as mod
+
+        monkeypatch.setattr(mod, "_download_batch", lambda t, s, e: single_ticker_ohlcv)
+
+        await adapter_fast.download_ohlcv(["AAPL"], "2025-01-01", "2025-01-05")
+
+        # No synthetic batch keys should appear
+        for key in list(adapter_fast._failures.keys()):
+            assert not key.startswith("batch:")
+        for key in adapter_fast._skip_until:
+            assert not key.startswith("batch:")

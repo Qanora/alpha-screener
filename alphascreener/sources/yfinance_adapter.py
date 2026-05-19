@@ -140,9 +140,7 @@ def _fetch_news(ticker: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _ohlcv_to_polars(
-    pd_df: pd.DataFrame, fallback_ticker: str | None = None
-) -> pl.DataFrame:
+def _ohlcv_to_polars(pd_df: pd.DataFrame, fallback_ticker: str | None = None) -> pl.DataFrame:
     """Convert yfinance download output to a tidy polars DataFrame.
 
     Handles both single-ticker (plain columns) and multi-ticker (MultiIndex columns)
@@ -168,35 +166,45 @@ def _ohlcv_to_polars(
             sub = sub.dropna(how="all")
             for idx, row in sub.iterrows():
                 dt_val = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-                records.append({
-                    "ticker": ticker,
+                records.append(
+                    {
+                        "ticker": ticker,
+                        "dt": dt_val,
+                        "open": float(row.get("Open", 0)),
+                        "high": float(row.get("High", 0)),
+                        "low": float(row.get("Low", 0)),
+                        "close": float(row.get("Close", 0)),
+                        "volume": int(row.get("Volume", 0)),
+                    }
+                )
+    else:
+        # Single ticker: plain column names
+        sub = pd_df.dropna(how="all")
+        for idx, row in sub.iterrows():
+            dt_val = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
+            records.append(
+                {
+                    "ticker": fallback_ticker or "",
                     "dt": dt_val,
                     "open": float(row.get("Open", 0)),
                     "high": float(row.get("High", 0)),
                     "low": float(row.get("Low", 0)),
                     "close": float(row.get("Close", 0)),
                     "volume": int(row.get("Volume", 0)),
-                })
-    else:
-        # Single ticker: plain column names
-        sub = pd_df.dropna(how="all")
-        for idx, row in sub.iterrows():
-            dt_val = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-            records.append({
-                "ticker": fallback_ticker or "",
-                "dt": dt_val,
-                "open": float(row.get("Open", 0)),
-                "high": float(row.get("High", 0)),
-                "low": float(row.get("Low", 0)),
-                "close": float(row.get("Close", 0)),
-                "volume": int(row.get("Volume", 0)),
-            })
+                }
+            )
 
     if not records:
         return pl.DataFrame(
-            schema={"ticker": pl.Utf8, "dt": pl.Date, "open": pl.Float64,
-                    "high": pl.Float64, "low": pl.Float64, "close": pl.Float64,
-                    "volume": pl.Int64}
+            schema={
+                "ticker": pl.Utf8,
+                "dt": pl.Date,
+                "open": pl.Float64,
+                "high": pl.Float64,
+                "low": pl.Float64,
+                "close": pl.Float64,
+                "volume": pl.Int64,
+            }
         )
 
     return pl.DataFrame(records).with_columns(pl.col("dt").cast(pl.Date))
@@ -228,13 +236,15 @@ def _earnings_to_polars(pd_df: pd.DataFrame, ticker: str) -> pl.DataFrame:
     df = pd_df.reset_index()
     records = []
     for _, row in df.iterrows():
-        records.append({
-            "ticker": ticker,
-            "earnings_date": str(row.get("Earnings Date", "")),
-            "eps_estimate": float(row.get("EPS Estimate", 0) or 0),
-            "reported_eps": float(row.get("Reported EPS", 0) or 0),
-            "surprise_pct": float(row.get("Surprise(%)", 0) or 0),
-        })
+        records.append(
+            {
+                "ticker": ticker,
+                "earnings_date": str(row.get("Earnings Date", "")),
+                "eps_estimate": float(row.get("EPS Estimate", 0) or 0),
+                "reported_eps": float(row.get("Reported EPS", 0) or 0),
+                "surprise_pct": float(row.get("Surprise(%)", 0) or 0),
+            }
+        )
     return pl.DataFrame(records)
 
 
@@ -244,15 +254,17 @@ def _insider_to_polars(pd_df: pd.DataFrame, ticker: str) -> pl.DataFrame:
         return pl.DataFrame()
     records = []
     for _, row in pd_df.iterrows():
-        records.append({
-            "ticker": ticker,
-            "insider_name": str(row.get("Insider", "")),
-            "title": str(row.get("Title", "")),
-            "transaction_type": str(row.get("Transaction", "")),
-            "shares": int(row.get("Shares", 0) or 0),
-            "value": float(row.get("Value", 0) or 0),
-            "start_date": str(row.get("Start Date", "")),
-        })
+        records.append(
+            {
+                "ticker": ticker,
+                "insider_name": str(row.get("Insider", "")),
+                "title": str(row.get("Title", "")),
+                "transaction_type": str(row.get("Transaction", "")),
+                "shares": int(row.get("Shares", 0) or 0),
+                "value": float(row.get("Value", 0) or 0),
+                "start_date": str(row.get("Start Date", "")),
+            }
+        )
     return pl.DataFrame(records)
 
 
@@ -264,14 +276,16 @@ def _news_to_polars(news_list: list[dict[str, Any]], ticker: str) -> pl.DataFram
     for item in news_list:
         ts = item.get("providerPublishTime", 0)
         dt_str = datetime.fromtimestamp(ts).isoformat() if ts else ""
-        records.append({
-            "ticker": ticker,
-            "title": str(item.get("title", "")),
-            "link": str(item.get("link", "")),
-            "publisher": str(item.get("publisher", "")),
-            "published_at": dt_str,
-            "news_type": str(item.get("type", "")),
-        })
+        records.append(
+            {
+                "ticker": ticker,
+                "title": str(item.get("title", "")),
+                "link": str(item.get("link", "")),
+                "publisher": str(item.get("publisher", "")),
+                "published_at": dt_str,
+                "news_type": str(item.get("type", "")),
+            }
+        )
     return pl.DataFrame(records)
 
 
@@ -302,6 +316,23 @@ class YFinanceAdapter:
     # -- Internal state (not user-configurable) ----------------------------------
 
     _semaphore: asyncio.Semaphore | None = field(default=None, repr=False, init=False)
+
+    def __post_init__(self) -> None:
+        """Validate constructor parameters."""
+        if not (1 <= self.batch_size <= BATCH_SIZE_MAX):
+            raise ValueError(f"batch_size must be 1–{BATCH_SIZE_MAX}, got {self.batch_size}")
+        if self.rps < 1:
+            raise ValueError(f"rps must be >= 1, got {self.rps}")
+        if self.max_retries < 1:
+            raise ValueError(f"max_retries must be >= 1, got {self.max_retries}")
+        if self.retry_wait_init_s <= 0:
+            raise ValueError(f"retry_wait_init_s must be > 0, got {self.retry_wait_init_s}")
+        if self.retry_wait_max_s < self.retry_wait_init_s:
+            raise ValueError(
+                f"retry_wait_max_s ({self.retry_wait_max_s}) must be >= "
+                f"retry_wait_init_s ({self.retry_wait_init_s})"
+            )
+
     _failures: dict[str, int] = field(default_factory=dict, repr=False, init=False)
     _skip_until: dict[str, date] = field(default_factory=dict, repr=False, init=False)
     _logger: logging.Logger = field(
@@ -361,15 +392,22 @@ class YFinanceAdapter:
         ticker: str,
         func,
         *args,
+        track_circuit: bool = True,
         **kwargs,
     ) -> Any:
         """Execute a synchronous function with rate limiting and circuit breaker.
 
         The function ``func(*args, **kwargs)`` runs in a thread executor.
         Circuit breaker is checked before invocation and updated on result.
+
+        Args:
+            ticker: Ticker symbol used for circuit-breaker tracking.
+            func: Synchronous callable to execute in a thread.
+            track_circuit: When False, circuit-breaker success/failure tracking
+                is skipped (caller handles per-ticker tracking itself).
         """
         today = date.today()
-        if self._is_circuit_open(ticker, today):
+        if track_circuit and self._is_circuit_open(ticker, today):
             raise CircuitBreakerOpenError(
                 f"Circuit breaker open for {ticker} — skipping for the day"
             )
@@ -383,10 +421,12 @@ class YFinanceAdapter:
         await self._acquire_slot()
         try:
             result = await asyncio.to_thread(retried_func, *args, **kwargs)
-            self._record_success(ticker)
+            if track_circuit:
+                self._record_success(ticker)
             return result
         except Exception:
-            self._record_failure(ticker, today)
+            if track_circuit:
+                self._record_failure(ticker, today)
             raise
         finally:
             self._release_after_delay()
@@ -395,10 +435,7 @@ class YFinanceAdapter:
 
     def _split_batches(self, tickers: list[str]) -> list[list[str]]:
         """Split ticker list into batches of ≤ ``self.batch_size``."""
-        return [
-            tickers[i : i + self.batch_size]
-            for i in range(0, len(tickers), self.batch_size)
-        ]
+        return [tickers[i : i + self.batch_size] for i in range(0, len(tickers), self.batch_size)]
 
     async def download_ohlcv(
         self,
@@ -425,12 +462,18 @@ class YFinanceAdapter:
         """
         today = date.today()
 
+        # -- Normalize end_date to a date object -------------------------------
         if end_date is None:
-            end_date = date.today().isoformat()
+            end_date = today
+        elif isinstance(end_date, str):
+            end_date = date.fromisoformat(end_date)
+
+        # yfinance treats ``end`` as exclusive, but our API contract says
+        # inclusive.  Shift forward by 1 day to keep the contract.
+        _end: str = (end_date + timedelta(days=1)).isoformat()
+
         if isinstance(start_date, date):
             start_date = start_date.isoformat()
-        if isinstance(end_date, date):
-            end_date = end_date.isoformat()
 
         # -- Per-ticker circuit breaker filtering -------------------------------
         active_tickers: list[str] = []
@@ -439,16 +482,18 @@ class YFinanceAdapter:
                 active_tickers.append(t)
         skipped = len(tickers) - len(active_tickers)
         if skipped > 0:
-            self._logger.warning(
-                "Skipping %d tickers with open circuit breakers", skipped
-            )
+            self._logger.warning("Skipping %d tickers with open circuit breakers", skipped)
 
         if not active_tickers:
             return pl.DataFrame(
                 schema={
-                    "ticker": pl.Utf8, "dt": pl.Date,
-                    "open": pl.Float64, "high": pl.Float64,
-                    "low": pl.Float64, "close": pl.Float64, "volume": pl.Int64,
+                    "ticker": pl.Utf8,
+                    "dt": pl.Date,
+                    "open": pl.Float64,
+                    "high": pl.Float64,
+                    "low": pl.Float64,
+                    "close": pl.Float64,
+                    "volume": pl.Int64,
                 }
             )
 
@@ -462,25 +507,43 @@ class YFinanceAdapter:
 
         results: list[pl.DataFrame] = []
         for batch in batches:
-            batch_label = f"batch:{batch[0]}..{batch[-1]}"
+            # Use a real ticker (not a synthetic key) for rate-limiting.
+            # Circuit-breaker tracking is handled per-ticker below so we
+            # skip it inside _rate_limited_call.
             try:
                 pd_df = await self._rate_limited_call(
-                    batch_label, _download_batch, batch, start_date, end_date
+                    batch[0],
+                    _download_batch,
+                    batch,
+                    start_date,
+                    _end,
+                    track_circuit=False,
                 )
                 fallback = batch[0] if len(batch) == 1 else None
                 pl_df = _ohlcv_to_polars(pd_df, fallback_ticker=fallback)
                 if pl_df.height > 0:
                     results.append(pl_df)
-                # Per-ticker success
+                # Per-ticker tracking: only mark success for tickers that
+                # actually appear in the returned data.
+                present_tickers: set[str] = (
+                    set(pl_df["ticker"].unique().to_list()) if pl_df.height > 0 else set()
+                )
                 for t in batch:
-                    self._record_success(t)
+                    if t in present_tickers:
+                        self._record_success(t)
+                    else:
+                        self._record_failure(t, today)
             except CircuitBreakerOpenError as e:
                 self._logger.warning(
-                    "OHLCV batch %s skipped (circuit breaker): %s", batch_label, e
+                    "OHLCV batch %s skipped (circuit breaker): %s",
+                    batch[0],
+                    e,
                 )
             except Exception as e:
                 self._logger.warning(
-                    "OHLCV batch %s failed: %s", batch_label, e
+                    "OHLCV batch %s failed: %s",
+                    batch[0],
+                    e,
                 )
                 # Per-ticker failure tracking
                 for t in batch:
@@ -489,18 +552,20 @@ class YFinanceAdapter:
         if not results:
             return pl.DataFrame(
                 schema={
-                    "ticker": pl.Utf8, "dt": pl.Date,
-                    "open": pl.Float64, "high": pl.Float64,
-                    "low": pl.Float64, "close": pl.Float64, "volume": pl.Int64,
+                    "ticker": pl.Utf8,
+                    "dt": pl.Date,
+                    "open": pl.Float64,
+                    "high": pl.Float64,
+                    "low": pl.Float64,
+                    "close": pl.Float64,
+                    "volume": pl.Int64,
                 }
             )
 
         combined = pl.concat(results)
         return combined.with_columns(pl.col("dt").cast(pl.Date))
 
-    async def download_fundamentals(
-        self, tickers: list[str]
-    ) -> list[dict[str, Any]]:
+    async def download_fundamentals(self, tickers: list[str]) -> list[dict[str, Any]]:
         """Download fundamental data (Ticker.info) for a list of tickers.
 
         Each ticker is fetched individually with rate limiting, retry, and
@@ -524,9 +589,7 @@ class YFinanceAdapter:
                 self._logger.warning("Fundamental fetch for %s failed: %s", ticker, e)
         return results
 
-    async def download_earnings_dates(
-        self, tickers: list[str]
-    ) -> pl.DataFrame:
+    async def download_earnings_dates(self, tickers: list[str]) -> pl.DataFrame:
         """Download earnings dates for a list of tickers.
 
         Each ticker is fetched individually with rate limiting, retry, and
@@ -551,16 +614,16 @@ class YFinanceAdapter:
         if not results:
             return pl.DataFrame(
                 schema={
-                    "ticker": pl.Utf8, "earnings_date": pl.Utf8,
-                    "eps_estimate": pl.Float64, "reported_eps": pl.Float64,
+                    "ticker": pl.Utf8,
+                    "earnings_date": pl.Utf8,
+                    "eps_estimate": pl.Float64,
+                    "reported_eps": pl.Float64,
                     "surprise_pct": pl.Float64,
                 }
             )
         return pl.concat(results)
 
-    async def download_insider_transactions(
-        self, tickers: list[str]
-    ) -> pl.DataFrame:
+    async def download_insider_transactions(self, tickers: list[str]) -> pl.DataFrame:
         """Download insider transactions for a list of tickers.
 
         Returns:
@@ -571,9 +634,7 @@ class YFinanceAdapter:
         results: list[pl.DataFrame] = []
         for ticker in tickers:
             try:
-                pd_df = await self._rate_limited_call(
-                    ticker, _fetch_insider_transactions, ticker
-                )
+                pd_df = await self._rate_limited_call(ticker, _fetch_insider_transactions, ticker)
                 pl_df = _insider_to_polars(pd_df, ticker)
                 if pl_df.height > 0:
                     results.append(pl_df)
@@ -584,17 +645,18 @@ class YFinanceAdapter:
         if not results:
             return pl.DataFrame(
                 schema={
-                    "ticker": pl.Utf8, "insider_name": pl.Utf8,
-                    "title": pl.Utf8, "transaction_type": pl.Utf8,
-                    "shares": pl.Int64, "value": pl.Float64,
+                    "ticker": pl.Utf8,
+                    "insider_name": pl.Utf8,
+                    "title": pl.Utf8,
+                    "transaction_type": pl.Utf8,
+                    "shares": pl.Int64,
+                    "value": pl.Float64,
                     "start_date": pl.Utf8,
                 }
             )
         return pl.concat(results)
 
-    async def download_news(
-        self, tickers: list[str]
-    ) -> pl.DataFrame:
+    async def download_news(self, tickers: list[str]) -> pl.DataFrame:
         """Download recent news for a list of tickers.
 
         Returns:
@@ -616,8 +678,11 @@ class YFinanceAdapter:
         if not results:
             return pl.DataFrame(
                 schema={
-                    "ticker": pl.Utf8, "title": pl.Utf8, "link": pl.Utf8,
-                    "publisher": pl.Utf8, "published_at": pl.Utf8,
+                    "ticker": pl.Utf8,
+                    "title": pl.Utf8,
+                    "link": pl.Utf8,
+                    "publisher": pl.Utf8,
+                    "published_at": pl.Utf8,
                     "news_type": pl.Utf8,
                 }
             )
