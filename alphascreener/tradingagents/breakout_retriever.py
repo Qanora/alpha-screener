@@ -93,6 +93,12 @@ class BreakoutCaseRetriever:
             return []
 
         query = np.array(factor_vector, dtype=np.float32).reshape(1, -1)
+        if query.shape[1] != self._index.d:
+            _logger.debug(
+                "Query dim %d != index dim %d — returning []", query.shape[1], self._index.d
+            )
+            return []
+        faiss.normalize_L2(query)
         distances, indices = self._index.search(query, min(top_k, self._index.ntotal))
 
         results: list[dict[str, Any]] = []
@@ -125,7 +131,7 @@ class BreakoutCaseRetriever:
             return
         self._initialized = True
 
-        _CASE_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+        self._parquet_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not self._parquet_path.exists():
             _logger.debug("cases.parquet not found at %s — empty library", self._parquet_path)

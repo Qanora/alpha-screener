@@ -11,6 +11,7 @@ Token budget: ≤ 2000 input / ≤ 800 output per analyst.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from collections.abc import Callable
@@ -95,16 +96,17 @@ def check_token_budget(prompt: str) -> tuple[bool, int]:
 def clamp_context_for_budget(
     context: AnalystContext, max_extra_tokens: int = 500,
 ) -> AnalystContext:
-    """Truncate long text fields in *context* to stay under token budget.
+    """Truncate long text fields in a *copy* of *context* to stay under token budget.
 
     This is a coarse prep step; the final budget check is done at prompt-
-    format time.
+    format time.  The original *context* is not modified.
     """
+    ctx = copy.copy(context)
     cap = max_extra_tokens
-    context.factor_scores_summary = truncate_context(context.factor_scores_summary, cap)
-    context.news_summary = truncate_context(context.news_summary, cap)
-    context.technical_pattern = truncate_context(context.technical_pattern, cap // 2)
-    return context
+    ctx.factor_scores_summary = truncate_context(ctx.factor_scores_summary, cap)
+    ctx.news_summary = truncate_context(ctx.news_summary, cap)
+    ctx.technical_pattern = truncate_context(ctx.technical_pattern, cap // 2)
+    return ctx
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +145,19 @@ def run_analyst(
         _logger.warning(
             "%s prompt for %s exceeds budget: %d > %d tokens",
             analyst_type,
-            context.ticker,
+            ctx.ticker,
             input_tokens,
             MAX_INPUT_TOKENS,
         )
+        return {
+            "analyst_type": analyst_type,
+            "prompt": prompt,
+            "response": "",
+            "input_tokens": input_tokens,
+            "budget_ok": False,
+            "parsed_json": None,
+            "error": f"Token budget exceeded: {input_tokens} > {MAX_INPUT_TOKENS}",
+        }
 
     # Invoke LLM with output token cap
     try:
@@ -232,6 +243,7 @@ class AnalystOrchestrator:
         """
         _logger.info("Orchestrator: starting 4-analyst run for %s", context.ticker)
 
+        ctx = copy.copy(context)
         results: dict[str, Any] = {}
         total_tokens = 0
 
@@ -240,7 +252,7 @@ class AnalystOrchestrator:
             # For breakout analyst, pre-enrich context with similar cases
             if analyst_type == "breakout":
                 similar = self._retriever.search(
-                    factor_vector=context.factor_vector or [],
+                    factor_vector=ctx.factor_vector or [],
                 )
                 results["similar_cases"] = similar
                 if similar:
@@ -249,11 +261,11 @@ class AnalystOrchestrator:
                         f"{c['ticker']}({c['date']}, sim={c['similarity']})"
                         for c in similar[:5]
                     )
-                    context.factor_scores_summary = (
-                        f"{context.factor_scores_summary}\n{cases_hint}".strip()
+                    ctx.factor_scores_summary = (
+                        f"{ctx.factor_scores_summary}\n{cases_hint}".strip()
                     )
 
-            result = run_analyst(analyst_type, context, self._invoker)
+            result = run_analyst(analyst_type, ctx, self._invoker)
             results[analyst_type] = result
             total_tokens += result.get("input_tokens", 0)
 
@@ -283,14 +295,23 @@ class AnalystOrchestrator:
         Returns:
             Same structure as :meth:`run`, but only for the selected types.
         """
+        ctx = copy.copy(context)
         results: dict[str, Any] = {"input_tokens_total": 0}
         for at in analysts:
             if at == "breakout":
                 similar = self._retriever.search(
-                    factor_vector=context.factor_vector or [],
+                    factor_vector=ctx.factor_vector or [],
                 )
                 results["similar_cases"] = similar
-            result = run_analyst(at, context, self._invoker)
+                if similar:
+                    cases_hint = "相似案例: " + ", ".join(
+                        f"{c['ticker']}({c['date']}, sim={c['similarity']})"
+                        for c in similar[:5]
+                    )
+                    ctx.factor_scores_summary = (
+                        f"{ctx.factor_scores_summary}\n{cases_hint}".strip()
+                    )
+            result = run_analyst(at, ctx, self._invoker)
             results[at] = result
             results["input_tokens_total"] += result.get("input_tokens", 0)
         return results
@@ -300,7 +321,7 @@ class AnalystOrchestrator:
 # JSON extraction helper
 # ---------------------------------------------------------------------------
 
-_JSON_PATTERN = re.compile(r"\{[\s\S]*\}")
+_JSON_PATTERN = re.compile(r"\{[\s\S]*?\}")
 
 
 def _extract_json(text: str) -> dict[str, Any]:

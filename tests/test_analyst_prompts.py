@@ -18,6 +18,7 @@ from alphascreener.tradingagents.breakout_retriever import (
 )
 from alphascreener.tradingagents.orchestrator import (
     AnalystOrchestrator,
+    _extract_json,
     build_context,
     check_token_budget,
     clamp_context_for_budget,
@@ -286,6 +287,63 @@ class TestBreakoutCaseRetriever:
         assert isinstance(results, list)
         assert results == []
 
+    # -- regression: CodeRabbit #133 ---------------------------------------------
+
+    def test_search_normalizes_query_vector(self):
+        """Query vectors are L2-normalised before search (matching index vectors)."""
+        import faiss
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            index_path = Path(tmpdir) / "faiss.index"
+            parquet_path = Path(tmpdir) / "cases.parquet"
+
+            df = pl.DataFrame(
+                {
+                    "ticker": ["AAPL", "MSFT"],
+                    "date": ["2023-05-15", "2023-06-20"],
+                    "actual_pnl": [0.135, 0.22],
+                    "f_a": [3.0, 1.0],
+                    "f_b": [4.0, 0.0],
+                }
+            )
+            df.write_parquet(str(parquet_path))
+
+            retriever = BreakoutCaseRetriever(
+                index_path=index_path,
+                parquet_path=parquet_path,
+            )
+            # Query with raw (non-normalised) vector — should still work
+            results = retriever.search([3.0, 4.0], similarity_cutoff=0.0)
+            assert len(results) >= 1
+            # The unnormalized [3,4] after L2 norm has unit length, close to AAPL's [3,4]
+            assert results[0]["ticker"] == "AAPL"
+
+    def test_search_dimension_mismatch_returns_empty(self):
+        """When query dim != index dim, search returns [] gracefully."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            index_path = Path(tmpdir) / "faiss.index"
+            parquet_path = Path(tmpdir) / "cases.parquet"
+
+            df = pl.DataFrame(
+                {
+                    "ticker": ["AAPL"],
+                    "date": ["2023-05-15"],
+                    "actual_pnl": [0.135],
+                    "f_a": [3.0],
+                    "f_b": [4.0],
+                }
+            )
+            df.write_parquet(str(parquet_path))
+
+            retriever = BreakoutCaseRetriever(
+                index_path=index_path,
+                parquet_path=parquet_path,
+            )
+            # Index has 2 dims, but we pass 3
+            results = retriever.search([1.0, 2.0, 3.0])
+            assert results == []
+
 
 # ============================================================================
 # Context builder
@@ -503,6 +561,86 @@ class TestOrchestrator:
         assert clamped.ticker == "AAPL"
         # Long fields shortened
         assert len(clamped.news_summary) < 3000 * 5
+
+    # -- regression: CodeRabbit #133 ---------------------------------------------
+
+    def test_run_selected_breakout_injects_similar_cases_into_context(self):
+        """run_selected(["breakout"]) injects similar cases hint into context,
+        matching run() behaviour."""
+        import copy
+
+        ctx = _make_context(
+            factor_vector=[0.1, 0.2, 0.3],
+            factor_scores_summary="ORIGINAL_SUMMARY",
+        )
+        orch = AnalystOrchestrator(invoker=_mock_invoker(_MOCK_BREAKOUT_JSON))
+
+        # Both should handle breakout identically (MVP: empty library)
+        run_results = orch.run(copy.copy(ctx))
+        sel_results = orch.run_selected(copy.copy(ctx), ["breakout"])
+
+        # similar_cases are present in both
+        assert "similar_cases" in run_results
+        assert "similar_cases" in sel_results
+        assert run_results["similar_cases"] == sel_results["similar_cases"]
+
+    def test_run_does_not_mutate_original_context(self):
+        """run() must not mutate the caller's AnalystContext."""
+        ctx = _make_context(
+            factor_vector=[0.1, 0.2, 0.3],
+            factor_scores_summary="ORIGINAL_SUMMARY",
+        )
+        original_summary = ctx.factor_scores_summary
+        original_ticker = ctx.ticker
+
+        orch = AnalystOrchestrator(invoker=_mock_invoker(_MOCK_BREAKOUT_JSON))
+        orch.run(ctx)
+
+        assert ctx.factor_scores_summary == original_summary
+        assert ctx.ticker == original_ticker
+
+    def test_run_selected_does_not_mutate_original_context(self):
+        """run_selected() must not mutate the caller's AnalystContext."""
+        ctx = _make_context(
+            factor_vector=[0.1, 0.2, 0.3],
+            factor_scores_summary="ORIGINAL_SUMMARY",
+        )
+        original_summary = ctx.factor_scores_summary
+
+        orch = AnalystOrchestrator(invoker=_mock_invoker(_MOCK_BREAKOUT_JSON))
+        orch.run_selected(ctx, ["breakout"])
+
+        assert ctx.factor_scores_summary == original_summary
+
+    def test_non_greedy_json_extraction(self):
+        """Multiple JSON blocks in response — only the first is extracted."""
+        text = '{"a": 1} extra text {"b": 2}'
+        result = _extract_json(text)
+        assert result == {"a": 1}
+
+    def test_run_analyst_short_circuits_on_budget_exceeded(self):
+        """When the prompt exceeds the token budget, no LLM call is made."""
+        from unittest import mock as umock
+
+        called = {"count": 0}
+
+        def mock_invoker(prompt, max_tokens):
+            called["count"] += 1
+            return '{"status": "ok"}'
+
+        ctx = _make_context()
+        # Patch estimate_tokens to force budget-exceeded path
+        with umock.patch(
+            "alphascreener.tradingagents.orchestrator.estimate_tokens",
+            return_value=MAX_INPUT_TOKENS + 1,
+        ):
+            result = run_analyst("market", ctx, mock_invoker)
+
+        assert result["budget_ok"] is False
+        assert result["response"] == ""
+        assert result["parsed_json"] is None
+        assert "Token budget exceeded" in result["error"]
+        assert called["count"] == 0
 
 
 # ============================================================================
