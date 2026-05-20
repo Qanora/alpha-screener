@@ -25,13 +25,18 @@ def create_db_engine(db_path: str | Path, *, echo: bool = False) -> Engine:
     """Create a SQLAlchemy engine with SQLite WAL mode enabled.
 
     Args:
-        db_path: Path to the SQLite database file.
+        db_path: Path to the SQLite database file, or a full ``sqlite:///`` URL.
         echo: If True, log all SQL statements.
 
     Returns:
         SQLAlchemy Engine configured for SQLite with WAL mode.
     """
-    engine = create_engine(f"sqlite:///{db_path}", echo=echo)
+    path_str = str(db_path)
+    if path_str.startswith("sqlite:///"):
+        url = path_str
+    else:
+        url = f"sqlite:///{path_str}"
+    engine = create_engine(url, echo=echo)
 
     event.listen(engine, "connect", _set_sqlite_pragmas)
 
