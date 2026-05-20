@@ -26,7 +26,7 @@ Constraints:
 from __future__ import annotations
 
 import copy
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -91,6 +91,17 @@ _COMPARISON_DIRECTION: dict[str, str] = {
 }
 
 
+def _business_days_between(start: date, end: date) -> int:
+    """Count weekdays between *start* (exclusive) and *end* (inclusive)."""
+    days = 0
+    current = start + timedelta(days=1)
+    while current <= end:
+        if current.weekday() < 5:
+            days += 1
+        current += timedelta(days=1)
+    return days
+
+
 class DynamicThreshold:
     """Manages dynamic threshold adjustments for Phase 1 hard filtering.
 
@@ -138,16 +149,13 @@ class DynamicThreshold:
         if low_t <= filter_rate < hi_t:
             return "tight"
         low_ot, hi_ot = FILTER_RATE_BANDS["over_tight"]
-        if low_ot <= filter_rate < hi_ot:
+        if low_ot <= filter_rate <= hi_ot:
             return "over_tight"
-        low_ex, hi_ex = FILTER_RATE_BANDS["extreme"]
-        if low_ex <= filter_rate <= hi_ex:
+        # extreme: >98% (strictly greater than over_tight upper bound)
+        if filter_rate > hi_ot:
             return "extreme"
         low_ol, hi_ol = FILTER_RATE_BANDS["over_loose"]
-        if low_ol <= filter_rate <= hi_ol:
-            return "over_loose"
-        # Fallback
-        if filter_rate < 0.70:
+        if filter_rate < hi_ol:
             return "over_loose"
         return "normal"
 
@@ -196,13 +204,12 @@ class DynamicThreshold:
         if direction > 0:
             ref_mag = _REFERENCE_MAGNITUDE[key]
             max_delta = MAX_RELAXATION_PCT * ref_mag
-            max_delta = max(max_delta, 1.0 * MAX_RELAXATION_PCT)
             current_cumulative = self._cumulative_relaxation.get(key, 0.0)
             allowed = max_delta - current_cumulative
-            if not force_full and allowed <= 0:
+            if allowed <= 0:
                 return 0.0
             abs_step = abs(signed_step)
-            if abs_step > allowed and not force_full:
+            if abs_step > allowed:
                 signed_step = allowed if signed_step > 0 else -allowed
 
         return signed_step
@@ -246,6 +253,23 @@ class DynamicThreshold:
                 prev = self._cumulative_relaxation.get(key, 0.0)
                 self._cumulative_relaxation[key] = prev + abs(delta)
 
+        # RSI bounds crossover guard: after tightening, if LOW > HIGH,
+        # reset both to the midpoint (50.0) to keep the interval valid.
+        if direction < 0 and self._thresholds["RSI_LOW"] > self._thresholds["RSI_HIGH"]:
+            mid = 50.0
+            self._thresholds["RSI_LOW"] = mid
+            self._thresholds["RSI_HIGH"] = mid
+            record["changes"]["RSI_LOW"] = {
+                "old": record["thresholds_before"]["RSI_LOW"],
+                "new": mid,
+                "delta": mid - record["thresholds_before"]["RSI_LOW"],
+            }
+            record["changes"]["RSI_HIGH"] = {
+                "old": record["thresholds_before"]["RSI_HIGH"],
+                "new": mid,
+                "delta": mid - record["thresholds_before"]["RSI_HIGH"],
+            }
+
         record["thresholds_after"] = dict(self._thresholds)
         return record
 
@@ -271,9 +295,9 @@ class DynamicThreshold:
         if not self._should_adjust(band):
             return band
 
-        # Cooldown check
+        # Cooldown check (trading days, excluding weekends)
         if self._last_adjustment_date is not None:
-            days_since = (ref_date - self._last_adjustment_date).days
+            days_since = _business_days_between(self._last_adjustment_date, ref_date)
             if days_since < self._cooldown_days:
                 return f"{band}: cooldown"
 

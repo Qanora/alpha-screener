@@ -823,7 +823,7 @@ class TestDynamicThreshold:
         """Total relaxation cannot exceed 30%."""
         from alphascreener.screening.threshold import MAX_RELAXATION_PCT, DynamicThreshold
 
-        dt = DynamicThreshold()
+        dt = DynamicThreshold(cooldown_days=0)
         for _ in range(10):
             dt.adjust(0.97)
         th = dt.thresholds
@@ -942,6 +942,53 @@ class TestDynamicThreshold:
         th = dt.thresholds
         assert "VOL_ANOMALY" not in th or th.get("VOL_ANOMALY") is None
         assert th["MFI_14"] < 40.0  # MFI_14 is the adjustable threshold
+
+    def test_boundary_filter_rate_070_not_over_loose(self):
+        """Filter rate exactly 0.70 is NOT over_loose (< 0.70 is)."""
+        from alphascreener.screening.threshold import DynamicThreshold
+
+        dt = DynamicThreshold()
+        result = dt.adjust(0.70)
+        assert result == "normal"
+
+    def test_boundary_filter_rate_below_070_is_over_loose(self):
+        """Filter rate below 0.70 triggers over_loose tightening."""
+        from alphascreener.screening.threshold import DynamicThreshold
+
+        dt = DynamicThreshold()
+        result = dt.adjust(0.69)
+        assert "over_loose" in result
+
+    def test_boundary_filter_rate_098_is_over_tight(self):
+        """Filter rate exactly 0.98 is over_tight (not extreme)."""
+        from alphascreener.screening.threshold import DynamicThreshold
+
+        dt = DynamicThreshold()
+        result = dt.adjust(0.98)
+        assert "over_tight" in result
+
+    def test_boundary_filter_rate_above_098_is_extreme(self):
+        """Filter rate above 0.98 triggers extreme."""
+        from alphascreener.screening.threshold import DynamicThreshold
+
+        dt = DynamicThreshold()
+        result = dt.adjust(0.99)
+        assert "extreme" in result
+
+    def test_rsi_crossover_guard_after_tighten(self):
+        """After tightening, if RSI_LOW > RSI_HIGH both reset to 50.0."""
+        from alphascreener.screening.threshold import DynamicThreshold
+
+        dt = DynamicThreshold(cooldown_days=0)
+        # Repeatedly tighten to push RSI_LOW up and RSI_HIGH down until they cross
+        for _ in range(20):
+            dt.adjust(0.50)
+        th = dt.thresholds
+        # RSI_LOW must not exceed RSI_HIGH
+        assert th["RSI_LOW"] <= th["RSI_HIGH"]
+        # If crossover was detected, both should be at or near 50.0
+        # (tightening raises RSI_LOW and lowers RSI_HIGH, so after many
+        # tighten cycles they would cross without the guard.)
 
 
 # ============================================================================
