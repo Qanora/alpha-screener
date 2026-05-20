@@ -337,6 +337,7 @@ class SyncOrchestrator:
             how="inner",
             suffix="_stooq",
         )
+        validated_count = joined["ticker"].n_unique() if joined.height > 0 else 0
 
         for col_name in fields:
             yf_col = col_name
@@ -369,10 +370,10 @@ class SyncOrchestrator:
 
         self._logger.info(
             "Stooq cross-validation: %d tickers checked, %d diffs found",
-            len(top_tickers),
+            validated_count,
             diff_count,
         )
-        return len(top_tickers), diff_count
+        return validated_count, diff_count
 
     # ------------------------------------------------------------------
     # FMP enrichment
