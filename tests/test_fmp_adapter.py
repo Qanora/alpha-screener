@@ -279,39 +279,51 @@ class TestFmpAdapterInit:
 class TestBudgetControl:
     """Daily budget tracking and exhaustion behavior."""
 
-    def test_requests_used_today_increments(self, adapter_fast):
-        adapter_fast._track_request()
+    async def test_requests_used_today_increments(self, adapter_fast):
+        await adapter_fast._reserve_budget()
         assert adapter_fast.requests_used_today == 1
-        adapter_fast._track_request()
+        await adapter_fast._reserve_budget()
         assert adapter_fast.requests_used_today == 2
 
-    def test_budget_exhausted_when_limit_reached(self, adapter_fast):
+    async def test_budget_exhausted_when_limit_reached(self, adapter_fast):
         """After using daily_budget requests, budget is exhausted."""
         for _ in range(adapter_fast.daily_budget):
-            adapter_fast._track_request()
+            await adapter_fast._reserve_budget()
         assert adapter_fast.requests_used_today == 10
         assert adapter_fast.is_budget_exhausted
 
-    def test_budget_not_exhausted_below_limit(self, adapter_fast):
+    async def test_budget_not_exhausted_below_limit(self, adapter_fast):
         for _ in range(adapter_fast.daily_budget - 1):
-            adapter_fast._track_request()
+            await adapter_fast._reserve_budget()
         assert not adapter_fast.is_budget_exhausted
 
-    def test_budget_exhaustion_raises_error(self, adapter_fast):
-        """_check_budget raises FmpBudgetExhaustedError when exhausted."""
+    async def test_budget_exhaustion_raises_error(self, adapter_fast):
+        """_reserve_budget raises FmpBudgetExhaustedError when exhausted."""
         for _ in range(adapter_fast.daily_budget):
-            adapter_fast._track_request()
+            await adapter_fast._reserve_budget()
         with pytest.raises(FmpBudgetExhaustedError, match="FMP daily budget exhausted"):
-            adapter_fast._check_budget()
+            await adapter_fast._reserve_budget()
 
-    def test_reset_budget(self, adapter_fast):
+    async def test_reset_budget(self, adapter_fast):
         """reset_budget clears the counter."""
         for _ in range(adapter_fast.daily_budget):
-            adapter_fast._track_request()
+            await adapter_fast._reserve_budget()
         assert adapter_fast.is_budget_exhausted
         adapter_fast.reset_budget()
         assert adapter_fast.requests_used_today == 0
         assert not adapter_fast.is_budget_exhausted
+
+    async def test_concurrent_budget_reserve(self, adapter_fast):
+        """Concurrent _reserve_budget calls must not exceed budget atomically."""
+        n = min(5, adapter_fast.daily_budget)
+
+        async def reserve_one():
+            await adapter_fast._reserve_budget()
+
+        tasks = [reserve_one() for _ in range(n)]
+        await asyncio.gather(*tasks)
+
+        assert adapter_fast.requests_used_today == n
 
 
 # ============================================================================
@@ -499,7 +511,7 @@ class TestFetchAnalystEstimates:
     async def test_budget_exhausted_returns_empty(self, adapter_fast):
         """When budget is exhausted, fetch returns empty DataFrame."""
         for _ in range(adapter_fast.daily_budget):
-            adapter_fast._track_request()
+            await adapter_fast._reserve_budget()
 
         result = await adapter_fast.fetch_analyst_estimates("AAPL")
         assert result.height == 0
@@ -603,7 +615,7 @@ class TestBudgetTrackingAcrossRequests:
         mock_response.raise_for_status = Mock()
 
         async def mock_get(*args, **kwargs):
-            adapter_fast._track_request()
+            await adapter_fast._reserve_budget()
             return mock_response
 
         with patch.object(adapter_fast, "_get", side_effect=mock_get):
@@ -624,7 +636,7 @@ class TestBudgetTrackingAcrossRequests:
         with patch.object(adapter_fast, "_get", return_value=mock_response):
             # Use up budget completely
             for _ in range(adapter_fast.daily_budget):
-                adapter_fast._track_request()
+                await adapter_fast._reserve_budget()
             assert adapter_fast.is_budget_exhausted
 
             result = await adapter_fast.fetch_analyst_estimates("AAPL")
@@ -736,10 +748,11 @@ class TestYFinanceFallback:
         # Fallback was exercised
         assert len(call_args) == 1
         assert call_args[0] == ["AAPL"]
-        # Result reflects fallback data
+        # Result uses FMP schema after conversion
         assert result.height == 1
         assert result["ticker"].to_list() == ["AAPL"]
-        assert result["earnings_date"].to_list() == ["2025-01-30"]
+        assert result["date"].to_list() == ["2025-01-30"]
+        assert result["estimated_eps_avg"].to_list() == [1.5]
 
     async def test_fmp_returns_empty_uses_yfinance_fallback(self, adapter_fast, monkeypatch):
         """When FMP returns empty results, fallback to yfinance."""
@@ -773,9 +786,11 @@ class TestYFinanceFallback:
             # Fallback was exercised
             assert len(call_args) == 1
             assert call_args[0] == ["AAPL"]
-            # Result reflects fallback data
+            # Result uses FMP schema after conversion
             assert result.height == 1
             assert result["ticker"].to_list() == ["GOOGL"]
+            assert result["date"].to_list() == ["2025-02-05"]
+            assert result["estimated_eps_avg"].to_list() == [2.1]
 
 
 # ============================================================================

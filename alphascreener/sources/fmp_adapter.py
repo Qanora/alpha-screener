@@ -104,6 +104,7 @@ class FmpAdapter:
     _semaphore: asyncio.Semaphore | None = field(default=None, repr=False, init=False)
     _request_count: int = field(default=0, repr=False, init=False)
     _budget_date: date | None = field(default=None, repr=False, init=False)
+    _budget_lock: asyncio.Lock | None = field(default=None, repr=False, init=False)
     _client: httpx.AsyncClient | None = field(default=None, repr=False, init=False)
     _logger: logging.Logger = field(
         default_factory=lambda: get_logger("screening"), repr=False, init=False
@@ -138,17 +139,22 @@ class FmpAdapter:
             self._request_count = 0
             self._budget_date = today
 
-    def _track_request(self) -> None:
-        """Increment the daily request counter."""
-        self._check_date()
-        self._request_count += 1
+    async def _reserve_budget(self) -> None:
+        """Atomically check budget and increment the daily request counter.
 
-    def _check_budget(self) -> None:
-        """Raise :class:`FmpBudgetExhaustedError` if the daily budget is exhausted."""
-        self._check_date()
-        if self._request_count >= self.daily_budget:
-            msg = f"FMP daily budget exhausted: {self._request_count}/{self.daily_budget}"
-            raise FmpBudgetExhaustedError(msg)
+        Raises :class:`FmpBudgetExhaustedError` if the daily budget is exhausted.
+
+        Uses an :class:`asyncio.Lock` so that concurrent callers cannot race
+        past the daily budget limit.
+        """
+        if self._budget_lock is None:
+            self._budget_lock = asyncio.Lock()
+        async with self._budget_lock:
+            self._check_date()
+            if self._request_count >= self.daily_budget:
+                msg = f"FMP daily budget exhausted: {self._request_count}/{self.daily_budget}"
+                raise FmpBudgetExhaustedError(msg)
+            self._request_count += 1
 
     @property
     def requests_used_today(self) -> int:
@@ -214,7 +220,7 @@ class FmpAdapter:
         Returns:
             The httpx Response object.
         """
-        self._check_budget()
+        await self._reserve_budget()
 
         await self._acquire_slot()
         try:
@@ -230,15 +236,13 @@ class FmpAdapter:
             merged_params["apikey"] = self.api_key
 
             response = await retried_get(path, params=merged_params)
-            self._track_request()
 
             # Handle rate limiting (429)
             if response.status_code == 429:
                 # Retry with a fixed 60s wait (Free tier rate limit window)
                 self._logger.warning("FMP rate limit (429) — waiting 60s before retry")
                 await asyncio.sleep(60)
-                response = await client.get(path, params=merged_params)
-                self._track_request()
+                response = await retried_get(path, params=merged_params)
                 if response.status_code == 429:
                     raise RuntimeError("FMP rate limit (429) persisted after 60s wait")
                 response.raise_for_status()
@@ -421,6 +425,48 @@ class FmpAdapter:
             )
         return pl.DataFrame(records)
 
+    @staticmethod
+    def _yfinance_earnings_to_analyst_estimates(
+        yf_df: pl.DataFrame, ticker: str
+    ) -> pl.DataFrame:
+        """Convert yfinance earnings_dates DataFrame to FMP analyst_estimates schema.
+
+        yfinance earnings_dates columns:
+          ticker, earnings_date, eps_estimate, reported_eps, surprise_pct
+
+        FMP analyst_estimates columns:
+          ticker, date, estimated_revenue_avg, estimated_eps_avg,
+          estimated_eps_high, estimated_eps_low, estimated_ebitda_avg
+
+        Columns that have no yfinance equivalent are filled with null/None.
+        """
+        if yf_df.height == 0:
+            return pl.DataFrame(
+                schema={
+                    "ticker": pl.Utf8,
+                    "date": pl.Utf8,
+                    "estimated_revenue_avg": pl.Float64,
+                    "estimated_eps_avg": pl.Float64,
+                    "estimated_eps_high": pl.Float64,
+                    "estimated_eps_low": pl.Float64,
+                    "estimated_ebitda_avg": pl.Float64,
+                }
+            )
+        records = []
+        for row in yf_df.iter_rows(named=True):
+            records.append(
+                {
+                    "ticker": row.get("ticker", ticker),
+                    "date": str(row.get("earnings_date", "")),
+                    "estimated_revenue_avg": None,
+                    "estimated_eps_avg": float(row.get("eps_estimate", 0) or 0),
+                    "estimated_eps_high": None,
+                    "estimated_eps_low": None,
+                    "estimated_ebitda_avg": None,
+                }
+            )
+        return pl.DataFrame(records)
+
     # -- Date helpers ------------------------------------------------------------
 
     @staticmethod
@@ -481,7 +527,7 @@ class FmpAdapter:
                     result.height,
                     ticker,
                 )
-                return result
+                return self._yfinance_earnings_to_analyst_estimates(result, ticker)
             self._logger.warning("FMP fallback: yfinance returned empty earnings for %s", ticker)
             return self._analyst_estimates_to_polars([])
         except Exception as e:
@@ -648,7 +694,7 @@ class FmpAdapter:
         """Fetch all FMP data for a single ticker (used for precision screening Top 20).
 
         Returns:
-            Dict with keys: analyst_estimates, insider_trading, grade, news,
+            Dict with keys: analyst_estimates, insider_trading, grade,
             historical_earnings.
         """
         analyst, insider, grade, historical = await asyncio.gather(
