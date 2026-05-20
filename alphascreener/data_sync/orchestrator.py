@@ -27,7 +27,7 @@ import polars as pl
 from alphascreener.data import write_parquet
 from alphascreener.logging import get_logger
 from alphascreener.sources.fmp_adapter import FmpAdapter, FmpBudgetExhaustedError
-from alphascreener.sources.stooq_adapter import StooqAdapter, _normalize_ticker_for_stooq
+from alphascreener.sources.stooq_adapter import StooqAdapter
 from alphascreener.sources.yfinance_adapter import YFinanceAdapter
 
 # ---------------------------------------------------------------------------
@@ -305,7 +305,7 @@ class SyncOrchestrator:
         )
 
         # Map standard tickers to Stooq format
-        stooq_tickers = [_normalize_ticker_for_stooq(t) for t in top_tickers]
+        stooq_tickers = [t.lower() for t in top_tickers]
 
         try:
             stooq_df = await self.stooq.fetch_ohlcv_batch(
