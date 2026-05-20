@@ -2,7 +2,7 @@
 
 Reference: PRD 7.7.1 - monthly_universe_refresh 任务逻辑:
   - 每月1日更新 SP500 + Russell 1000 白名单
-  - 缓存 universe_meta.parquet（sector/industry/市值等）
+  - 缓存 universe_meta.parquet (sector/industry/市值等)
 """
 
 from __future__ import annotations

@@ -91,6 +91,12 @@ def build_whitelist(
     Returns:
         Union set of all tickers from both indices.
     """
+    if fetcher_sp500 is None and fetcher_russell is None:
+        raise ValueError(
+            "At least one fetcher must be provided "
+            "(fetcher_sp500 or fetcher_russell)"
+        )
+
     sp500: set[str] = set()
     russell: set[str] = set()
 

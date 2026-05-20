@@ -169,10 +169,10 @@ class TestPreFilter:
         # Increase volume threshold to 25M — should filter out more
         result = pre_filter(candidate_df, min_dollar_volume=25_000_000)
         tickers = result["ticker"].to_list()
-        # CHEAP had 15M volume, LOWVOL 18M, so both fail. SMALL has 25M exactly, passes.
+        # CHEAP had 15M volume, LOWVOL 18M, so both fail. SMALL at 25M is not > 25M, so also fails.
         assert "LOWVOL" not in tickers
         assert "CHEAP" not in tickers
-        assert "SMALL" in tickers  # 25M >= 25M
+        assert "SMALL" not in tickers  # 25M is not strictly > 25M
 
 
 # ============================================================================

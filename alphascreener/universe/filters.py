@@ -21,17 +21,17 @@ DEFAULT_MIN_DAYS_LISTED: int = 252  # ~12 trading months
 
 def _filter_dollar_volume(df: pl.DataFrame, threshold: float) -> pl.DataFrame:
     """avg_dollar_volume_20d > threshold."""
-    return df.filter(pl.col("avg_dollar_volume_20d") >= threshold)
+    return df.filter(pl.col("avg_dollar_volume_20d") > threshold)
 
 
 def _filter_market_cap(df: pl.DataFrame, threshold: float) -> pl.DataFrame:
     """market_cap > threshold."""
-    return df.filter(pl.col("market_cap") >= threshold)
+    return df.filter(pl.col("market_cap") > threshold)
 
 
 def _filter_price(df: pl.DataFrame, threshold: float) -> pl.DataFrame:
     """last_price > threshold."""
-    return df.filter(pl.col("last_price") >= threshold)
+    return df.filter(pl.col("last_price") > threshold)
 
 
 def _filter_days_listed(df: pl.DataFrame, min_days: int) -> pl.DataFrame:
@@ -55,9 +55,9 @@ def pre_filter(
     """Apply all pre-filter conditions in a single pass.
 
     Returns only tickers that pass ALL conditions:
-      - avg_dollar_volume_20d >= min_dollar_volume
-      - market_cap >= min_market_cap
-      - last_price >= min_price
+      - avg_dollar_volume_20d > min_dollar_volume
+      - market_cap > min_market_cap
+      - last_price > min_price
       - days_listed >= min_days_listed
       - status is "Active" (case-insensitive)
 
