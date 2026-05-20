@@ -7,12 +7,56 @@ Five adapter modules wrap the TradingAgents public API so the rest of the
 codebase never imports from ``tradingagents.*`` directly.
 """
 
+from alphascreener.tradingagents.ablation import (
+    ABLATION_PASS_THRESHOLD,
+    DEFAULT_K,
+    DEFAULT_WINDOW_TRADING_DAYS,
+    HARD_BLOCK_TAGS,
+    AblationConfig,
+    AblationDecision,
+    AblationEntry,
+    AblationTracker,
+    build_outcomes_from_ohlcv,
+    compute_ablation_decision,
+    compute_base_rate,
+    compute_delta_lift,
+    compute_lift_at_k,
+    compute_precision_at_k,
+    compute_refined_score_llm,
+    compute_refined_score_pure,
+    compute_risk_filter,
+    create_ablation_tracker,
+)
 from alphascreener.tradingagents.analyst_adapter import (
     create_analyst,
     create_fundamentals_analyst,
     create_market_analyst,
     create_news_analyst,
     create_sentiment_analyst,
+)
+from alphascreener.tradingagents.breakout_retriever import (
+    BreakoutCaseRetriever,
+)
+from alphascreener.tradingagents.bull_bear_pipeline import (
+    ALLOWED_RISK_TAGS,
+    BEAR_PROMPT,
+    BEAR_RESEARCHER_SYSTEM,
+    BULL_PROMPT,
+    BULL_RESEARCHER_SYSTEM,
+    PM_PROMPT,
+    PM_SYSTEM,
+    SCORE_1_05_REQUIREMENTS,
+    SCORE_CORRECTION_MAX,
+    SCORE_CORRECTION_MIN,
+    BatchConfig,
+    BreakoutAssessment,
+    BullBearContext,
+    FinalRating,
+    PortfolioManagerPrompt,
+    ResearcherPrompt,
+    build_bull_bear_context,
+    run_bull_bear_pm,
+    run_pipeline_batch,
 )
 from alphascreener.tradingagents.dataflow_adapter import (
     TOOLS_CATEGORIES,
@@ -54,40 +98,16 @@ from alphascreener.tradingagents.llm_adapter import (
     create_llm_client,
     create_llm_client_safe,
 )
-from alphascreener.tradingagents.breakout_retriever import (
-    BreakoutCaseRetriever,
-)
 from alphascreener.tradingagents.orchestrator import (
     AnalystOrchestrator,
     build_context,
     check_token_budget,
     run_analyst,
 )
-from alphascreener.tradingagents.bull_bear_pipeline import (
-    ALLOWED_RISK_TAGS,
-    BULL_PROMPT,
-    BEAR_PROMPT,
-    PM_PROMPT,
-    BULL_RESEARCHER_SYSTEM,
-    BEAR_RESEARCHER_SYSTEM,
-    PM_SYSTEM,
-    SCORE_CORRECTION_MIN,
-    SCORE_CORRECTION_MAX,
-    SCORE_1_05_REQUIREMENTS,
-    BatchConfig,
-    BreakoutAssessment,
-    BullBearContext,
-    FinalRating,
-    PortfolioManagerPrompt,
-    ResearcherPrompt,
-    build_bull_bear_context,
-    run_bull_bear_pm,
-    run_pipeline_batch,
-)
 from alphascreener.tradingagents.prompts import (
+    ANALYST_PROMPTS,
     MAX_INPUT_TOKENS,
     MAX_OUTPUT_TOKENS,
-    ANALYST_PROMPTS,
     AnalystContext,
     AnalystPromptTemplate,
     BreakoutAnalystPrompt,
@@ -184,4 +204,23 @@ __all__ = [
     "SignalProcessor",
     "TradingAgentsGraph",
     "create_graph",
+    # Ablation dual-track (Issue #99)
+    "ABLATION_PASS_THRESHOLD",
+    "DEFAULT_K",
+    "DEFAULT_WINDOW_TRADING_DAYS",
+    "HARD_BLOCK_TAGS",
+    "AblationConfig",
+    "AblationDecision",
+    "AblationEntry",
+    "AblationTracker",
+    "build_outcomes_from_ohlcv",
+    "compute_ablation_decision",
+    "compute_base_rate",
+    "compute_delta_lift",
+    "compute_lift_at_k",
+    "compute_precision_at_k",
+    "compute_refined_score_llm",
+    "compute_refined_score_pure",
+    "compute_risk_filter",
+    "create_ablation_tracker",
 ]
