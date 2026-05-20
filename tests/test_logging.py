@@ -18,13 +18,22 @@ from alphascreener.logging import VALID_MODULES, JsonFormatter, get_logger
 # ============================================================================
 
 
+_test_counter = 0
+
+
 def _capture_one(level: int, msg: str, *, logger_name: str = "test", **extra) -> dict:
     """Emit a single log record and return the parsed JSON dict."""
+    global _test_counter
+    _test_counter += 1
+    # Use a unique logger per call to avoid interference from pre-configured
+    # loggers (e.g. "screening" configured by get_logger during module import).
+    unique_name = f"{logger_name}_{_test_counter}"
+
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(JsonFormatter())
 
-    logger = logging.getLogger(logger_name)
+    logger = logging.getLogger(unique_name)
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
     logger.addHandler(handler)
@@ -69,7 +78,7 @@ class TestJsonFormatter:
 
     def test_module_field_from_logger_name(self):
         record = _capture_one(logging.INFO, "scan_completed", logger_name="screening")
-        assert record["module"] == "screening"
+        assert record["module"].startswith("screening")
 
     def test_event_field_from_message(self):
         record = _capture_one(logging.INFO, "alpha_analysis_completed")
