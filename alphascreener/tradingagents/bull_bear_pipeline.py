@@ -40,7 +40,7 @@ class FinalRating(str, Enum):
 
 
 # Canonical set of risk tags accepted by the system.
-_ALLOWED_RISK_TAGS: frozenset[str] = frozenset(
+ALLOWED_RISK_TAGS: frozenset[str] = frozenset(
     {
         "momentum_breakdown",
         "volume_divergence",
@@ -157,7 +157,7 @@ class BreakoutAssessment(BaseModel):
         """Filter out illegal risk tags, keeping only canonical values (PRD 4.5.5)."""
         if not v:
             return []
-        filtered = [t for t in v if t in _ALLOWED_RISK_TAGS]
+        filtered = [t for t in v if t in ALLOWED_RISK_TAGS]
         removed = len(v) - len(filtered)
         if removed:
             _logger.debug("Filtered %d illegal risk tags", removed)
@@ -497,7 +497,7 @@ PM_PROMPT = PortfolioManagerPrompt()
 # 6. Invoker protocol
 # ============================================================================
 
-Invoker = Any  # callable (system_prompt: str, max_output_tokens: int) -> str
+Invoker = Any  # callable (system_prompt: str, max_output_tokens: int) -> tuple[str, int, int]
 
 # ============================================================================
 # 7. JSON extraction & retry (PRD 4.5.5)
@@ -579,8 +579,17 @@ def _validate_pm_result(
     parsed: dict[str, Any],
     bull_score: float = 50.0,
     bear_score: float = 50.0,
+    phase1_pass: bool = True,
 ) -> dict[str, Any]:
-    """Validate and fill defaults for PM output (PRD 4.5.5)."""
+    """Validate and fill defaults for PM output (PRD 4.5.5).
+
+    Args:
+        parsed: Raw PM JSON output.
+        bull_score: Bull researcher score (for triple-condition check).
+        bear_score: Bear researcher score (for triple-condition check).
+        phase1_pass: Whether Phase 1 hard filters passed (from context,
+            *not* from PM JSON).
+    """
     validation_errors: list[str] = []
 
     # score_correction: clamp to [0.90, 1.05]
@@ -592,32 +601,12 @@ def _validate_pm_result(
         )
         if float(raw_correction) != score_correction:
             validation_errors.append(
-                f"score_correction {raw_correction} clamped to {score_correction}"
+                "score_correction {} clamped to {}".format(raw_correction, score_correction)
             )
     else:
         validation_errors.append(
-            f"score_correction missing or wrong type, defaulting to 1.00"
+            "score_correction missing or wrong type, defaulting to 1.00"
         )
-
-    # Check triple condition for 1.05
-    if (
-        score_correction >= 1.05
-        and not (
-            bull_score >= 70 and bear_score <= 40
-        )
-    ):
-        raw_catalyst = parsed.get("catalyst_consistency", 50)
-        catalyst_ok = (
-            isinstance(raw_catalyst, (int, float))
-            and float(raw_catalyst) >= 60
-        )
-        if not catalyst_ok:
-            if score_correction == 1.05:
-                validation_errors.append(
-                    "score_correction=1.05 rejected: triple condition not met "
-                    f"(bull={bull_score}, bear={bear_score})"
-                )
-                score_correction = 1.04
 
     # breakout_probability: clamp to [0, 100]
     breakout_prob: float = 50.0
@@ -635,27 +624,8 @@ def _validate_pm_result(
     )
     if raw_rating not in valid_ratings:
         validation_errors.append(
-            f"final_rating {raw_rating!r} invalid, defaulting to Hold"
+            "final_rating {!r} invalid, defaulting to Hold".format(raw_rating)
         )
-
-    # Phase 1 override
-    if not parsed.get("phase1_pass", True):
-        final_rating = "Avoid"
-        breakout_prob = min(breakout_prob, 30.0)
-
-    # risk_tags: filter to canonical set
-    raw_tags: list[str] = parsed.get("risk_tags", [])
-    if not isinstance(raw_tags, list):
-        raw_tags = []
-    risk_tags: list[str] = [t for t in raw_tags if t in _ALLOWED_RISK_TAGS]
-    removed = len(raw_tags) - len(risk_tags)
-    if removed:
-        validation_errors.append(
-            f"Filtered {removed} illegal risk tags"
-        )
-
-    # data_conflict_detected
-    data_conflict: bool = bool(parsed.get("data_conflict_detected", False))
 
     # catalyst_consistency: clamp to [0, 100]
     catalyst_consistency: float = 50.0
@@ -664,6 +634,51 @@ def _validate_pm_result(
         catalyst_consistency = max(0.0, min(100.0, float(raw_cc)))
     else:
         validation_errors.append("catalyst_consistency invalid, defaulting to 50")
+
+    # Check triple condition for 1.05 via unified BreakoutAssessment method.
+    # Build a provisional assessment so is_score_correction_max_valid() is
+    # the single source of truth for the triple-condition predicate.
+    if score_correction >= 1.05:
+        rating_for_provisional = (
+            FinalRating(final_rating) if final_rating in valid_ratings
+            else FinalRating.HOLD
+        )
+        provisional = BreakoutAssessment(
+            ticker="_validate",
+            final_rating=rating_for_provisional,
+            breakout_probability=breakout_prob,
+            bull_score=bull_score,
+            bear_score=bear_score,
+            score_correction=score_correction,
+            catalyst_consistency=catalyst_consistency,
+        )
+        if not provisional.is_score_correction_max_valid():
+            validation_errors.append(
+                "score_correction=1.05 rejected: triple condition not met "
+                "(bull={}, bear={}, catalyst={})".format(
+                    bull_score, bear_score, catalyst_consistency
+                )
+            )
+            score_correction = 1.04
+
+    # Phase 1 override (explicit parameter, not from PM JSON)
+    if not phase1_pass:
+        final_rating = "Avoid"
+        breakout_prob = min(breakout_prob, 30.0)
+
+    # risk_tags: filter to canonical set
+    raw_tags: list[str] = parsed.get("risk_tags", [])
+    if not isinstance(raw_tags, list):
+        raw_tags = []
+    risk_tags: list[str] = [t for t in raw_tags if t in ALLOWED_RISK_TAGS]
+    removed = len(raw_tags) - len(risk_tags)
+    if removed:
+        validation_errors.append(
+            "Filtered {} illegal risk tags".format(removed)
+        )
+
+    # data_conflict_detected
+    data_conflict: bool = bool(parsed.get("data_conflict_detected", False))
 
     return {
         "final_rating": final_rating,
@@ -702,7 +717,9 @@ def run_bull_bear_pm(
 
     Args:
         context: Context with ticker, price, factor summaries, etc.
-        invoker: LLM callable ``(system_prompt, max_output_tokens) -> str``.
+        invoker: LLM callable
+            ``(system_prompt, max_output_tokens) -> tuple[str, int, int]``
+            returning (response_text, input_tokens, output_tokens).
         max_output_tokens: Token budget for each individual LLM call.
         retry_on_json_failure: If True, retry once on JSON parse failure.
 
@@ -710,13 +727,16 @@ def run_bull_bear_pm(
         A validated :class:`BreakoutAssessment` instance.
     """
     total_tokens = 0
+    input_tokens_total = 0
     validation_errors: list[str] = []
 
     # --- Bull Researcher ---
     bull_raw: dict[str, Any] = {}
     try:
         bull_prompt = BULL_PROMPT.format(context, side="bull")
-        bull_response = invoker(bull_prompt, max_output_tokens)
+        bull_response, in_tok, out_tok = invoker(bull_prompt, max_output_tokens)
+        total_tokens += in_tok + out_tok
+        input_tokens_total += in_tok
     except Exception as exc:
         _logger.error("Bull researcher invocation failed for %s: %s", context.ticker, exc)
         bull_raw = _validate_bull_result({})
@@ -736,7 +756,9 @@ def run_bull_bear_pm(
                         f"{bull_prompt}\n\n上一轮输出不是合法 JSON。"
                         f"请严格输出合法 JSON，只输出 JSON，不要输出其他内容。"
                     )
-                    bull_response = invoker(retry_prompt, max_output_tokens)
+                    bull_response, in_tok, out_tok = invoker(retry_prompt, max_output_tokens)
+                    total_tokens += in_tok + out_tok
+                    input_tokens_total += in_tok
                     bull_raw = _extract_json_response(bull_response)
                     bull_raw = _validate_bull_result(bull_raw)
                 except Exception as exc2:
@@ -754,7 +776,9 @@ def run_bull_bear_pm(
     bear_raw: dict[str, Any] = {}
     try:
         bear_prompt = BEAR_PROMPT.format(context, side="bear")
-        bear_response = invoker(bear_prompt, max_output_tokens)
+        bear_response, in_tok, out_tok = invoker(bear_prompt, max_output_tokens)
+        total_tokens += in_tok + out_tok
+        input_tokens_total += in_tok
     except Exception as exc:
         _logger.error("Bear researcher invocation failed for %s: %s", context.ticker, exc)
         bear_raw = _validate_bear_result({})
@@ -774,7 +798,9 @@ def run_bull_bear_pm(
                         f"{bear_prompt}\n\n上一轮输出不是合法 JSON。"
                         f"请严格输出合法 JSON，只输出 JSON，不要输出其他内容。"
                     )
-                    bear_response = invoker(retry_prompt, max_output_tokens)
+                    bear_response, in_tok, out_tok = invoker(retry_prompt, max_output_tokens)
+                    total_tokens += in_tok + out_tok
+                    input_tokens_total += in_tok
                     bear_raw = _extract_json_response(bear_response)
                     bear_raw = _validate_bear_result(bear_raw)
                 except Exception as exc2:
@@ -796,13 +822,16 @@ def run_bull_bear_pm(
     pm_raw: dict[str, Any] = {}
     try:
         pm_prompt = PM_PROMPT.format(context)
-        pm_response = invoker(pm_prompt, max_output_tokens)
+        pm_response, in_tok, out_tok = invoker(pm_prompt, max_output_tokens)
+        total_tokens += in_tok + out_tok
+        input_tokens_total += in_tok
     except Exception as exc:
         _logger.error("PM invocation failed for %s: %s", context.ticker, exc)
         pm_raw = _validate_pm_result(
             {},
             bull_score=bull_raw.get("bull_score", 50.0),
             bear_score=bear_raw.get("bear_score", 50.0),
+            phase1_pass=context.phase1_pass,
         )
         validation_errors.append(f"PM invocation error: {exc}")
     else:
@@ -812,6 +841,7 @@ def run_bull_bear_pm(
                 pm_parsed,
                 bull_score=bull_raw.get("bull_score", 50.0),
                 bear_score=bear_raw.get("bear_score", 50.0),
+                phase1_pass=context.phase1_pass,
             )
         except (json.JSONDecodeError, ValueError) as exc:
             if retry_on_json_failure:
@@ -824,12 +854,15 @@ def run_bull_bear_pm(
                         f"{pm_prompt}\n\n上一轮输出不是合法 JSON。"
                         f"请严格输出合法 JSON，只输出 JSON，不要输出其他内容。"
                     )
-                    pm_response = invoker(retry_prompt, max_output_tokens)
+                    pm_response, in_tok, out_tok = invoker(retry_prompt, max_output_tokens)
+                    total_tokens += in_tok + out_tok
+                    input_tokens_total += in_tok
                     pm_parsed = _extract_json_response(pm_response)
                     pm_raw = _validate_pm_result(
                         pm_parsed,
                         bull_score=bull_raw.get("bull_score", 50.0),
                         bear_score=bear_raw.get("bear_score", 50.0),
+                        phase1_pass=context.phase1_pass,
                     )
                 except Exception as exc2:
                     _logger.error(
@@ -840,6 +873,7 @@ def run_bull_bear_pm(
                         {},
                         bull_score=bull_raw.get("bull_score", 50.0),
                         bear_score=bear_raw.get("bear_score", 50.0),
+                        phase1_pass=context.phase1_pass,
                     )
                     validation_errors.append(f"PM JSON parse failed: {exc}; retry: {exc2}")
             else:
@@ -847,6 +881,7 @@ def run_bull_bear_pm(
                     {},
                     bull_score=bull_raw.get("bull_score", 50.0),
                     bear_score=bear_raw.get("bear_score", 50.0),
+                    phase1_pass=context.phase1_pass,
                 )
                 validation_errors.append(f"PM JSON parse error: {exc}")
 
@@ -879,7 +914,7 @@ def run_bull_bear_pm(
         bear_thesis=str(bear_raw.get("bear_thesis", "")),
         pm_verdict=str(pm_raw.get("pm_verdict", "")),
         phase1_pass=context.phase1_pass,
-        input_tokens_total=total_tokens,
+        input_tokens_total=input_tokens_total,
         validation_errors=validation_errors,
     )
 

@@ -64,6 +64,7 @@ from alphascreener.tradingagents.orchestrator import (
     run_analyst,
 )
 from alphascreener.tradingagents.bull_bear_pipeline import (
+    ALLOWED_RISK_TAGS,
     BULL_PROMPT,
     BEAR_PROMPT,
     PM_PROMPT,
@@ -132,6 +133,7 @@ __all__ = [
     "check_token_budget",
     "run_analyst",
     # Bull/Bear/PM pipeline (Issue #98)
+    "ALLOWED_RISK_TAGS",
     "BULL_PROMPT",
     "BEAR_PROMPT",
     "PM_PROMPT",

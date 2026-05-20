@@ -12,10 +12,10 @@ from unittest import mock as umock
 import pytest
 
 from alphascreener.tradingagents.bull_bear_pipeline import (
+    ALLOWED_RISK_TAGS,
     SCORE_CORRECTION_MAX,
     SCORE_CORRECTION_MIN,
     SCORE_1_05_REQUIREMENTS,
-    _ALLOWED_RISK_TAGS,
     BULL_PROMPT,
     BEAR_PROMPT,
     PM_PROMPT,
@@ -34,10 +34,11 @@ from alphascreener.tradingagents.bull_bear_pipeline import (
 # ============================================================================
 
 
-def _mock_invoker(response_text: str = '{"status": "ok"}'):
+def _mock_invoker(response_text: str = '{"status": "ok"}',
+                  input_tokens: int = 100, output_tokens: int = 50):
     """Factory for a mock LLM invoker that returns *response_text*."""
-    def invoker(prompt: str, max_tokens: int) -> str:
-        return response_text
+    def invoker(prompt: str, max_tokens: int) -> tuple[str, int, int]:
+        return response_text, input_tokens, output_tokens
     return invoker
 
 
@@ -147,9 +148,9 @@ class TestBreakoutAssessmentSchema:
             ticker="T1",
             final_rating=FinalRating.HOLD,
             breakout_probability=50.0,
-            risk_tags=list(_ALLOWED_RISK_TAGS),
+            risk_tags=list(ALLOWED_RISK_TAGS),
         )
-        assert len(ba.risk_tags) == len(_ALLOWED_RISK_TAGS)
+        assert len(ba.risk_tags) == len(ALLOWED_RISK_TAGS)
 
     def test_final_rating_enum_values(self):
         """All four FinalRating enum values."""
@@ -432,7 +433,7 @@ class TestRunBullBearPM:
         """Happy path: all three stages return valid JSON."""
         call_order: list[str] = []
 
-        def mock_invoker(prompt: str, max_tokens: int) -> str:
+        def mock_invoker(prompt: str, max_tokens: int) -> tuple[str, int, int]:
             # Detect which stage we are in by unique prompt markers.
             # PM prompt includes "投资组合经理" (PM role) + "final_rating" output instruction.
             # Bull prompt includes "多头研究员" (Bull role).
@@ -443,22 +444,22 @@ class TestRunBullBearPM:
             pl = prompt.lower()
             # PM prompt: contains PM role marker and "数据冲突"
             if "投资组合经理" in prompt or "数据冲突检测" in prompt:
-                return _PM_JSON
+                return _PM_JSON, 100, 50
             # Bull prompt: contains Bull-specific role
             if "多头研究员" in prompt:
-                return _BULL_JSON
+                return _BULL_JSON, 100, 50
             # Bear prompt: contains Bear-specific role
             if "空头研究员" in prompt:
-                return _BEAR_JSON
+                return _BEAR_JSON, 100, 50
             # Retry prompts contain the original role text too, so above should match.
             # Ultimate fallback by call position:
-            idx = call_order.index("call") if "call" in call_order else len(call_order) - 1
-            if idx == 0:
-                return _BULL_JSON
-            elif idx == 1:
-                return _BEAR_JSON
+            idx = len(call_order)  # last match position (1-based)
+            if idx <= 1:
+                return _BULL_JSON, 100, 50
+            elif idx == 2:
+                return _BEAR_JSON, 100, 50
             else:
-                return _PM_JSON
+                return _PM_JSON, 100, 50
 
         ctx = _make_context()
         result = run_bull_bear_pm(ctx, mock_invoker)
@@ -482,14 +483,14 @@ class TestRunBullBearPM:
         """Bull LLM call fails -> uses defaults, pipeline continues."""
         calls: list[str] = []
 
-        def smarter_mock(prompt: str, max_tokens: int) -> str:
+        def smarter_mock(prompt: str, max_tokens: int) -> tuple[str, int, int]:
             calls.append("call")
             # Check PM first (most specific)
             if "投资组合经理" in prompt or "数据冲突检测" in prompt:
-                return _PM_JSON
+                return _PM_JSON, 100, 50
             # Bear
             if "空头研究员" in prompt:
-                return _BEAR_JSON
+                return _BEAR_JSON, 100, 50
             # Bull raises
             if "多头研究员" in prompt:
                 raise RuntimeError("Bull API timeout")
@@ -497,9 +498,9 @@ class TestRunBullBearPM:
             if len(calls) == 1:
                 raise RuntimeError("Bull API timeout")
             elif len(calls) == 2:
-                return _BEAR_JSON
+                return _BEAR_JSON, 100, 50
             else:
-                return _PM_JSON
+                return _PM_JSON, 100, 50
 
         ctx = _make_context()
         result = run_bull_bear_pm(ctx, smarter_mock)
@@ -518,19 +519,19 @@ class TestRunBullBearPM:
         """JSON parse failure triggers one retry (PRD 4.5.5)."""
         call_count: list[str] = []
 
-        def mock_bad_then_good(prompt: str, max_tokens: int) -> str:
+        def mock_bad_then_good(prompt: str, max_tokens: int) -> tuple[str, int, int]:
             call_count.append("call")
             # Retry prompts contain "上一轮输出不是合法 JSON"
             if "上一轮" in prompt:
                 # This is a retry — use prompt role markers
                 if "多头研究员" in prompt:
-                    return _BULL_JSON
+                    return _BULL_JSON, 100, 50
                 elif "空头研究员" in prompt:
-                    return _BEAR_JSON
+                    return _BEAR_JSON, 100, 50
                 else:
-                    return _PM_JSON
+                    return _PM_JSON, 100, 50
             # First call returns garbage for ALL stages
-            return "not valid json at all {{{"
+            return "not valid json at all {{{", 100, 50
 
         ctx = _make_context()
         result = run_bull_bear_pm(ctx, mock_bad_then_good)
@@ -539,22 +540,24 @@ class TestRunBullBearPM:
         # PM should have been reached (with defaults after failed retries
         # since the retry prompt also doesn't match our detection well)
         assert result.ticker == "AAPL"
+        # Three stages * (initial + retry) = 6 invocations
+        assert len(call_count) == 6
 
     def test_pm_json_parse_failure_fallback(self):
         """PM JSON parse fails -> uses validated defaults."""
         call_count = {"bull": 0, "bear": 0, "pm": 0}
 
-        def mock(prompt: str, max_tokens: int) -> str:
+        def mock(prompt: str, max_tokens: int) -> tuple[str, int, int]:
             if "多头研究员" in prompt:
                 call_count["bull"] += 1
-                return _BULL_JSON
+                return _BULL_JSON, 100, 50
             elif "空头研究员" in prompt:
                 call_count["bear"] += 1
-                return _BEAR_JSON
+                return _BEAR_JSON, 100, 50
             else:
                 call_count["pm"] += 1
                 # Both initial and retry return bad data
-                return "garbage {{{ not json"
+                return "garbage {{{ not json", 100, 50
 
         ctx = _make_context()
         result = run_bull_bear_pm(ctx, mock)
@@ -655,8 +658,8 @@ class TestRunBullBearPM:
 
     def test_retry_disabled_returns_defaults_on_json_failure(self):
         """When retry_on_json_failure=False, JSON failures return defaults."""
-        def mock(prompt: str, max_tokens: int) -> str:
-            return "not json"
+        def mock(prompt: str, max_tokens: int) -> tuple[str, int, int]:
+            return "not json", 100, 50
 
         ctx = _make_context()
         result = run_bull_bear_pm(ctx, mock, retry_on_json_failure=False)
@@ -680,14 +683,14 @@ class TestPipelineBatch:
         """One symbol in one batch."""
         call_count = {"total": 0}
 
-        def mock(prompt: str, max_tokens: int) -> str:
+        def mock(prompt: str, max_tokens: int) -> tuple[str, int, int]:
             call_count["total"] += 1
             if "多头研究员" in prompt:
-                return _BULL_JSON
+                return _BULL_JSON, 100, 50
             elif "空头研究员" in prompt:
-                return _BEAR_JSON
+                return _BEAR_JSON, 100, 50
             else:
-                return _PM_JSON
+                return _PM_JSON, 100, 50
 
         ctx = _make_context()
         config = BatchConfig(batch_size=3, n_batches=7)
@@ -701,16 +704,16 @@ class TestPipelineBatch:
         """3 symbols across 2 batches (batch_size=2)."""
         call_count = {"total": 0}
 
-        def mock(prompt: str, max_tokens: int) -> str:
+        def mock(prompt: str, max_tokens: int) -> tuple[str, int, int]:
             call_count["total"] += 1
             # Simple rotation for deterministic testing
             mod = call_count["total"] % 3
             if mod == 1:
-                return _BULL_JSON
+                return _BULL_JSON, 100, 50
             elif mod == 2:
-                return _BEAR_JSON
+                return _BEAR_JSON, 100, 50
             else:
-                return _PM_JSON
+                return _PM_JSON, 100, 50
 
         contexts = [
             _make_context(ticker="A"),
@@ -728,15 +731,15 @@ class TestPipelineBatch:
         """n_batches=1 with batch_size=2 should process only 2 of 5 symbols."""
         call_count = {"total": 0}
 
-        def mock(prompt: str, max_tokens: int) -> str:
+        def mock(prompt: str, max_tokens: int) -> tuple[str, int, int]:
             call_count["total"] += 1
             mod = call_count["total"] % 3
             if mod == 1:
-                return _BULL_JSON
+                return _BULL_JSON, 100, 50
             elif mod == 2:
-                return _BEAR_JSON
+                return _BEAR_JSON, 100, 50
             else:
-                return _PM_JSON
+                return _PM_JSON, 100, 50
 
         contexts = [_make_context(ticker=str(i)) for i in range(5)]
         config = BatchConfig(batch_size=2, n_batches=1)
@@ -764,9 +767,9 @@ class TestConstants:
 
     def test_105_requirements(self):
         reqs = SCORE_1_05_REQUIREMENTS
-        assert "bull_breakout_score >= 70" in reqs or any("bull" in r for r in reqs)
-        assert "bear_risk_score <= 40" in reqs or any("bear" in r for r in reqs)
-        assert "catalyst_consistency >= 60" in reqs or any("catalyst" in r for r in reqs)
+        assert "bull_breakout_score >= 70" in reqs
+        assert "bear_risk_score <= 40" in reqs
+        assert "catalyst_consistency >= 60" in reqs
 
 
 # ============================================================================
