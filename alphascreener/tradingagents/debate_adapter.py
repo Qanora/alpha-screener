@@ -33,10 +33,10 @@ from tradingagents.agents.risk_mgmt.aggressive_debator import (  # noqa: F401, E
 from tradingagents.agents.risk_mgmt.conservative_debator import (  # noqa: F401, E402
     create_conservative_debator,
 )
-from tradingagents.agents.risk_mgmt.neutral_debator import (  # noqa: F401, E402, I100
+from tradingagents.agents.risk_mgmt.neutral_debator import (  # noqa: F401, E402
     create_neutral_debator,
 )
-from tradingagents.agents.trader.trader import (  # noqa: F401, E402, I100
+from tradingagents.agents.trader.trader import (  # noqa: F401, E402
     create_trader,
 )
 

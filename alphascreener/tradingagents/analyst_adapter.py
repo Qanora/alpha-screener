@@ -24,7 +24,7 @@ from tradingagents.agents.analysts.market_analyst import (  # noqa: F401, E402
 from tradingagents.agents.analysts.news_analyst import (  # noqa: F401, E402
     create_news_analyst,
 )
-from tradingagents.agents.analysts.sentiment_analyst import (  # noqa: F401, E402, I100
+from tradingagents.agents.analysts.sentiment_analyst import (  # noqa: F401, E402
     create_sentiment_analyst,
 )
 

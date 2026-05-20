@@ -6,6 +6,8 @@ Reference: PRD 8.1 / 8.2.
 
 from __future__ import annotations
 
+import tempfile
+
 import pytest
 from tradingagents.default_config import DEFAULT_CONFIG as _UPSTREAM_DEFAULT
 
@@ -70,8 +72,8 @@ _OLLAMA_CONFIG: dict = {
     "llm_provider": "ollama",
     "deep_think_llm": "llama3",
     "quick_think_llm": "llama3",
-    "data_cache_dir": "/tmp",
-    "results_dir": "/tmp",
+    "data_cache_dir": tempfile.gettempdir(),
+    "results_dir": tempfile.gettempdir(),
 }
 
 
@@ -161,7 +163,10 @@ class TestAnalystAdapter:
         from tradingagents.llm_clients.factory import create_llm_client as _factory
 
         llm_client = _factory("ollama", "llama3")
-        _ = llm_client  # we don't call get_llm() — just exercise routing
+        llm = llm_client.get_llm()
+        for analyst_type in ("market", "social", "news", "fundamentals"):
+            node = create_analyst(analyst_type, llm)
+            assert callable(node), f"{analyst_type} analyst should be callable"
 
     def test_create_analyst_invalid_type_raises(self):
         with pytest.raises(ValueError, match="Unknown analyst type"):
