@@ -8,6 +8,8 @@ Wants=network-online.target
 Type=simple
 User=alphascreener
 Group=alphascreener
+StateDirectory=alphascreener
+StateDirectoryMode=0750
 WorkingDirectory=/opt/alpha-screener
 Environment="PYTHONUNBUFFERED=1"
 Environment="ALPHASCREENER_HOME=/var/lib/alphascreener"
@@ -24,8 +26,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/opt/alpha-screener /var/lib/alphascreener
-ReadOnlyPaths=/opt/alpha-screener/.venv
+ReadWritePaths=/var/lib/alphascreener
+ReadOnlyPaths=/opt/alpha-screener /opt/alpha-screener/.venv
 
 # Resource limits
 MemoryMax=4G
