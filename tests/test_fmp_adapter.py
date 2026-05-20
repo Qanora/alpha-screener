@@ -276,6 +276,7 @@ class TestFmpAdapterInit:
 # ============================================================================
 
 
+@pytest.mark.asyncio
 class TestBudgetControl:
     """Daily budget tracking and exhaustion behavior."""
 
