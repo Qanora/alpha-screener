@@ -43,6 +43,22 @@ class DailyHealthRecord:
     total_tickers: int = 0
     failed_tickers: int = 0
 
+    def __post_init__(self) -> None:
+        """Validate field values."""
+        if self.total_tickers < 0:
+            raise ValueError(
+                f"total_tickers must be >= 0, got {self.total_tickers}"
+            )
+        if self.failed_tickers < 0:
+            raise ValueError(
+                f"failed_tickers must be >= 0, got {self.failed_tickers}"
+            )
+        if self.failed_tickers > self.total_tickers:
+            raise ValueError(
+                f"failed_tickers ({self.failed_tickers}) must be <= "
+                f"total_tickers ({self.total_tickers})"
+            )
+
     @property
     def failure_rate_pct(self) -> float:
         """Failure rate as a percentage."""
@@ -106,6 +122,18 @@ class YFinanceHealthMonitor:
         default_factory=lambda: get_logger("screening"), repr=False
     )
 
+    def __post_init__(self) -> None:
+        """Validate constructor parameters."""
+        if self.consecutive_days <= 0:
+            raise ValueError(
+                f"consecutive_days must be > 0, got {self.consecutive_days}"
+            )
+        if not (0.0 <= self.failure_threshold_pct <= 100.0):
+            raise ValueError(
+                f"failure_threshold_pct must be in [0, 100], "
+                f"got {self.failure_threshold_pct}"
+            )
+
     # -- Properties --------------------------------------------------------------
 
     @property
@@ -124,16 +152,33 @@ class YFinanceHealthMonitor:
         """Record a day's yfinance health statistics.
 
         Updates the consecutive-exceeded counter based on whether the failure
-        rate exceeds the threshold. If the counter reaches ``consecutive_days``,
-        the full fallback switch is activated and a critical alert is sent.
+        rate exceeds the threshold. Consecutive counting uses **calendar dates**:
+        only records whose ``date`` is exactly 1 day after the previous record
+        count as consecutive. A gap > 1 day resets the counter before judging
+        the current record. If the counter reaches ``consecutive_days``, the
+        full fallback switch is activated and a critical alert is sent.
 
         Args:
             record: Daily health statistics.
         """
         self._daily_history.append(record)
 
+        # Determine calendar gap from the previous record
+        if len(self._daily_history) >= 2:
+            prev_date = self._daily_history[-2].date  # second-to-last
+            delta_days = (record.date - prev_date).days
+        else:
+            delta_days = 1  # first record — treat as the start of a fresh day
+
         if record.failure_rate_pct >= self.failure_threshold_pct:
-            self._consecutive_exceeded += 1
+            if delta_days == 0:
+                # Same calendar date — donʼt double-count
+                pass
+            elif delta_days == 1:
+                self._consecutive_exceeded += 1
+            else:
+                # Gap > 1 day — reset and start a new streak
+                self._consecutive_exceeded = 1
             self._logger.warning(
                 "yfinance failure rate %.1f%% (≥ %.1f%%) for %s — "
                 "consecutive days exceeded: %d/%d",
@@ -144,13 +189,14 @@ class YFinanceHealthMonitor:
                 self.consecutive_days,
             )
         else:
-            # Reset counter on a healthy day
-            if self._consecutive_exceeded > 0:
+            # Reset counter on a new healthy day (skip same-day repeats)
+            if delta_days >= 1 and self._consecutive_exceeded > 0:
                 self._logger.info(
                     "yfinance recovered — resetting consecutive exceeded counter (was %d)",
                     self._consecutive_exceeded,
                 )
-            self._consecutive_exceeded = 0
+            if delta_days >= 1:
+                self._consecutive_exceeded = 0
 
         # Check if full switch should be triggered
         if self._consecutive_exceeded >= self.consecutive_days and not self._fallback_activated:
