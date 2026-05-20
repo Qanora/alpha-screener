@@ -98,7 +98,10 @@ class TestPidLockAcquire:
 
     def test_acquire_recovers_dead_lock(self, db_engine, monkeypatch):
         """When lock held by dead PID, acquire recovers and succeeds."""
-        monkeypatch.setattr(psutil, "pid_exists", lambda _pid: False)
+        from unittest.mock import MagicMock
+        dead_process = MagicMock()
+        dead_process.is_running.return_value = False
+        monkeypatch.setattr(psutil, "Process", lambda pid: dead_process)
         dead_pid = 99999
         with Session(db_engine) as s:
             s.add(
@@ -280,14 +283,17 @@ class TestPidLockRecovery:
         assert mgr._is_pid_alive(os.getpid()) is True
 
     def test_is_pid_alive_returns_false_for_nonexistent_pid(self, monkeypatch):
-        """psutil.pid_exists returns False for a non-existent PID."""
-        monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
+        """psutil.NoSuchProcess means PID is not alive."""
+        monkeypatch.setattr(psutil, "Process", lambda pid: (_ for _ in ()).throw(psutil.NoSuchProcess(pid)))
         mgr = PidLockManager(session_factory=lambda: None)
         assert mgr._is_pid_alive(99999) is False
 
     def test_recover_dead_lock_force_releases(self, db_engine, monkeypatch):
         """When lock-holder PID is dead, force_release removes the lock."""
-        monkeypatch.setattr(psutil, "pid_exists", lambda _pid: False)
+        from unittest.mock import MagicMock
+        dead_process = MagicMock()
+        dead_process.is_running.return_value = False
+        monkeypatch.setattr(psutil, "Process", lambda pid: dead_process)
         dead_pid = 99999
         with Session(db_engine) as s:
             s.add(

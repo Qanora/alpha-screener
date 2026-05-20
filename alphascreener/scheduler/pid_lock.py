@@ -203,13 +203,17 @@ class PidLockManager:
         return False
 
     def _is_pid_alive(self, pid: int) -> bool:
-        """Check whether a PID is alive using psutil.
+        """Check whether a PID is alive, guarding against PID reuse.
 
-        Returns False for pid <= 0 (sentinel/invalid) and for non-existent PIDs.
+        Uses ``Process(pid).is_running()`` which compares create_time to detect
+        PID reuse (unlike ``pid_exists``).
         """
         if pid <= 0:
             return False
-        return psutil.pid_exists(pid)
+        try:
+            return psutil.Process(pid).is_running()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
 
     def _recover_dead_lock(self) -> bool:
         """Force-release the lock if the holding PID is dead.
