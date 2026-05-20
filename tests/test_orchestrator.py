@@ -87,7 +87,7 @@ def mock_stooq(sample_ohlcv) -> StooqAdapter:
     """Mock StooqAdapter that returns matching data (no diffs)."""
     stq = MagicMock(spec=StooqAdapter)
     # Return same data as yfinance to trigger zero diffs
-    stq.fetch_ohlcv_batch = AsyncMock(return_value=sample_ohlcv.clone())
+    stq.download_ohlcv = AsyncMock(return_value=sample_ohlcv.clone())
     return stq
 
 
@@ -99,7 +99,7 @@ def mock_stooq_divergent(sample_ohlcv) -> StooqAdapter:
     close_vals = [c * 1.01 for c in divergent["close"].to_list()]
     divergent = divergent.with_columns(pl.Series("close", close_vals))
     stq = MagicMock(spec=StooqAdapter)
-    stq.fetch_ohlcv_batch = AsyncMock(return_value=divergent)
+    stq.download_ohlcv = AsyncMock(return_value=divergent)
     return stq
 
 
@@ -107,7 +107,7 @@ def mock_stooq_divergent(sample_ohlcv) -> StooqAdapter:
 def mock_stooq_empty() -> StooqAdapter:
     """Mock StooqAdapter that returns empty DataFrame."""
     stq = MagicMock(spec=StooqAdapter)
-    stq.fetch_ohlcv_batch = AsyncMock(return_value=_empty_ohlcv_df())
+    stq.download_ohlcv = AsyncMock(return_value=_empty_ohlcv_df())
     return stq
 
 
@@ -306,7 +306,7 @@ class TestSyncWithStooq:
 
         assert report.stooq_validated > 0
         assert report.stooq_diff_count == 0  # Matching data → no diffs
-        mock_stooq.fetch_ohlcv_batch.assert_awaited_once()
+        mock_stooq.download_ohlcv.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_sync_detects_stooq_diffs(

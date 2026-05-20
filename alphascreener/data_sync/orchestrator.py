@@ -308,7 +308,7 @@ class SyncOrchestrator:
         stooq_tickers = [t.lower() for t in top_tickers]
 
         try:
-            stooq_df = await self.stooq.fetch_ohlcv_batch(
+            stooq_df = await self.stooq.download_ohlcv(
                 stooq_tickers, start_date=start, end_date=end
             )
         except Exception as e:
@@ -338,9 +338,9 @@ class SyncOrchestrator:
             suffix="_stooq",
         )
 
-        for field in fields:
-            yf_col = field
-            sq_col = f"{field}_stooq"
+        for col_name in fields:
+            yf_col = col_name
+            sq_col = f"{col_name}_stooq"
             if sq_col not in joined.columns:
                 continue
 
@@ -354,7 +354,7 @@ class SyncOrchestrator:
                     "Stooq diff: %s %s %s: yf=%s stooq=%s",
                     row.get("ticker"),
                     row.get("dt"),
-                    field,
+                    col_name,
                     row.get(yf_col),
                     row.get(sq_col),
                 )
