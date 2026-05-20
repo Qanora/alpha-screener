@@ -79,7 +79,7 @@ def normalize_factors(df: pl.DataFrame) -> pl.DataFrame:
         "MFI_14",
         "CMF_21",
         "VOL_ANOMALY",  # binary in output, but volume_z used internally
-        "RSI_14",
+        "RSI_OVERSOLD",
         "REV_ACCEL",
     ]
 
@@ -207,7 +207,9 @@ def process_chunk(
       1. Compute 11 technical factors from OHLCV.
       2. Apply fundamental factors (PEAD_FLAG, INSIDER_BUY, REV_ACCEL).
       3. Validate missing data.
-      4. Normalise (z-score + display scores).
+
+    Normalisation must be applied by the caller after concatenating all
+    chunks (see :func:`compute_factors` or :meth:`FactorEngine.run`).
 
     Args:
         df: OHLCV DataFrame with columns ``ticker, dt, open, high, low, close, volume``.
@@ -219,13 +221,13 @@ def process_chunk(
     Returns:
         DataFrame with factor, score, and metadata columns appended.
     """
-    required = {"ticker", "close"}
+    if df.height == 0:
+        return df
+
+    required = {"ticker", "dt", "open", "high", "low", "close", "volume"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
-
-    if df.height == 0:
-        return df
 
     _logger.debug("Processing chunk: %d rows, %d tickers", df.height, df["ticker"].n_unique())
 
@@ -239,9 +241,6 @@ def process_chunk(
 
     # 3. Missing-data tags
     df = _validate_missing_data(df)
-
-    # 4. Normalisation
-    df = normalize_factors(df)
 
     return df
 
@@ -352,6 +351,7 @@ class FactorEngine:
 
         # Combine all chunks
         combined = pl.concat(results, how="diagonal_relaxed")
+        combined = normalize_factors(combined)
         _logger.info(
             "Factor computation complete: %d rows, %d tickers",
             combined.height,
@@ -416,7 +416,9 @@ def compute_factors(
         )
         results.append(processed)
 
-    return pl.concat(results, how="diagonal_relaxed")
+    combined = pl.concat(results, how="diagonal_relaxed")
+    combined = normalize_factors(combined)
+    return combined
 
 
 # -- persistence -------------------------------------------------------------

@@ -337,27 +337,26 @@ def compute_pead_flag(
     if earnings_dates is None or reference_date is None:
         return df.with_columns(pl.lit(0, dtype=pl.Int32).alias("PEAD_FLAG"))
 
+    if "ticker" not in df.columns:
+        return df.with_columns(pl.lit(0, dtype=pl.Int32).alias("PEAD_FLAG"))
+
     from datetime import timedelta
 
     cutoff = reference_date - timedelta(days=30)
 
-    # Build a lookup: ticker -> has recent earnings
-    flags: dict[str, int] = {}
+    # Build a lookup DataFrame: ticker -> PEAD_FLAG
+    lookup_rows: list[dict] = []
     for ticker, dates in earnings_dates.items():
         has_recent = any(cutoff <= d <= reference_date for d in dates)
-        flags[ticker] = 1 if has_recent else 0
+        lookup_rows.append({"ticker": ticker, "PEAD_FLAG": 1 if has_recent else 0})
 
-    # Apply to DataFrame - use a map over the ticker column
-    # Build expressions dynamically
-    if "ticker" not in df.columns:
+    if not lookup_rows:
         return df.with_columns(pl.lit(0, dtype=pl.Int32).alias("PEAD_FLAG"))
 
-    # Build a when-then cascade for known tickers
-    pead_expr: pl.Expr = pl.lit(0, dtype=pl.Int32)
-    for ticker, flag in flags.items():
-        pead_expr = pl.when(pl.col("ticker") == ticker).then(flag).otherwise(pead_expr)
-
-    return df.with_columns(pead_expr.alias("PEAD_FLAG"))
+    lookup_df = pl.DataFrame(lookup_rows)
+    return df.join(lookup_df, on="ticker", how="left").with_columns(
+        pl.col("PEAD_FLAG").fill_null(0)
+    )
 
 
 def compute_insider_buy(
@@ -377,12 +376,18 @@ def compute_insider_buy(
     if insider_ratio is None or "ticker" not in df.columns:
         return df.with_columns(pl.lit(0, dtype=pl.Int32).alias("INSIDER_BUY"))
 
-    ib_expr: pl.Expr = pl.lit(0, dtype=pl.Int32)
+    # Build a lookup DataFrame: ticker -> INSIDER_BUY
+    lookup_rows: list[dict] = []
     for ticker, ratio in insider_ratio.items():
-        flag = 1 if ratio > 0.001 else 0
-        ib_expr = pl.when(pl.col("ticker") == ticker).then(flag).otherwise(ib_expr)
+        lookup_rows.append({"ticker": ticker, "INSIDER_BUY": 1 if ratio > 0.001 else 0})
 
-    return df.with_columns(ib_expr.alias("INSIDER_BUY"))
+    if not lookup_rows:
+        return df.with_columns(pl.lit(0, dtype=pl.Int32).alias("INSIDER_BUY"))
+
+    lookup_df = pl.DataFrame(lookup_rows)
+    return df.join(lookup_df, on="ticker", how="left").with_columns(
+        pl.col("INSIDER_BUY").fill_null(0)
+    )
 
 
 def compute_rev_accel(
@@ -405,23 +410,19 @@ def compute_rev_accel(
     if revenue_growth is None or "ticker" not in df.columns:
         return df.with_columns(pl.lit(None, dtype=pl.Float64).alias("REV_ACCEL"))
 
-    ra_map: dict[str, float | None] = {}
+    # Build a lookup DataFrame: ticker -> REV_ACCEL
+    lookup_rows: list[dict] = []
     for ticker, growths in revenue_growth.items():
         if len(growths) >= 2:
-            ra_map[ticker] = growths[-1] - growths[-2]
+            lookup_rows.append({"ticker": ticker, "REV_ACCEL": growths[-1] - growths[-2]})
         else:
-            ra_map[ticker] = None
+            lookup_rows.append({"ticker": ticker, "REV_ACCEL": None})
 
-    # Build expression - default to null
-    ra_expr: pl.Expr = pl.lit(None, dtype=pl.Float64)
-    for ticker, val in ra_map.items():
-        ra_expr = (
-            pl.when(pl.col("ticker") == ticker)
-            .then(val if val is not None else None)
-            .otherwise(ra_expr)
-        )
+    if not lookup_rows:
+        return df.with_columns(pl.lit(None, dtype=pl.Float64).alias("REV_ACCEL"))
 
-    return df.with_columns(ra_expr.alias("REV_ACCEL"))
+    lookup_df = pl.DataFrame(lookup_rows)
+    return df.join(lookup_df, on="ticker", how="left")
 
 
 # -- composite ---------------------------------------------------------------

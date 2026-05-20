@@ -157,7 +157,7 @@ class TestMOMSLOPE:
         vals = result.get_column("MOM_SLOPE").to_list()
         # After 10 observations (first slope computed), should be positive
         for v in vals[11:]:
-            assert v is not None, f"Unexpected null at some row after warmup"
+            assert v is not None, "Unexpected null at some row after warmup"
             assert v > 0, f"Expected positive slope, got {v}"
 
     def test_monotonic_down(self):
@@ -606,7 +606,7 @@ class TestNormalisation:
 
 class TestProcessChunk:
     def test_all_factor_output_columns(self):
-        """process_chunk produces all expected output columns."""
+        """process_chunk produces raw factor and metadata columns (no normalisation)."""
         close = list(range(100, 400))
         df = _ohlcv_df(close)
         result = process_chunk(
@@ -616,15 +616,18 @@ class TestProcessChunk:
             insider_ratio={"TEST": 0.002},
             revenue_growth={"TEST": [0.05, 0.08]},
         )
-        # Check key output columns
+        # Check key output columns (raw factors only; normalisation done by caller)
         expected = [
             "MOM_5D", "PTH", "MOM_SLOPE", "BB_SQUEEZE", "ATR_RATIO",
             "MFI_14", "CMF_21", "VOL_ANOMALY", "RSI_OVERSOLD",
             "MACD_CROSS", "GOLDEN_CROSS", "PEAD_FLAG", "INSIDER_BUY",
-            "REV_ACCEL", "final_score", "data_sufficient", "missing_rate",
+            "REV_ACCEL", "data_sufficient", "missing_rate",
         ]
         for col in expected:
             assert col in result.columns, f"Missing: {col}"
+        # Normalisation columns must NOT be present (caller applies after concat)
+        assert "final_score" not in result.columns
+        assert "z_MOM_5D" not in result.columns
 
     def test_empty_df_returns_empty(self):
         """Empty input -> empty output (no crash)."""
@@ -691,7 +694,7 @@ class TestMissingData:
         # After row 200, all factors including SMA_200 are available
         for v in vals[205:]:
             if v is not None:
-                assert v is True, f"Expected data_sufficient=True for full-data row"
+                assert v is True, "Expected data_sufficient=True for full-data row"
 
     def test_missing_rate_zero(self):
         """Full data has missing_rate = 0 (after all warmup windows)."""
@@ -789,23 +792,20 @@ class TestEdgeCases:
         assert result.height == 1
 
     def test_all_null_close(self):
-        """All-null close prices -> empty/error outcome, no crash."""
+        """All-null close prices produce null factors without crashing."""
         df = pl.DataFrame(
             {
-                "ticker": ["TEST"] * 20,
-                "dt": [date(2025, 1, 15)] * 20,
-                "open": [None] * 20,
-                "high": [None] * 20,
-                "low": [None] * 20,
-                "close": [None] * 20,
-                "volume": [None] * 20,
+                "ticker": pl.Series("ticker", ["TEST"] * 20, dtype=pl.Utf8),
+                "dt": pl.Series("dt", [date(2025, 1, 15)] * 20, dtype=pl.Date),
+                "open": pl.Series("open", [None] * 20, dtype=pl.Float64),
+                "high": pl.Series("high", [None] * 20, dtype=pl.Float64),
+                "low": pl.Series("low", [None] * 20, dtype=pl.Float64),
+                "close": pl.Series("close", [None] * 20, dtype=pl.Float64),
+                "volume": pl.Series("volume", [None] * 20, dtype=pl.Float64),
             }
         )
-        try:
-            result = compute_all_technical_factors(df)
-            assert result.height == 20
-        except Exception:
-            pass
+        result = compute_all_technical_factors(df)
+        assert result.height == 20
 
     def test_empty_chunk_list(self):
         """Empty ticker list from compute_factors returns empty."""
@@ -836,8 +836,11 @@ class TestIntegration:
         for fname in FACTOR_NAMES:
             assert fname in result.columns, f"Missing factor: {fname}"
 
+        # Normalisation is applied after chunk concat; trigger it explicitly
+        result = normalize_factors(result)
+
         # Normalisation columns
-        cont_factors = ["MOM_5D", "PTH", "MOM_SLOPE", "ATR_RATIO", "MFI_14", "CMF_21", "RSI_14", "REV_ACCEL"]
+        cont_factors = ["MOM_5D", "PTH", "MOM_SLOPE", "ATR_RATIO", "MFI_14", "CMF_21", "RSI_OVERSOLD", "REV_ACCEL"]
         for fname in cont_factors:
             if fname in result.columns:
                 assert f"z_{fname}" in result.columns, f"Missing z_{fname}"
@@ -859,8 +862,8 @@ class TestIntegration:
         assert "final_score" in result.columns
         assert "data_sufficient" in result.columns
 
-    def test_factor_engine_run_method(self):
-        """FactorEngine.run executes without error when OHLCV data exists."""
+    def test_factor_engine_constructor(self):
+        """FactorEngine constructor stores batch_size and n_batches correctly."""
         # This test requires actual OHLCV data on disk, so it will skip if
         # no data path is set up.  Test the constructor and structure only.
         engine = FactorEngine(batch_size=100, n_batches=2)
