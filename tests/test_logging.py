@@ -26,7 +26,8 @@ def _capture_one(level: int, msg: str, *, logger_name: str = "test", **extra) ->
 
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)
-    logger.handlers = [handler]
+    logger.handlers.clear()
+    logger.addHandler(handler)
     logger.propagate = False
 
     method = {
