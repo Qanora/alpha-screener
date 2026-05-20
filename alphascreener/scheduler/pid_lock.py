@@ -21,6 +21,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import psutil
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from alphascreener.db.models import PidLock
@@ -102,8 +103,16 @@ class PidLockManager:
 
                 if existing is None:
                     # No lock — acquire it
-                    self._insert_lock(session, tid, meta)
-                    session.commit()
+                    self._insert_lock(session, tid, timeout, meta)
+                    try:
+                        session.commit()
+                    except IntegrityError:
+                        session.rollback()
+                        _logger.debug(
+                            "IntegrityError acquiring lock '%s' (race), retrying",
+                            self._lock_name,
+                        )
+                        continue
                     self._locked = True
                     _logger.info(
                         "Acquired lock '%s' for task '%s' (pid=%d)",
@@ -237,11 +246,13 @@ class PidLockManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _insert_lock(self, session: Session, task_id: str, meta: dict | None) -> None:
+    def _insert_lock(
+        self, session: Session, task_id: str, timeout_s: int, meta: dict | None
+    ) -> None:
         """Insert a new pid_lock row for the current process."""
         now = datetime.now(UTC)
         # expires_at = now + timeout + expiry buffer
-        expires_at = now + timedelta(seconds=self._timeout_s + EXPIRE_AFTER_BUFFER_S)
+        expires_at = now + timedelta(seconds=timeout_s + EXPIRE_AFTER_BUFFER_S)
 
         meta_json = None
         if meta:

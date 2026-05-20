@@ -10,6 +10,7 @@ import os
 import time
 from datetime import UTC, datetime, timedelta
 
+import psutil
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -134,6 +135,46 @@ class TestPidLockAcquire:
         result = mgr.acquire(task_id="daily_scan", timeout_s=30)
         assert result is True
 
+    def test_acquire_uses_custom_timeout_s_for_expires_at(self, db_engine):
+        """expires_at reflects the timeout_s passed to acquire(), not the class default."""
+        custom_timeout = 45  # different from DEFAULT_LOCK_TIMEOUT_S (7200)
+        mgr = PidLockManager(session_factory=_session_factory(db_engine))
+        mgr.acquire(task_id="daily_scan", timeout_s=custom_timeout)
+
+        with Session(db_engine) as s:
+            row = s.query(PidLock).filter_by(lock_name="global").one()
+            expires_dt = datetime.fromisoformat(row.expires_at)
+            now = datetime.now(UTC)
+            # expires_at should be ~now + custom_timeout + EXPIRE_AFTER_BUFFER_S (600)
+            delta = (expires_dt - now).total_seconds()
+            # Allow generous margin for test execution time
+            expected = custom_timeout + 600
+            assert abs(delta - expected) < 10, (
+                f"Expected expires_at ~{expected}s from now, got {delta:.0f}s"
+            )
+
+    def test_acquire_handles_integrity_error_race(self, db_engine, monkeypatch):
+        """When a concurrent insert causes IntegrityError, acquire retries successfully."""
+        from sqlalchemy.exc import IntegrityError
+
+        call_count = [0]
+        original_commit = Session.commit
+
+        def _mock_commit(session_self):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                session_self.rollback()
+                raise IntegrityError("mock race condition", orig=None, params=None)
+            # Second call proceeds normally
+            original_commit(session_self)
+
+        monkeypatch.setattr(Session, "commit", _mock_commit)
+
+        mgr = PidLockManager(session_factory=_session_factory(db_engine))
+        result = mgr.acquire(task_id="daily_scan", timeout_s=5)
+        assert result is True
+        assert call_count[0] == 2  # First attempt failed (race), second succeeded
+
 
 # ============================================================================
 # 2. PidLockManager — release
@@ -238,8 +279,9 @@ class TestPidLockRecovery:
         mgr = PidLockManager(session_factory=lambda: None)
         assert mgr._is_pid_alive(os.getpid()) is True
 
-    def test_is_pid_alive_returns_false_for_nonexistent_pid(self):
+    def test_is_pid_alive_returns_false_for_nonexistent_pid(self, monkeypatch):
         """psutil.pid_exists returns False for a non-existent PID."""
+        monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
         mgr = PidLockManager(session_factory=lambda: None)
         assert mgr._is_pid_alive(99999) is False
 
@@ -492,12 +534,15 @@ class TestSchedulerOrchestrator:
         for task_id, cron_expr in TASK_CRON.items():
             job = jobs[task_id]
             assert isinstance(job.trigger, CronTrigger)
-            # Reconstruct the cron expression from trigger fields
-            fields = job.trigger.fields
-            minute = fields[0].expressions[0] if fields[0].expressions else "*"
-            hour = fields[1].expressions[0] if fields[1].expressions else "*"
-            dom = fields[2].expressions[0] if len(fields) > 2 and fields[2].expressions else "*"
-            print(f"DEBUG {task_id}: minute={minute} hour={hour} dom={dom}")
+            # Parse the expected cron and compare field-by-field
+            expected = CronTrigger.from_crontab(cron_expr)
+            actual_fields = job.trigger.fields
+            expected_fields = expected.fields
+            field_names = ["minute", "hour", "day", "month", "day_of_week"]
+            for i, (actual, exp) in enumerate(zip(actual_fields, expected_fields)):
+                assert str(actual) == str(exp), (
+                    f"{task_id} field '{field_names[i]}': expected '{exp}', got '{actual}'"
+                )
 
 
 # ============================================================================

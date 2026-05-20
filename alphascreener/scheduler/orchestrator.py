@@ -111,7 +111,7 @@ class SchedulerApp:
                     # Import lazily to avoid circular imports at module level.
                     from alphascreener.db.engine import create_db_engine
 
-                    engine = create_db_engine(self.db_url.replace("sqlite:///", ""))
+                    engine = create_db_engine(self.db_url)
                     try:
                         from sqlalchemy.orm import Session
 
@@ -166,11 +166,36 @@ class SchedulerApp:
     def start(self) -> None:
         """Start the scheduler (blocks forever)."""
         _logger.info("Starting APScheduler with %d jobs", len(self.scheduler.get_jobs()))
+        # Recover any stale locks left over from a previous crash before starting
+        self._recover_dead_lock_global()
         try:
             self.scheduler.start()
         except (KeyboardInterrupt, SystemExit):
             _logger.info("Scheduler shutting down")
             self.shutdown()
+
+    def _recover_dead_lock_global(self) -> None:
+        """Recover the global pid_lock if the holding process is dead."""
+        from sqlalchemy.orm import Session
+
+        from alphascreener.db.engine import create_db_engine
+
+        engine = create_db_engine(self.db_url)
+        try:
+
+            def _sf():
+                return Session(engine)
+
+            lock_mgr = PidLockManager(
+                session_factory=_sf,
+                task_id="startup_recovery",
+                timeout_s=self.lock_timeout_s,
+            )
+            recovered = lock_mgr._recover_dead_lock()
+            if recovered:
+                _logger.info("Recovered dead lock at startup")
+        finally:
+            engine.dispose()
 
     def shutdown(self, wait: bool = True) -> None:
         """Shut down the scheduler gracefully."""
