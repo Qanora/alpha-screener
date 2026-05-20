@@ -116,9 +116,9 @@ class TestPidLockAcquire:
         result = mgr.acquire(task_id="daily_scan", timeout_s=30)
         assert result is True
 
-    def test_acquire_recovers_expired_lock(self, db_engine):
-        """When lock is expired, acquire recovers and succeeds regardless of PID liveness."""
-        # Insert a lock that has already expired
+    def test_acquire_refuses_expired_lock_when_pid_alive(self, db_engine):
+        """Expired lock held by an alive PID is NOT recovered — preserves serial execution."""
+        # Insert a lock that has already expired but whose PID is the current process (alive)
         with Session(db_engine) as s:
             s.add(
                 PidLock(
@@ -132,8 +132,8 @@ class TestPidLockAcquire:
             s.commit()
 
         mgr = PidLockManager(session_factory=_session_factory(db_engine))
-        result = mgr.acquire(task_id="daily_scan", timeout_s=30)
-        assert result is True
+        result = mgr.acquire(task_id="daily_scan", timeout_s=0.5)
+        assert result is False
 
     def test_acquire_uses_custom_timeout_s_for_expires_at(self, db_engine):
         """expires_at reflects the timeout_s passed to acquire(), not the class default."""
@@ -164,7 +164,7 @@ class TestPidLockAcquire:
             call_count[0] += 1
             if call_count[0] == 1:
                 session_self.rollback()
-                raise IntegrityError("mock race condition", orig=None, params=None)
+                raise IntegrityError("mock race condition", None, Exception("mock race condition"))
             # Second call proceeds normally
             original_commit(session_self)
 
@@ -363,7 +363,7 @@ class TestPidLockContextManager:
         mgr_holder = PidLockManager(session_factory=_session_factory(db_engine))
         mgr_holder.acquire(task_id="busy_task", timeout_s=30)
 
-        with pytest.raises(RuntimeError, match="(acquire|lock)"):
+        with pytest.raises(RuntimeError, match=r"(acquire|lock)"):
             with PidLockManager(
                 session_factory=_session_factory(db_engine),
                 task_id="daily_scan",
@@ -540,7 +540,7 @@ class TestSchedulerOrchestrator:
             actual_fields = job.trigger.fields
             expected_fields = expected.fields
             field_names = ["minute", "hour", "day", "month", "day_of_week"]
-            for i, (actual, exp) in enumerate(zip(actual_fields, expected_fields)):
+            for i, (actual, exp) in enumerate(zip(actual_fields, expected_fields, strict=True)):
                 assert str(actual) == str(exp), (
                     f"{task_id} field '{field_names[i]}': expected '{exp}', got '{actual}'"
                 )

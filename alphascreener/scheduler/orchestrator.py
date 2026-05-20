@@ -136,6 +136,7 @@ class SchedulerApp:
                             fn()
                         except Exception:
                             _logger.exception("Job '%s' failed with exception", tid)
+                            raise
                         finally:
                             lock.release()
                     finally:

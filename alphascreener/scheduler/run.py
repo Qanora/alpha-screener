@@ -4,8 +4,8 @@ Usage::
 
     python -m alphascreener.scheduler.run
 
-Reads DB path from environment or defaults to
-``~/.alphascreener/alphabase.db``.
+Reads DB path from the ``ALPHASCREENER_HOME`` environment variable,
+defaulting to ``<ALPHASCREENER_HOME>/db/alphabase.db``.
 """
 
 from __future__ import annotations

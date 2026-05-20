@@ -189,23 +189,17 @@ class PidLockManager:
     def _can_recover(self, existing: PidLock) -> bool:
         """Check whether the existing lock row can be recovered.
 
-        Returns True if:
-          - The lock has expired (expires_at is in the past), OR
-          - The holding PID is no longer alive.
+        Recovery is only allowed when the holding PID is no longer alive.
+        An expired lock whose holder PID is still alive is NOT recoverable —
+        subsequent jobs must skip to preserve global serial execution.
         """
-        # Check expiry
-        try:
-            expires_dt = datetime.fromisoformat(existing.expires_at)
-            if expires_dt < datetime.now(UTC):
-                return True
-        except (ValueError, TypeError):
-            # If expires_at is malformed, treat as recoverable
+        pid_alive = self._is_pid_alive(existing.pid)
+
+        # If the PID is dead, the lock is always recoverable.
+        if not pid_alive:
             return True
 
-        # Check PID liveness
-        if not self._is_pid_alive(existing.pid):
-            return True
-
+        # PID is alive — lock is NOT recoverable regardless of expiry.
         return False
 
     def _is_pid_alive(self, pid: int) -> bool:
