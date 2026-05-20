@@ -54,6 +54,30 @@ from alphascreener.tradingagents.llm_adapter import (
     create_llm_client,
     create_llm_client_safe,
 )
+from alphascreener.tradingagents.breakout_retriever import (
+    BreakoutCaseRetriever,
+)
+from alphascreener.tradingagents.orchestrator import (
+    AnalystOrchestrator,
+    build_context,
+    check_token_budget,
+    run_analyst,
+)
+from alphascreener.tradingagents.prompts import (
+    MAX_INPUT_TOKENS,
+    MAX_OUTPUT_TOKENS,
+    ANALYST_PROMPTS,
+    AnalystContext,
+    AnalystPromptTemplate,
+    BreakoutAnalystPrompt,
+    FundamentalsAnalystPrompt,
+    MarketAnalystPrompt,
+    NewsAnalystPrompt,
+    estimate_tokens,
+    format_analyst_prompt,
+    get_analyst_prompt,
+    truncate_context,
+)
 
 __all__ = [
     # LLM
@@ -66,6 +90,27 @@ __all__ = [
     "create_market_analyst",
     "create_news_analyst",
     "create_sentiment_analyst",
+    # Prompt templates (Issue #97)
+    "MAX_INPUT_TOKENS",
+    "MAX_OUTPUT_TOKENS",
+    "ANALYST_PROMPTS",
+    "AnalystContext",
+    "AnalystPromptTemplate",
+    "BreakoutAnalystPrompt",
+    "FundamentalsAnalystPrompt",
+    "MarketAnalystPrompt",
+    "NewsAnalystPrompt",
+    "estimate_tokens",
+    "format_analyst_prompt",
+    "get_analyst_prompt",
+    "truncate_context",
+    # Breakout retriever (Issue #97)
+    "BreakoutCaseRetriever",
+    # Orchestrator (Issue #97)
+    "AnalystOrchestrator",
+    "build_context",
+    "check_token_budget",
+    "run_analyst",
     # Debate
     "create_aggressive_debator",
     "create_bear_researcher",
