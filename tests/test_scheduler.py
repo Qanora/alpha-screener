@@ -96,9 +96,9 @@ class TestPidLockAcquire:
         result = mgr2.acquire(task_id="daily_health_check", timeout_s=5)
         assert result is False
 
-    def test_acquire_recovers_dead_lock(self, db_engine):
+    def test_acquire_recovers_dead_lock(self, db_engine, monkeypatch):
         """When lock held by dead PID, acquire recovers and succeeds."""
-        # Insert a lock held by a non-existent PID
+        monkeypatch.setattr(psutil, "pid_exists", lambda _pid: False)
         dead_pid = 99999
         with Session(db_engine) as s:
             s.add(
@@ -285,8 +285,9 @@ class TestPidLockRecovery:
         mgr = PidLockManager(session_factory=lambda: None)
         assert mgr._is_pid_alive(99999) is False
 
-    def test_recover_dead_lock_force_releases(self, db_engine):
+    def test_recover_dead_lock_force_releases(self, db_engine, monkeypatch):
         """When lock-holder PID is dead, force_release removes the lock."""
+        monkeypatch.setattr(psutil, "pid_exists", lambda _pid: False)
         dead_pid = 99999
         with Session(db_engine) as s:
             s.add(
