@@ -215,7 +215,7 @@ class TestAblationEntry:
         entry = AblationEntry.from_assessment(
             ticker="GOOG", dt=date(2025, 8, 1),
             coarse_final_score=3.0, score_correction=1.0,
-            risk_tags=[], data_conflict_detected=False,
+            risk_tags=None, data_conflict_detected=False,
         )
         assert entry.risk_filter == 1.0
 
@@ -357,7 +357,7 @@ class TestComputeDeltaLift:
             "ticker": [f"T{i}" for i in range(10)],
             "dt": date(2025, 6, 1),
             "refined_score_pure": [5.0, 5.0, 5.0, 5.0, 5.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-            "hit": [1, 1, 0, 0, 0, 1, 1, 1, 0, 0],
+            "hit": [1, 1, 0, 0, 0, 1, 0, 0, 0, 0],
         })
         llm_df = pl.DataFrame({
             "ticker": [f"T{i}" for i in range(10)],
@@ -372,7 +372,7 @@ class TestComputeDeltaLift:
             outcome_col="hit",
         )
         # LLM better ranking -> positive delta
-        assert result > 0.0
+        assert result == pytest.approx(2.0 / 3.0, rel=1e-6)
 
     def test_nan_when_one_track_fails(self):
         pure_df = pl.DataFrame({
@@ -787,7 +787,8 @@ class TestBuildOutcomesFromOhlcv:
 class TestCreateAblationTracker:
     """Factory reads LLM_ABLATION_ENABLED from settings."""
 
-    def test_default_enabled(self):
+    def test_default_enabled(self, monkeypatch):
+        monkeypatch.delenv("LLM_ABLATION_ENABLED", raising=False)
         tracker = create_ablation_tracker()
         assert tracker.enabled is True
 
