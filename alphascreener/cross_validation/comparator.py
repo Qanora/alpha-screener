@@ -18,7 +18,7 @@ import polars as pl
 # ---------------------------------------------------------------------------
 
 DIFF_THRESHOLD_PCT: float = 0.5  # 0.5% relative difference triggers a diff record
-OHLCV_FIELDS: tuple[str, ...] = ("open", "high", "low", "close", "volume")
+OHLCV_FIELDS: tuple[str, ...] = ("open", "high", "low", "close")
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ def compare_ohlcv_dataframes(
     """Compare OHLCV data between primary and fallback sources.
 
     Joins the two DataFrames on (ticker, dt) and computes the relative difference
-    for Open, High, Low, Close, and Volume. Any field with an absolute relative
+    for Open, High, Low, and Close. Any field with an absolute relative
     difference > *threshold_pct* is recorded as a diff.
 
     Args:

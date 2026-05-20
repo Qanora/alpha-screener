@@ -19,6 +19,7 @@ from alphascreener.sources.stooq_adapter import (
     STOOQ_RETRY_WAIT_MAX_S,
     StooqAdapter,
     _default_retry_policy,
+    _is_retryable_http_status,
     _parse_stooq_csv,
     _safe_float,
     _safe_int,
@@ -321,6 +322,104 @@ class TestRetryPolicy:
         with pytest.raises(httpx.ConnectError):
             flaky()
         assert call_count[0] == STOOQ_MAX_RETRIES  # 3 attempts
+
+    def test_policy_retries_on_http_429(self):
+        import httpx
+
+        call_count = [0]
+
+        @_default_retry_policy()
+        def flaky():
+            call_count[0] += 1
+            resp = httpx.Response(429, request=httpx.Request("GET", "https://example.com"))
+            raise httpx.HTTPStatusError("rate limited", request=resp.request, response=resp)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            flaky()
+        assert call_count[0] == STOOQ_MAX_RETRIES
+
+    def test_policy_retries_on_http_5xx(self):
+        import httpx
+
+        call_count = [0]
+
+        @_default_retry_policy()
+        def flaky():
+            call_count[0] += 1
+            resp = httpx.Response(503, request=httpx.Request("GET", "https://example.com"))
+            raise httpx.HTTPStatusError("server error", request=resp.request, response=resp)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            flaky()
+        assert call_count[0] == STOOQ_MAX_RETRIES
+
+    def test_policy_no_retry_on_http_4xx_except_429(self):
+        """HTTP 404 (client error) should NOT be retried."""
+        import httpx
+
+        call_count = [0]
+
+        @_default_retry_policy()
+        def flaky():
+            call_count[0] += 1
+            resp = httpx.Response(404, request=httpx.Request("GET", "https://example.com"))
+            raise httpx.HTTPStatusError("not found", request=resp.request, response=resp)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            flaky()
+        assert call_count[0] == 1  # No retry on 404
+
+
+class TestIsRetryableHttpStatus:
+    """Unit tests for _is_retryable_http_status predicate."""
+
+    def test_429_is_retryable(self):
+        import httpx
+
+        resp = httpx.Response(429, request=httpx.Request("GET", "https://example.com"))
+        exc = httpx.HTTPStatusError("rate limited", request=resp.request, response=resp)
+        assert _is_retryable_http_status(exc) is True
+
+    def test_503_is_retryable(self):
+        import httpx
+
+        resp = httpx.Response(503, request=httpx.Request("GET", "https://example.com"))
+        exc = httpx.HTTPStatusError("server error", request=resp.request, response=resp)
+        assert _is_retryable_http_status(exc) is True
+
+    def test_500_is_retryable(self):
+        import httpx
+
+        resp = httpx.Response(500, request=httpx.Request("GET", "https://example.com"))
+        exc = httpx.HTTPStatusError("internal error", request=resp.request, response=resp)
+        assert _is_retryable_http_status(exc) is True
+
+    def test_599_is_retryable(self):
+        import httpx
+
+        resp = httpx.Response(599, request=httpx.Request("GET", "https://example.com"))
+        exc = httpx.HTTPStatusError("network error", request=resp.request, response=resp)
+        assert _is_retryable_http_status(exc) is True
+
+    def test_404_is_not_retryable(self):
+        import httpx
+
+        resp = httpx.Response(404, request=httpx.Request("GET", "https://example.com"))
+        exc = httpx.HTTPStatusError("not found", request=resp.request, response=resp)
+        assert _is_retryable_http_status(exc) is False
+
+    def test_400_is_not_retryable(self):
+        import httpx
+
+        resp = httpx.Response(400, request=httpx.Request("GET", "https://example.com"))
+        exc = httpx.HTTPStatusError("bad request", request=resp.request, response=resp)
+        assert _is_retryable_http_status(exc) is False
+
+    def test_connect_error_is_not_http_status(self):
+        import httpx
+
+        exc = httpx.ConnectError("connection failed")
+        assert _is_retryable_http_status(exc) is False
 
 
 # ============================================================================

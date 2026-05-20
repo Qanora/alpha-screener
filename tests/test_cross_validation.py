@@ -236,8 +236,8 @@ class TestCompareOhlcvDataframes:
         for rec in result.records:
             assert rec["fallback_source"] == "alpaca"
 
-    def test_volume_diff_detected(self):
-        """Volume diffs should also be flagged when above threshold."""
+    def test_volume_diff_not_compared(self):
+        """Volume diffs are excluded from OHLCV_FIELDS and should NOT be flagged."""
         primary = pl.DataFrame(
             {
                 "ticker": ["AAPL"],
@@ -257,13 +257,12 @@ class TestCompareOhlcvDataframes:
                 "high": [152.0],
                 "low": [149.0],
                 "close": [151.5],
-                "volume": [200000],  # 100% diff in volume
+                "volume": [200000],  # 100% diff in volume but not compared
             },
         )
         result = compare_ohlcv_dataframes(primary, fallback)
-        assert len(result.records) > 0
-        volume_recs = [r for r in result.records if r["field"] == "volume"]
-        assert len(volume_recs) > 0
+        # OHLCV_FIELDS only has O/H/L/C — volume diffs are not compared
+        assert len(result.records) == 0
 
     def test_ohlcvfielddiffs_defaults(self):
         """OHLCVFieldDiffs dataclass should have sensible defaults."""
@@ -413,6 +412,40 @@ class TestDiffStore:
 
 
 # ============================================================================
+# DailyHealthRecord validation
+# ============================================================================
+
+
+class TestDailyHealthRecord:
+    """Validation tests for DailyHealthRecord __post_init__."""
+
+    def test_valid_record(self):
+        record = DailyHealthRecord(date=date(2025, 1, 2), total_tickers=100, failed_tickers=50)
+        assert record.total_tickers == 100
+        assert record.failed_tickers == 50
+
+    def test_negative_total_tickers_raises(self):
+        with pytest.raises(ValueError, match="total_tickers must be >= 0"):
+            DailyHealthRecord(date=date(2025, 1, 2), total_tickers=-1, failed_tickers=0)
+
+    def test_negative_failed_tickers_raises(self):
+        with pytest.raises(ValueError, match="failed_tickers must be >= 0"):
+            DailyHealthRecord(date=date(2025, 1, 2), total_tickers=100, failed_tickers=-5)
+
+    def test_failed_exceeds_total_raises(self):
+        with pytest.raises(ValueError, match="failed_tickers"):
+            DailyHealthRecord(date=date(2025, 1, 2), total_tickers=10, failed_tickers=11)
+
+    def test_failed_equals_total_accepted(self):
+        record = DailyHealthRecord(date=date(2025, 1, 2), total_tickers=100, failed_tickers=100)
+        assert record.failed_tickers == 100
+
+    def test_zero_total_zero_failed_accepted(self):
+        record = DailyHealthRecord(date=date(2025, 1, 2), total_tickers=0, failed_tickers=0)
+        assert record.total_tickers == 0
+
+
+# ============================================================================
 # YFinanceHealthMonitor
 # ============================================================================
 
@@ -547,9 +580,13 @@ class TestYFinanceHealthMonitor:
 
     def test_reset(self, monitor):
         """reset() clears all state."""
-        for _ in range(3):
+        for day_offset in range(3):
             monitor.record_day(
-                DailyHealthRecord(date=date(2025, 1, 2), total_tickers=100, failed_tickers=40)
+                DailyHealthRecord(
+                    date=date(2025, 1, 2 + day_offset),
+                    total_tickers=100,
+                    failed_tickers=40,
+                )
             )
         assert monitor.fallback_activated is True
 
@@ -574,6 +611,72 @@ class TestYFinanceHealthMonitor:
         h = monitor.history
         h.clear()
         assert len(monitor.history) == 1  # Original unaffected
+
+    # -- Constructor parameter validation ------------------------------------
+
+    def test_consecutive_days_zero_raises(self):
+        with pytest.raises(ValueError, match="consecutive_days must be > 0"):
+            YFinanceHealthMonitor(consecutive_days=0)
+
+    def test_consecutive_days_negative_raises(self):
+        with pytest.raises(ValueError, match="consecutive_days must be > 0"):
+            YFinanceHealthMonitor(consecutive_days=-1)
+
+    def test_threshold_pct_below_zero_raises(self):
+        with pytest.raises(ValueError, match="failure_threshold_pct"):
+            YFinanceHealthMonitor(failure_threshold_pct=-0.1)
+
+    def test_threshold_pct_above_100_raises(self):
+        with pytest.raises(ValueError, match="failure_threshold_pct"):
+            YFinanceHealthMonitor(failure_threshold_pct=100.1)
+
+    def test_threshold_pct_boundary_accepted(self):
+        m0 = YFinanceHealthMonitor(failure_threshold_pct=0.0)
+        assert m0.failure_threshold_pct == 0.0
+        m100 = YFinanceHealthMonitor(failure_threshold_pct=100.0)
+        assert m100.failure_threshold_pct == 100.0
+
+    # -- Calendar-based consecutive day counting -----------------------------
+
+    def test_calendar_gap_resets_counter(self, monitor):
+        """A gap > 1 calendar day should reset the consecutive exceeded counter."""
+        # Day 1: bad
+        monitor.record_day(
+            DailyHealthRecord(date=date(2025, 1, 2), total_tickers=100, failed_tickers=40)
+        )
+        assert monitor.consecutive_exceeded == 1
+
+        # Day 3 (skipped day 4 — gap of 2 days): bad — counter should reset to 1
+        monitor.record_day(
+            DailyHealthRecord(date=date(2025, 1, 5), total_tickers=100, failed_tickers=40)
+        )
+        assert monitor.consecutive_exceeded == 1
+
+    def test_calendar_consecutive_days_trigger(self, monitor):
+        """Exactly 3 consecutive calendar days trigger the switch."""
+        for day_offset in range(3):
+            monitor.record_day(
+                DailyHealthRecord(
+                    date=date(2025, 1, 2 + day_offset),
+                    total_tickers=100,
+                    failed_tickers=40,
+                )
+            )
+        assert monitor.consecutive_exceeded == 3
+        assert monitor.fallback_activated is True
+
+    def test_same_date_does_not_double_count(self, monitor):
+        """Recording the same date twice should not increment the counter."""
+        monitor.record_day(
+            DailyHealthRecord(date=date(2025, 1, 2), total_tickers=100, failed_tickers=40)
+        )
+        assert monitor.consecutive_exceeded == 1
+
+        # Same date again — counter unchanged
+        monitor.record_day(
+            DailyHealthRecord(date=date(2025, 1, 2), total_tickers=100, failed_tickers=50)
+        )
+        assert monitor.consecutive_exceeded == 1
 
 
 # ============================================================================

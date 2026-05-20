@@ -20,6 +20,7 @@ import httpx
 import polars as pl
 from tenacity import (
     retry,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -42,6 +43,14 @@ STOOQ_RETRY_WAIT_MAX_S: float = 30.0
 # ---------------------------------------------------------------------------
 
 
+def _is_retryable_http_status(exc: BaseException) -> bool:
+    """Return True when *exc* is an HTTPStatusError with status 429 or 5xx."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 429 or 500 <= status < 600
+    return False
+
+
 def _default_retry_policy(
     max_retries: int = STOOQ_MAX_RETRIES,
     wait_init: float = STOOQ_RETRY_WAIT_INIT_S,
@@ -49,12 +58,12 @@ def _default_retry_policy(
 ):
     """Exponential backoff: 2s, 4s, 8s, up to 30s.
 
-    Retries on transient HTTP / network errors.
+    Retries on transient HTTP/network errors and HTTP 429 / 5xx responses.
     """
     return retry(
         retry=retry_if_exception_type(
             (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError)
-        ),
+        ) | retry_if_exception(_is_retryable_http_status),
         stop=stop_after_attempt(max_retries),
         wait=wait_exponential(multiplier=1, min=wait_init, max=wait_max),
         reraise=True,
@@ -238,18 +247,16 @@ class StooqAdapter:
 
     # -- Core execution wrapper --------------------------------------------------
 
-    @staticmethod
-    def _build_url(ticker: str) -> str:
+    def _build_url(self, ticker: str) -> str:
         """Build the Stooq download URL for a ticker.
 
-        The URL format is: https://stooq.com/q/d/l/?s={ticker}&i=d
+        The URL format is: {base_url}?s={ticker}&i=d
 
         The ticker is lowercased for Stooq compatibility (US equities).
         """
-        return f"https://stooq.com/q/d/l/?s={ticker.lower()}&i=d"
+        return f"{self.base_url}?s={ticker.lower()}&i=d"
 
-    @staticmethod
-    def _build_date_url(ticker: str, start_date: date, end_date: date) -> str:
+    def _build_date_url(self, ticker: str, start_date: date, end_date: date) -> str:
         """Build the Stooq download URL with explicit date range.
 
         d1 and d2 use YYYYMMDD format.
@@ -257,7 +264,7 @@ class StooqAdapter:
         d1 = start_date.strftime("%Y%m%d")
         d2 = end_date.strftime("%Y%m%d")
         return (
-            f"https://stooq.com/q/d/l/?s={ticker.lower()}"
+            f"{self.base_url}?s={ticker.lower()}"
             f"&d1={d1}&d2={d2}&i=d"
         )
 
@@ -277,14 +284,18 @@ class StooqAdapter:
         try:
             client = await self._get_client()
 
-            retried_get = _default_retry_policy(
+            async def _do_get() -> httpx.Response:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response
+
+            do_get = _default_retry_policy(
                 max_retries=self.max_retries,
                 wait_init=self.retry_wait_init_s,
                 wait_max=self.retry_wait_max_s,
-            )(client.get)
+            )(_do_get)
 
-            response = await retried_get(url)
-            response.raise_for_status()
+            response = await do_get()
             return response.text
         finally:
             self._release_after_delay()
