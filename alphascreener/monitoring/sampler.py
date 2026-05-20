@@ -52,6 +52,10 @@ class MonitoringConfig:
 
 _SessionFactory = Callable[[], Session]
 
+# Per-task OOM kill count tracking — cgroup counters are cumulative so we
+# only alert on delta increases.
+_last_oom_count: dict[str, int] = {}
+
 
 def _utcnow_iso() -> str:
     """Return current UTC time as ISO8601 string."""
@@ -401,8 +405,10 @@ def _check_oom(
             logger.debug("Could not read OOM kill count", exc_info=True)
             return None
 
-    if oom_count > 0:
-        _alert_severity(session_factory, task_id, "critical", "oom_kill", float(oom_count))
+    prev = _last_oom_count.get(task_id, 0)
+    _last_oom_count[task_id] = oom_count
+    if oom_count > prev:
+        _alert_severity(session_factory, task_id, "critical", "oom_kill", float(oom_count - prev))
         return "critical"
     return None
 
