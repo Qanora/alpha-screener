@@ -324,7 +324,7 @@ class SyncOrchestrator:
             return t.rsplit(".", 1)[0] if "." in t else t
 
         stooq_df = stooq_df.with_columns(
-            pl.col("ticker").map_elements(_strip_suffix, return_dtype=pl.Utf8).alias("ticker")
+            pl.col("ticker").map_elements(_strip_suffix, return_dtype=pl.Utf8).str.to_uppercase().alias("ticker")
         )
 
         # Compare field-by-field for each (ticker, dt) pair
@@ -424,7 +424,9 @@ class SyncOrchestrator:
             except FmpBudgetExhaustedError:
                 report.fmp_budget_exhausted = True
                 break
-            except Exception:
+            except Exception as e:
+                self._logger.warning("FMP enrichment failed for %s: %s", ticker, e)
+                report.errors.append(f"FMP enrichment ({ticker}): {e}")
                 continue
 
         self._logger.info("FMP enrichment: %d tickers enriched", enriched)
