@@ -398,7 +398,7 @@ class TestSevenDayBreakoutStrategy:
         strat = results[0]
 
         # At most 20 positions opened
-        assert strat.max_positions_held <= 22  # might be more due to multi-data
+        assert strat.max_positions_held <= 20, f"Expected max 20 positions, got {strat.max_positions_held}"
         # Verify the max concurrent cap logic exists
         assert hasattr(strat, "max_positions_held")
 

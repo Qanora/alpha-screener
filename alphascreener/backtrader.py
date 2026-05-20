@@ -170,7 +170,9 @@ class SevenDayBreakoutStrategy(bt.Strategy):
         """
         if price <= 0:
             return 0
-        cash_per_position = self.broker.getcash() / self.p.max_positions
+        if not hasattr(self, "_initial_cash"):
+            self._initial_cash = self.broker.getvalue()
+        cash_per_position = self._initial_cash / self.p.max_positions
         return max(1, int(cash_per_position / price))
 
     def notify_trade(self, trade) -> None:
@@ -473,7 +475,7 @@ def run_backtest(
             spy_ret = spy_results[0].analyzers.returns
             spy_rets = spy_ret.get_analysis() if spy_ret else {}
             benchmark_returns = pd.Series(spy_rets) if spy_rets else pd.Series(dtype=float)
-        except Exception as e:
+        except (ValueError, KeyError, IndexError) as e:
             _logger.warning("SPY benchmark computation failed: %s", e)
 
     metrics = compute_backtest_metrics(strategy_returns, benchmark_returns=benchmark_returns)
