@@ -170,9 +170,9 @@ class YFinanceHealthMonitor:
         else:
             delta_days = 1  # first record — treat as the start of a fresh day
 
-        if record.failure_rate_pct >= self.failure_threshold_pct:
+        if record.failure_rate_pct > self.failure_threshold_pct:
             if delta_days == 0:
-                # Same calendar date — donʼt double-count
+                # Same calendar date — don't double-count
                 pass
             elif delta_days == 1:
                 self._consecutive_exceeded += 1
