@@ -16,7 +16,7 @@ from typing import Any
 # Re-export TradingAgents public API
 # ---------------------------------------------------------------------------
 from tradingagents.llm_clients.base_client import BaseLLMClient  # noqa: F401, E402
-from tradingagents.llm_clients.factory import create_llm_client  # noqa: F401, E402, I100
+from tradingagents.llm_clients.factory import create_llm_client  # noqa: F401, E402
 
 from alphascreener.logging import get_logger
 
