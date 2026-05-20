@@ -91,6 +91,18 @@ fi
 # 先将旧分支 merge 到最新 master（不用 rebase 避免 force push 冲突）
 git checkout "$OLD_BRANCH"
 COMMIT_MSG=$(git log -1 --pretty=format:'%s' "$OLD_BRANCH")
+
+# Ensure the squashed commit carries "closes #N" so GitHub auto-closes the issue.
+# Fix commits use "(#N)" (no "closes") — the original feat commit has "closes".
+# We inject it if it is missing to avoid losing automatic issue closure.
+ISSUE_NUM_TEMP=""
+if [[ "$OLD_BRANCH" =~ ^feature/issue-([0-9]+)(-v[0-9]+)?$ ]]; then
+  ISSUE_NUM_TEMP="${BASH_REMATCH[1]}"
+fi
+if [ -n "$ISSUE_NUM_TEMP" ] && ! echo "$COMMIT_MSG" | grep -qi 'closes'; then
+  COMMIT_MSG="$(echo "$COMMIT_MSG" | sed "s/(#$ISSUE_NUM_TEMP)/(closes #$ISSUE_NUM_TEMP)/")"
+fi
+
 if ! git merge origin/master --no-edit; then
   echo "ERROR: merge conflict — resolve manually then re-run, or: git merge --abort"
   git checkout "$ORIG_REF" 2>/dev/null || true
