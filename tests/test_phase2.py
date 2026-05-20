@@ -127,7 +127,12 @@ class TestComputeBreakoutScore:
                 _make_row("B", mom_z=1.0),
             ]
         )
-        df = df.with_columns(pl.col("PEAD_FLAG").replace({0: 1}))
+        df = df.with_columns(
+            pl.when(pl.col("ticker") == "A")
+            .then(1)
+            .otherwise(pl.col("PEAD_FLAG"))
+            .alias("PEAD_FLAG")
+        )
         # Set PEAD_FLAG to 1 for A, keep 0 for B
 
         from alphascreener.screening.phase2 import compute_breakout_score

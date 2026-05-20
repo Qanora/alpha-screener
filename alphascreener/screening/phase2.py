@@ -121,6 +121,8 @@ def apply_industry_dedup(
     *,
     sector_cap: int = DEFAULT_SECTOR_CAP,
     industry_cap: int = DEFAULT_INDUSTRY_CAP,
+    sector_count: dict[str, int] | None = None,
+    industry_count: dict[str, int] | None = None,
 ) -> pl.DataFrame:
     """Apply GICS sector/industry dedup to a sorted candidate list.
 
@@ -135,6 +137,10 @@ def apply_industry_dedup(
             (optional), ``industry`` (optional).
         sector_cap: Max tickers per GICS Sector.
         industry_cap: Max tickers per GICS Industry.
+        sector_count: Optional pre-populated sector counts (for incremental
+            dedup). Mutated in place.
+        industry_count: Optional pre-populated industry counts (for
+            incremental dedup). Mutated in place.
 
     Returns:
         Dedup-selected rows, preserving relative sort order.
@@ -144,8 +150,10 @@ def apply_industry_dedup(
 
     rows = df.to_dicts()
     selected: list[dict] = []
-    sector_count: dict[str, int] = {}
-    industry_count: dict[str, int] = {}
+    if sector_count is None:
+        sector_count = {}
+    if industry_count is None:
+        industry_count = {}
 
     for row in rows:
         sector = row.get("sector")
@@ -230,6 +238,20 @@ def phase2_pipeline(
 
     # 5. Fallback: if dedup result < n_final, fill from remaining pool
     if deduped.height < n_final:
+        # Build sector/industry counts from already-selected tickers so
+        # incremental backfill does not break the global caps.
+        sc: dict[str, int] = {}
+        ic: dict[str, int] = {}
+        for row in deduped.to_dicts():
+            s = row.get("sector")
+            if s is not None:
+                sk = str(s)
+                sc[sk] = sc.get(sk, 0) + 1
+            ind = row.get("industry")
+            if ind is not None:
+                ik = str(ind)
+                ic[ik] = ic.get(ik, 0) + 1
+
         shortage = n_final - deduped.height
         existing_tickers = set(deduped["ticker"].to_list())
 
@@ -239,6 +261,7 @@ def phase2_pipeline(
         if remainder.height > 0:
             fill = apply_industry_dedup(
                 remainder, sector_cap=sector_cap, industry_cap=industry_cap,
+                sector_count=sc, industry_count=ic,
             ).head(shortage)
 
             if fill.height > 0:
@@ -266,4 +289,4 @@ def phase2_pipeline(
         industry_cap,
     )
 
-    return deduped.head(n_final)
+    return deduped.sort("breakout_score", descending=True).head(n_final)
