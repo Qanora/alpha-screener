@@ -538,11 +538,11 @@ class TestYFinanceHealthMonitor:
         assert monitor.fallback_activated is False
 
     def test_failure_rate_exactly_at_threshold(self, monitor):
-        """Exactly 30% failure rate should count as exceeded threshold."""
+        """Exactly 30% failure rate does NOT exceed the strict > threshold."""
         monitor.record_day(
             DailyHealthRecord(date=date(2025, 1, 2), total_tickers=100, failed_tickers=30)
         )
-        assert monitor.consecutive_exceeded == 1
+        assert monitor.consecutive_exceeded == 0
 
     def test_failure_rate_below_threshold(self, monitor):
         """29% failure rate is below threshold, should not count."""
