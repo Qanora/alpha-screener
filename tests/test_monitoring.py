@@ -7,8 +7,9 @@ Reference: PRD 9.2 / 9.3 / 10.2.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 import psutil
 import pytest
@@ -25,6 +26,12 @@ from alphascreener.monitoring import (
     _check_oom,
     _check_rss_sustained,
     _cleanup_old_samples,
+)
+from alphascreener.monitoring.sampler import (
+    _parse_oom_kill_from_events,
+    _parse_oom_kill_from_oom_control,
+    _read_oom_kill_count,
+    _resolve_cgroup_path,
 )
 
 # ============================================================================
@@ -346,6 +353,128 @@ class TestOOMDetection:
 
 
 # ============================================================================
+# 6b. Cgroup OOM kill count parsing
+# ============================================================================
+
+
+CGROUP_V2 = """0::/system.slice/foo.service
+"""
+
+CGROUP_V1 = """11:memory:/user.slice/user-1000.slice
+10:cpuset:/
+9:blkio:/
+"""
+
+MEMORY_EVENTS = """low 0
+high 0
+max 0
+oom 0
+oom_kill 5
+oom_group_kill 0
+"""
+
+OOM_CONTROL = """oom_kill_disable 0
+under_oom 0
+oom_kill 3
+"""
+
+
+class TestCgroupOOMKillCount:
+    """_read_oom_kill_count parses cgroup v2 / v1 OOM kill counters."""
+
+    def test_cgroup_v2_oom_kill_from_memory_events(self):
+        """When cgroup v2 memory.events has oom_kill=5, return 5."""
+        with (
+            mock.patch(
+                "alphascreener.monitoring.sampler._resolve_cgroup_path",
+                return_value="/system.slice/foo.service",
+            ),
+            mock.patch(
+                "alphascreener.monitoring.sampler.os.path.exists",
+                return_value=True,
+            ),
+            mock.patch(
+                "alphascreener.monitoring.sampler._parse_oom_kill_from_events",
+                return_value=5,
+            ),
+        ):
+            assert _read_oom_kill_count(99999) == 5
+
+    def test_cgroup_v1_oom_kill_from_oom_control(self):
+        """When cgroup v2 memory.events missing but v1 oom_control has oom_kill=3, return 3."""
+
+        def exists_side_effect(path):
+            # Only the v1 oom_control path exists; v2 memory.events does not
+            return "memory.oom_control" in path
+
+        with (
+            mock.patch(
+                "alphascreener.monitoring.sampler._resolve_cgroup_path",
+                return_value="/user.slice/user-1000.slice",
+            ),
+            mock.patch(
+                "alphascreener.monitoring.sampler.os.path.exists",
+                side_effect=exists_side_effect,
+            ),
+            mock.patch(
+                "alphascreener.monitoring.sampler._parse_oom_kill_from_oom_control",
+                return_value=3,
+            ),
+        ):
+            assert _read_oom_kill_count(99999) == 3
+
+    def test_no_cgroup_file_returns_zero(self):
+        """When cgroup path resolution returns None, return 0."""
+        with mock.patch(
+            "alphascreener.monitoring.sampler._resolve_cgroup_path",
+            return_value=None,
+        ):
+            assert _read_oom_kill_count(99999) == 0
+
+    def test_resolve_cgroup_v2_path(self):
+        """_resolve_cgroup_path extracts cgroup path from cgroup v2 '0::/path' line."""
+        with (
+            mock.patch(
+                "alphascreener.monitoring.sampler.os.path.exists",
+                return_value=True,
+            ),
+            mock.patch(
+                "builtins.open",
+                mock.mock_open(read_data=CGROUP_V2),
+            ),
+        ):
+            result = _resolve_cgroup_path(12345)
+            assert result == "/system.slice/foo.service"
+
+    def test_resolve_cgroup_v1_path(self):
+        """_resolve_cgroup_path extracts cgroup path from cgroup v1 memory controller line."""
+        with (
+            mock.patch(
+                "alphascreener.monitoring.sampler.os.path.exists",
+                return_value=True,
+            ),
+            mock.patch(
+                "builtins.open",
+                mock.mock_open(read_data=CGROUP_V1),
+            ),
+        ):
+            result = _resolve_cgroup_path(12345)
+            assert result == "/user.slice/user-1000.slice"
+
+    def test_parse_oom_kill_from_events_file(self, tmp_path):
+        """_parse_oom_kill_from_events reads the oom_kill field from a real file."""
+        events_file = tmp_path / "memory.events"
+        events_file.write_text(MEMORY_EVENTS)
+        assert _parse_oom_kill_from_events(str(events_file)) == 5
+
+    def test_parse_oom_kill_from_oom_control_file(self, tmp_path):
+        """_parse_oom_kill_from_oom_control reads oom_kill (not oom_kill_disable)."""
+        oom_control_file = tmp_path / "memory.oom_control"
+        oom_control_file.write_text(OOM_CONTROL)
+        assert _parse_oom_kill_from_oom_control(str(oom_control_file)) == 3
+
+
+# ============================================================================
 # 7. Disk tight alert
 # ============================================================================
 
@@ -430,7 +559,7 @@ class TestDataRetention:
             s.add(
                 MonitoringSample(
                     task_id="cleanup-test",
-                    sampled_at=datetime.utcnow().isoformat(),
+                    sampled_at=datetime.now(UTC).isoformat(),
                     rss_mb=100.0,
                     cpu_percent=10.0,
                 )
@@ -447,8 +576,8 @@ class TestDataRetention:
         def sf():
             return Session(db_engine)
 
-        old_ts = (datetime.utcnow() - timedelta(days=40)).isoformat()
-        recent_ts = (datetime.utcnow() - timedelta(days=5)).isoformat()
+        old_ts = (datetime.now(UTC) - timedelta(days=40)).isoformat()
+        recent_ts = (datetime.now(UTC) - timedelta(days=5)).isoformat()
 
         with Session(db_engine) as s:
             s.add(
@@ -486,38 +615,41 @@ class TestDataRetention:
 class TestContextManager:
     """ResourceMonitor should support with-statement and clean up."""
 
-    def test_enter_starts_sampling(self, db_engine):
+    def test_with_statement_writes_samples_and_peaks(self, db_engine):
+        """Using `with ResourceMonitor(...) as monitor:` writes samples and peaks on exit."""
+        import time as _time
+
         def sf():
             return Session(db_engine)
 
-        monitor = ResourceMonitor(task_id="ctx-test", session_factory=sf)
-        monitor._proc = psutil.Process()
-        monitor._sample_and_persist()
-        # Verify a sample was written
-        with Session(db_engine) as s:
-            rows = s.query(MonitoringSample).filter_by(task_id="ctx-test").all()
-            assert len(rows) >= 1
+        # Use minimal interval so the background thread gets at least one sample
+        # before we exit.  We still need a real psutil.Process.
+        cfg = MonitoringConfig(sample_interval_seconds=1)
+        with ResourceMonitor(task_id="ctx-with", session_factory=sf, config=cfg) as _monitor:
+            # Let the background thread run at least one sample
+            _time.sleep(1.5)
 
-    def test_exit_writes_peaks(self, db_engine):
+        # On __exit__: background thread stopped, peaks flushed, OOM/disk checked.
+        with Session(db_engine) as s:
+            samples = s.query(MonitoringSample).filter_by(task_id="ctx-with").all()
+            assert len(samples) >= 1, "Expected at least one periodic sample"
+            peaks = [r for r in samples if r.notes == "peak"]
+            assert len(peaks) == 1, "Expected one peak row written on exit"
+
+    def test_exit_stops_sampling(self, db_engine):
+        """After the with-block, the background thread is no longer running."""
+
         def sf():
             return Session(db_engine)
 
-        monitor = ResourceMonitor(task_id="ctx-peaks", session_factory=sf)
-        monitor._proc = psutil.Process()
-        pk = {"rss_mb": 999.0, "cpu_percent": 99.0, "open_fd_count": 50, "thread_count": 8}
-        monitor._update_peaks(pk)
-        monitor._flush_peaks()
+        import time as _time
 
-        with Session(db_engine) as s:
-            peaks = s.query(MonitoringSample).filter_by(task_id="ctx-peaks", notes="peak").all()
-            assert len(peaks) == 1
-            assert peaks[0].rss_mb == 999.0
+        cfg = MonitoringConfig(sample_interval_seconds=1)
+        with ResourceMonitor(task_id="ctx-stop", session_factory=sf, config=cfg) as monitor:
+            _time.sleep(0.5)
 
-    def test_exit_stops_sampling(self):
-        monitor = ResourceMonitor(task_id="ctx-stop", session_factory=lambda: None)
-        monitor._running = True
-        monitor.stop()
         assert monitor._running is False
+        assert monitor._thread is None or not monitor._thread.is_alive()
 
 
 # ============================================================================

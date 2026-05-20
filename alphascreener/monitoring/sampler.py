@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
 
 import psutil
@@ -55,7 +55,7 @@ _SessionFactory = Callable[[], Session]
 
 def _utcnow_iso() -> str:
     """Return current UTC time as ISO8601 string."""
-    return datetime.utcnow().isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _with_session(
@@ -331,6 +331,7 @@ def _check_sustained(
         elapsed = _now_monotonic() - history[task_id]
         if elapsed >= persist_seconds:
             _alert_severity(session_factory, task_id, severity, rule_name, metric_value)
+            history.pop(task_id, None)
             return severity
         return None
 
@@ -407,13 +408,90 @@ def _check_oom(
 
 
 def _read_oom_kill_count(pid: int) -> int:
+    """Read the OOM kill count for *pid* from cgroup memory events.
+
+    Cgroup v2 path:  /sys/fs/cgroup/<cgroup_path>/memory.events  (field ``oom_kill``)
+    Cgroup v1 fallback: /sys/fs/cgroup/memory/<cgroup_path>/memory.oom_control
+
+    Returns 0 when cgroup files are missing, unreadable, or the field is absent.
+    """
     try:
-        oom_path = f"/proc/{pid}/oom_score"
-        if not os.path.exists(oom_path):
-            return 0
-        return 0
+        cgroup_path = _resolve_cgroup_path(pid)
     except Exception:
         return 0
+    if cgroup_path is None:
+        return 0
+
+    # cgroup v2
+    events_path = f"/sys/fs/cgroup{cgroup_path}/memory.events"
+    if os.path.exists(events_path):
+        try:
+            return _parse_oom_kill_from_events(events_path)
+        except Exception:
+            logger.debug("Failed to parse cgroup v2 memory.events", exc_info=True)
+            return 0
+
+    # cgroup v1 fallback
+    oom_control_path = f"/sys/fs/cgroup/memory{cgroup_path}/memory.oom_control"
+    if os.path.exists(oom_control_path):
+        try:
+            return _parse_oom_kill_from_oom_control(oom_control_path)
+        except Exception:
+            logger.debug("Failed to parse cgroup v1 memory.oom_control", exc_info=True)
+            return 0
+
+    return 0
+
+
+def _resolve_cgroup_path(pid: int) -> str | None:
+    """Return the cgroup path for *pid* from ``/proc/<pid>/cgroup``.
+
+    For cgroup v2 the line is ``0::/path``.
+    For cgroup v1 we look for the memory controller line.
+    """
+    cgroup_file = f"/proc/{pid}/cgroup"
+    if not os.path.exists(cgroup_file):
+        return None
+
+    with open(cgroup_file) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            # cgroup v2: "0::/system.slice/foo.service"
+            if line.startswith("0::"):
+                return line.split(":", 2)[2]
+            # cgroup v1: "6:memory:/user.slice/user-1000.slice"
+            parts = line.split(":")
+            if len(parts) == 3 and "memory" in parts[1]:
+                return parts[2]
+
+    return None
+
+
+def _parse_oom_kill_from_events(events_path: str) -> int:
+    """Parse the ``oom_kill`` field from a cgroup v2 ``memory.events`` file."""
+    with open(events_path) as fh:
+        for line in fh:
+            if line.startswith("oom_kill "):
+                return int(line.split()[1])
+    return 0
+
+
+def _parse_oom_kill_from_oom_control(oom_control_path: str) -> int:
+    """Parse the oom_kill count from a cgroup v1 ``memory.oom_control`` file.
+
+    Format (cgroup v1)::
+
+        oom_kill_disable 0
+        under_oom 0
+        oom_kill 3
+    """
+    with open(oom_control_path) as fh:
+        for line in fh:
+            if line.startswith("oom_kill ") and "disable" not in line:
+                return int(line.split()[1])
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +528,7 @@ def _cleanup_old_samples(
     session_factory: _SessionFactory,
     retention_days: int = 30,
 ) -> int:
-    cutoff = (datetime.utcnow() - timedelta(days=retention_days)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
 
     def _delete(session: Session) -> int:
         return (
