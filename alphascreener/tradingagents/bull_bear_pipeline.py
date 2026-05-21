@@ -19,11 +19,14 @@ import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, field_validator
 
 from alphascreener.logging import get_logger
+
+if TYPE_CHECKING:
+    from alphascreener.cost.tracker import CostTracker
 
 _logger = get_logger("screening")
 
@@ -707,6 +710,8 @@ def run_bull_bear_pm(
     invoker: Invoker,
     max_output_tokens: int = 800,
     retry_on_json_failure: bool = True,
+    *,
+    cost_tracker: CostTracker | None = None,
 ) -> BreakoutAssessment:
     """Run the full Bull/Bear/PM pipeline for a single symbol.
 
@@ -722,6 +727,8 @@ def run_bull_bear_pm(
             returning (response_text, input_tokens, output_tokens).
         max_output_tokens: Token budget for each individual LLM call.
         retry_on_json_failure: If True, retry once on JSON parse failure.
+        cost_tracker: Optional :class:`~alphascreener.cost.tracker.CostTracker`
+            for recording LLM call costs.
 
     Returns:
         A validated :class:`BreakoutAssessment` instance.
@@ -737,6 +744,14 @@ def run_bull_bear_pm(
         bull_response, in_tok, out_tok = invoker(bull_prompt, max_output_tokens)
         total_tokens += in_tok + out_tok
         input_tokens_total += in_tok
+        if cost_tracker is not None:
+            try:
+                cost_tracker.record_call("bull", in_tok, out_tok)
+            except Exception:
+                _logger.warning(
+                    "Failed to record bull call cost for %s",
+                    context.ticker, exc_info=True,
+                )
     except Exception as exc:
         _logger.error("Bull researcher invocation failed for %s: %s", context.ticker, exc)
         bull_raw = _validate_bull_result({})
@@ -759,6 +774,14 @@ def run_bull_bear_pm(
                     bull_response, in_tok, out_tok = invoker(retry_prompt, max_output_tokens)
                     total_tokens += in_tok + out_tok
                     input_tokens_total += in_tok
+                    if cost_tracker is not None:
+                        try:
+                            cost_tracker.record_call("bull", in_tok, out_tok)
+                        except Exception:
+                            _logger.warning(
+                                "Failed to record bull retry call cost for %s",
+                                context.ticker, exc_info=True,
+                            )
                     bull_raw = _extract_json_response(bull_response)
                     bull_raw = _validate_bull_result(bull_raw)
                 except Exception as exc2:
@@ -779,6 +802,14 @@ def run_bull_bear_pm(
         bear_response, in_tok, out_tok = invoker(bear_prompt, max_output_tokens)
         total_tokens += in_tok + out_tok
         input_tokens_total += in_tok
+        if cost_tracker is not None:
+            try:
+                cost_tracker.record_call("bear", in_tok, out_tok)
+            except Exception:
+                _logger.warning(
+                    "Failed to record bear call cost for %s",
+                    context.ticker, exc_info=True,
+                )
     except Exception as exc:
         _logger.error("Bear researcher invocation failed for %s: %s", context.ticker, exc)
         bear_raw = _validate_bear_result({})
@@ -801,6 +832,14 @@ def run_bull_bear_pm(
                     bear_response, in_tok, out_tok = invoker(retry_prompt, max_output_tokens)
                     total_tokens += in_tok + out_tok
                     input_tokens_total += in_tok
+                    if cost_tracker is not None:
+                        try:
+                            cost_tracker.record_call("bear", in_tok, out_tok)
+                        except Exception:
+                            _logger.warning(
+                                "Failed to record bear retry call cost for %s",
+                                context.ticker, exc_info=True,
+                            )
                     bear_raw = _extract_json_response(bear_response)
                     bear_raw = _validate_bear_result(bear_raw)
                 except Exception as exc2:
@@ -825,6 +864,14 @@ def run_bull_bear_pm(
         pm_response, in_tok, out_tok = invoker(pm_prompt, max_output_tokens)
         total_tokens += in_tok + out_tok
         input_tokens_total += in_tok
+        if cost_tracker is not None:
+            try:
+                cost_tracker.record_call("pm", in_tok, out_tok)
+            except Exception:
+                _logger.warning(
+                    "Failed to record PM call cost for %s",
+                    context.ticker, exc_info=True,
+                )
     except Exception as exc:
         _logger.error("PM invocation failed for %s: %s", context.ticker, exc)
         pm_raw = _validate_pm_result(
@@ -857,6 +904,14 @@ def run_bull_bear_pm(
                     pm_response, in_tok, out_tok = invoker(retry_prompt, max_output_tokens)
                     total_tokens += in_tok + out_tok
                     input_tokens_total += in_tok
+                    if cost_tracker is not None:
+                        try:
+                            cost_tracker.record_call("pm", in_tok, out_tok)
+                        except Exception:
+                            _logger.warning(
+                                "Failed to record PM retry call cost for %s",
+                                context.ticker, exc_info=True,
+                            )
                     pm_parsed = _extract_json_response(pm_response)
                     pm_raw = _validate_pm_result(
                         pm_parsed,
@@ -937,6 +992,8 @@ class BatchConfig:
     n_batches: int = DEFAULT_N_BATCHES
     max_output_tokens: int = 800
     retry_on_json_failure: bool = True
+    cost_tracker: CostTracker | None = None
+    """Optional cost tracker for recording LLM call costs per batch."""
 
 
 def _chunk_contexts(
@@ -962,6 +1019,11 @@ def run_pipeline_batch(
     In MVP, all calls are sequential (parallelism deferred to future
     optimisation).
 
+    If ``config.cost_tracker`` is set, each LLM call is recorded and the
+    circuit breaker is checked before every batch.  A tripped circuit
+    (L4) will cause :class:`RuntimeError`; L2+ will skip fine screening
+    for remaining symbols.
+
     Args:
         contexts: List of BullBearContext, one per symbol.
         invoker: LLM callable.
@@ -970,8 +1032,31 @@ def run_pipeline_batch(
     Returns:
         List of validated :class:`BreakoutAssessment` in the same order
         as the input contexts.
+
+    Raises:
+        RuntimeError: If the circuit breaker is at L4 (all LLM calls blocked).
     """
     cfg = config or BatchConfig()
+    cost_tracker = cfg.cost_tracker
+
+    # Check circuit breaker before processing
+    fine_screening_paused = False
+    if cost_tracker is not None:
+        status = cost_tracker.check_circuit()
+        _logger.info(
+            "Circuit status before pipeline: level=%s daily=$%.4f monthly=$%.4f",
+            status.label, status.daily_cost, status.monthly_cost,
+        )
+        if status.is_blocked():
+            _logger.error("L4 BREAKER: all LLM calls stopped")
+            raise RuntimeError(status.message)
+        if not status.fine_screening_allowed():
+            _logger.warning("L2+ DEGRADE: fine screening paused, coarse only")
+            fine_screening_paused = True
+
+    if fine_screening_paused:
+        _logger.info("Fine screening skipped due to circuit breaker — returning empty results")
+        return []
 
     # Limit to n_batches
     batches = _chunk_contexts(contexts, cfg.batch_size)[: cfg.n_batches]
@@ -980,6 +1065,18 @@ def run_pipeline_batch(
     total_symbols = 0
 
     for batch_idx, batch in enumerate(batches):
+        # Re-check circuit before each batch (cost may have accumulated)
+        if cost_tracker is not None:
+            status = cost_tracker.check_circuit()
+            if status.is_blocked():
+                _logger.error("L4 BREAKER tripped during batch %d — stopping", batch_idx + 1)
+                break
+            if not status.fine_screening_allowed():
+                _logger.warning(
+                    "L2+ DEGRADE tripped during batch %d — stopping fine screening", batch_idx + 1
+                )
+                break
+
         _logger.info(
             "Processing batch %d/%d: %d symbols",
             batch_idx + 1,
@@ -993,6 +1090,7 @@ def run_pipeline_batch(
                 invoker,
                 max_output_tokens=cfg.max_output_tokens,
                 retry_on_json_failure=cfg.retry_on_json_failure,
+                cost_tracker=cost_tracker,
             )
             results.append(assessment)
             total_symbols += 1
