@@ -79,6 +79,11 @@ def _select_top_k(
     Ties at the boundary cause all tied tickers to be included, so the
     effective count may exceed k.  Null scores are placed at the bottom.
     """
+    if k <= 0:
+        raise ValueError(
+            f"k must be a positive integer, got {k}. "
+            "Adjust compute_all_alpha_metrics / k_values to pass k >= 1."
+        )
     n = len(scores)
     if n == 0:
         return pl.DataFrame(
@@ -368,6 +373,7 @@ def compute_all_alpha_metrics(
     results: dict[str, float | None | int] = {
         "base_rate": base_rate,
         "sample_size": n_total,
+        "threshold": hit_threshold,
     }
 
     for track, score_col in [("pure", score_col_pure), ("llm", score_col_llm)]:
@@ -499,6 +505,7 @@ def _update_model(record: AlphaAcceptanceDaily, metrics: dict) -> None:
     record.bootstrap_ci_lower_llm = _maybe_float(metrics.get("bootstrap_ci_lower_llm"))
     record.bootstrap_ci_upper_llm = _maybe_float(metrics.get("bootstrap_ci_upper_llm"))
     record.sample_size = int(metrics["sample_size"])
+    record.threshold = _maybe_float(metrics.get("threshold"))
 
 
 def _maybe_float(value: object) -> float | None:

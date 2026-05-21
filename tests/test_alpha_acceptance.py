@@ -500,6 +500,8 @@ class TestComputeAllAlphaMetrics:
             "precision_at_10_llm",
             "lift_at_20_pure",
             "lift_at_20_llm",
+            "lift_at_10_pure",
+            "lift_at_10_llm",
             "recall_at_20_pure",
             "recall_at_20_llm",
             "recall_at_10_pure",
@@ -511,6 +513,7 @@ class TestComputeAllAlphaMetrics:
             "bootstrap_ci_lower_llm",
             "bootstrap_ci_upper_llm",
             "sample_size",
+            "threshold",
         ]
         for key in expected_keys:
             assert key in metrics, f"Missing key: {key}"
@@ -524,7 +527,7 @@ class TestComputeAllAlphaMetrics:
         assert metrics["sample_size"] == 73
 
     def test_metrics_in_range(self):
-        """All ratio metrics are in [0, 1]."""
+        """All ratio and lift metrics are in valid ranges."""
         from alphascreener.alpha_acceptance import compute_all_alpha_metrics
 
         df = _make_random_alpha_df(200)
@@ -545,6 +548,17 @@ class TestComputeAllAlphaMetrics:
             val = metrics[key]
             if val is not None:
                 assert 0.0 <= val <= 1.0, f"{key} = {val} out of range [0,1]"
+
+        lift_keys = [
+            "lift_at_20_pure",
+            "lift_at_20_llm",
+            "lift_at_10_pure",
+            "lift_at_10_llm",
+        ]
+        for key in lift_keys:
+            val = metrics[key]
+            if val is not None:
+                assert val >= 0.0, f"{key} = {val} should be >= 0"
 
     def test_ic_in_range(self):
         """IC values are in [-1, 1]."""
@@ -701,6 +715,7 @@ class TestWriteAlphaAcceptance:
             "bootstrap_ci_lower_llm": 0.12,
             "bootstrap_ci_upper_llm": 0.55,
             "sample_size": 500,
+            "threshold": 0.10,
         }
 
     def test_write_single_record(self, fresh_db, sample_metrics):
@@ -722,6 +737,7 @@ class TestWriteAlphaAcceptance:
             assert row.precision_at_20_pure == pytest.approx(0.30)
             assert row.ic_pure == pytest.approx(0.12)
             assert row.sample_size == 500
+            assert row.threshold == pytest.approx(0.10)
 
     def test_write_nullable_fields_handled(self, fresh_db):
         """Nullable fields (lift, precision) can be None."""
