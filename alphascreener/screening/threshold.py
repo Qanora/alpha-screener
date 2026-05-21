@@ -154,7 +154,7 @@ class DynamicThreshold:
         # extreme: >98% (strictly greater than over_tight upper bound)
         if filter_rate > hi_ot:
             return "extreme"
-        low_ol, hi_ol = FILTER_RATE_BANDS["over_loose"]
+        _low_ol, hi_ol = FILTER_RATE_BANDS["over_loose"]
         if filter_rate < hi_ol:
             return "over_loose"
         return "normal"
@@ -244,14 +244,15 @@ class DynamicThreshold:
             elif key == "RSI_HIGH":
                 new_val = min(100.0, new_val)
 
-            if new_val != old_val:
+            applied_delta = new_val - old_val
+            if applied_delta != 0.0:
                 self._thresholds[key] = new_val
-                record["changes"][key] = {"old": old_val, "new": new_val, "delta": delta}
+                record["changes"][key] = {"old": old_val, "new": new_val, "delta": applied_delta}
 
             # Update cumulative relaxation tracker (only for widening)
-            if direction > 0 and delta != 0.0:
+            if direction > 0 and applied_delta != 0.0:
                 prev = self._cumulative_relaxation.get(key, 0.0)
-                self._cumulative_relaxation[key] = prev + abs(delta)
+                self._cumulative_relaxation[key] = prev + abs(applied_delta)
 
         # RSI bounds crossover guard: after tightening, if LOW > HIGH,
         # reset both to the midpoint (50.0) to keep the interval valid.
