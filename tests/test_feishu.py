@@ -516,6 +516,45 @@ class TestPushOrchestration:
             assert result == PushResult.OK
             assert push_mod._consecutive_failures == 0
 
+    def test_three_consecutive_failures_triggers_alert(self, mock_settings_enabled):
+        """After 3 consecutive failures, _consecutive_failures >= 3 and logger.error is called."""
+        import alphascreener.feishu.push as push_mod
+        from alphascreener.feishu.card import CardData
+        from alphascreener.feishu.push import (
+            PushResult,
+            _reset_consecutive_failures,
+            push_daily_report,
+        )
+
+        _reset_consecutive_failures()
+        with (
+            mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m,
+            mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m,
+            mock.patch("alphascreener.feishu.push._logger") as logger_m,
+        ):
+            token_m.return_value = "t-test-token"
+            send_m.side_effect = RuntimeError("All retries exhausted")
+
+            # Simulate 3 consecutive push failures
+            for attempt in range(3):
+                result = push_daily_report(
+                    CardData(
+                        report_date=f"2026-05-{22 + attempt}",
+                        top_five=[
+                            {"ticker": "AAPL", "rating": "Buy", "confidence": 90.0, "catalyst": "T"}
+                        ],
+                    )
+                )
+                assert result == PushResult.FAILED
+
+            # After 3 failures, counter >= 3 and alert logged
+            assert push_mod._consecutive_failures >= 3
+            logger_m.error.assert_called()
+            # Verify the alert message references the consecutive failure count
+            call_args = logger_m.error.call_args
+            assert call_args is not None
+            assert "consecutive days" in call_args[0][0]
+
 
 # ============================================================================
 # Integration: scheduler task registration

@@ -300,9 +300,9 @@ def daily_feishu_push() -> None:
         # Build card data
         data = CardData(
             report_date=today.isoformat(),
-            total_symbols=0,  # populated by scan pipeline when available
-            coarse_pass=0,
-            refine_count=0,
+            total_symbols=None,  # populated by scan pipeline when available
+            coarse_pass=None,
+            refine_count=None,
             top_five=[],
             p20_pure=round(alpha.precision_at_20_pure, 1)
             if alpha and alpha.precision_at_20_pure is not None
@@ -317,13 +317,13 @@ def daily_feishu_push() -> None:
             if alpha and alpha.lift_at_20_llm is not None
             else 0.0,
             base_rate=round(alpha.base_rate, 1)
-            if alpha
+            if alpha and alpha.base_rate is not None
             else 0.0,
             win_rate=0.0,
             sharpe=0.0,
             avg_return=0.0,
             daily_cost=round(cost.total_usd, 2) if cost else 0.0,
-            monthly_cost=0.0,  # monthly cost computed by CostTracker
+            monthly_cost=None,  # populated by CostTracker when available
             alerts_summary=alerts_summary,
         )
 

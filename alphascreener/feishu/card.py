@@ -32,9 +32,9 @@ class CardData:
     """
 
     report_date: str = ""
-    total_symbols: int = 0
-    coarse_pass: int = 0
-    refine_count: int = 0
+    total_symbols: int | None = None
+    coarse_pass: int | None = None
+    refine_count: int | None = None
 
     # Top 5 tickers: list of dicts with keys ticker/rating/confidence/catalyst
     top_five: list[dict[str, Any]] = field(default_factory=list)
@@ -53,7 +53,7 @@ class CardData:
 
     # Cost tracking
     daily_cost: float = 0.0
-    monthly_cost: float = 0.0
+    monthly_cost: float | None = None
 
     # Alerts summary (or "ok" when no alerts)
     alerts_summary: str = _NO_ALERTS
@@ -62,6 +62,15 @@ class CardData:
 # ============================================================================
 # Card JSON builder
 # ============================================================================
+
+
+def _na(val: Any, fmt_spec: str = "") -> str:
+    """Format a value, returning "N/A" when None so zero vs. unavailable are distinct."""
+    if val is None:
+        return "N/A"
+    if fmt_spec:
+        return format(val, fmt_spec)
+    return str(val)
 
 
 def _build_top5_table(top_five: list[dict[str, Any]]) -> str:
@@ -103,9 +112,9 @@ def build_card_json(data: CardData) -> str:
                     "tag": "markdown",
                     "content": (
                         "**Scan**\n"
-                        f"Universe: {data.total_symbols} | "
-                        f"Coarse: {data.coarse_pass} | "
-                        f"Refine: {data.refine_count}"
+                        f"Universe: {_na(data.total_symbols)} | "
+                        f"Coarse: {_na(data.coarse_pass)} | "
+                        f"Refine: {_na(data.refine_count)}"
                     ),
                 },
                 {
@@ -135,7 +144,7 @@ def build_card_json(data: CardData) -> str:
                     "content": (
                         "**Cost**\n"
                         f"Today: ${data.daily_cost:.2f} | "
-                        f"Month: ${data.monthly_cost:.2f}/$100"
+                        f"Month: ${_na(data.monthly_cost, '.2f')}/$100"
                     ),
                 },
                 {"tag": "hr"},
