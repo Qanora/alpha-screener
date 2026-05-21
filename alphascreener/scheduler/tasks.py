@@ -29,6 +29,7 @@ TASK_CRON: dict[str, str] = {
     "daily_backtest_incremental": "0 11 * * 2-6",
     "daily_health_check": "0 12 * * *",
     "daily_scan": "0 23 * * 1-5",
+    "daily_feishu_push": "5 23 * * 1-5",
 }
 
 TASK_IDS: set[str] = set(TASK_CRON.keys())
@@ -239,6 +240,99 @@ def daily_cusum_check() -> None:
         engine.dispose()
 
 
+def daily_feishu_push() -> None:
+    """Push the daily screening report as a Feishu interactive card.
+
+    Cron: 5 23 * * 1-5 (23:05 UTC Mon-Fri, 5 min after daily_scan).
+
+    Fetches the latest alpha acceptance metrics, cost data, and alerts from
+    the database, then assembles and pushes the interactive card.
+    """
+    from datetime import date as date_type
+    from datetime import timedelta
+
+    from sqlalchemy.orm import Session
+
+    from alphascreener.config import Settings
+    from alphascreener.db.engine import create_db_engine
+    from alphascreener.db.models import (
+        Alert,
+        AlphaAcceptanceDaily,
+        LlmCostDaily,
+    )
+    from alphascreener.feishu.card import CardData
+    from alphascreener.feishu.push import push_daily_report
+
+    _logger.info("daily_feishu_push: starting")
+    settings = Settings()
+    engine = create_db_engine(settings.get_db_url())
+    try:
+
+        def _sf() -> Session:
+            return Session(engine)
+
+        today = date_type.today()
+
+        # Gather data: alpha acceptance (yesterday since today's not yet written)
+        alpha_date = today - timedelta(days=1)
+        with _sf() as session:
+            alpha = session.get(AlphaAcceptanceDaily, alpha_date)
+            cost = session.get(LlmCostDaily, today)
+
+            # Alerts: today's unresolved alerts
+            from sqlalchemy import select
+
+            alerts_stmt = (
+                select(Alert)
+                .where(Alert.triggered_at >= today.isoformat())
+                .where(Alert.resolved_at.is_(None))
+            )
+            day_alerts = session.execute(alerts_stmt).scalars().all()
+            if day_alerts:
+                alert_lines = [
+                    f"[{a.severity or '?'}] {a.rule_name}: {a.notes or '-'}"
+                    for a in day_alerts
+                ]
+                alerts_summary = "\n".join(alert_lines)
+            else:
+                alerts_summary = "ok"
+
+        # Build card data
+        data = CardData(
+            report_date=today.isoformat(),
+            total_symbols=0,  # populated by scan pipeline when available
+            coarse_pass=0,
+            refine_count=0,
+            top_five=[],
+            p20_pure=round(alpha.precision_at_20_pure, 1)
+            if alpha and alpha.precision_at_20_pure is not None
+            else 0.0,
+            p20_llm=round(alpha.precision_at_20_llm, 1)
+            if alpha and alpha.precision_at_20_llm is not None
+            else 0.0,
+            lift_pure=round(alpha.lift_at_20_pure, 2)
+            if alpha and alpha.lift_at_20_pure is not None
+            else 0.0,
+            lift_llm=round(alpha.lift_at_20_llm, 2)
+            if alpha and alpha.lift_at_20_llm is not None
+            else 0.0,
+            base_rate=round(alpha.base_rate, 1)
+            if alpha
+            else 0.0,
+            win_rate=0.0,
+            sharpe=0.0,
+            avg_return=0.0,
+            daily_cost=round(cost.total_usd, 2) if cost else 0.0,
+            monthly_cost=0.0,  # monthly cost computed by CostTracker
+            alerts_summary=alerts_summary,
+        )
+
+        result = push_daily_report(data)
+        _logger.info("daily_feishu_push: done — result=%s", result.value)
+    finally:
+        engine.dispose()
+
+
 def daily_scan() -> None:
     """Run the full post-market daily scan pipeline (PRD 4.x).
 
@@ -312,4 +406,5 @@ TASK_FUNCS: dict[str, Callable[[], None]] = {
     "daily_backtest_incremental": daily_backtest_incremental,
     "daily_health_check": daily_health_check,
     "daily_scan": daily_scan,
+    "daily_feishu_push": daily_feishu_push,
 }
