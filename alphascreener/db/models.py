@@ -176,6 +176,7 @@ class AlphaAcceptanceDaily(Base):
     bootstrap_ci_lower_llm = mapped_column(Float, nullable=True)
     bootstrap_ci_upper_llm = mapped_column(Float, nullable=True)
     sample_size = mapped_column(Integer, nullable=False)
+    threshold = mapped_column(Float, nullable=True)
 
 
 # ============================================================================
