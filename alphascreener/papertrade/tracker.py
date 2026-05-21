@@ -12,6 +12,7 @@ Provides:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from datetime import date
 
@@ -56,6 +57,20 @@ def is_valid_exit_reason(reason: str | None) -> bool:
 # ============================================================================
 
 
+def _validate_positive_finite_price(name: str, value: float) -> None:
+    """Validate that a price is positive and finite (not NaN, Inf, or <= 0).
+
+    Args:
+        name: Human-readable field name for error messages.
+        value: The price value to validate.
+
+    Raises:
+        ValueError: If *value* is NaN, Inf, or not positive.
+    """
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be positive and finite, got {value}")
+
+
 def calc_pnl_pct(entry_price: float, exit_price: float) -> float:
     """Calculate P&L as a percentage.
 
@@ -71,8 +86,8 @@ def calc_pnl_pct(entry_price: float, exit_price: float) -> float:
     Raises:
         ValueError: If *entry_price* is not positive.
     """
-    if entry_price <= 0:
-        raise ValueError(f"Entry price must be positive, got {entry_price}")
+    _validate_positive_finite_price("entry_price", entry_price)
+    _validate_positive_finite_price("exit_price", exit_price)
     return (exit_price - entry_price) / entry_price * 100.0
 
 
@@ -129,8 +144,8 @@ class PaperTradeTracker:
         Raises:
             ValueError: If *entry_price* is provided and is not positive.
         """
-        if entry_price is not None and entry_price <= 0:
-            raise ValueError(f"Entry price must be positive, got {entry_price}")
+        if entry_price is not None:
+            _validate_positive_finite_price("entry_price", entry_price)
 
         with self._sf() as session:
             trade = PaperTrade(
@@ -169,15 +184,20 @@ class PaperTradeTracker:
             entry_price: T+1 open buy price.
 
         Raises:
-            ValueError: If trade not found or entry_price is not positive.
+            ValueError: If trade not found, trade already closed, or entry_price
+                is not positive and finite.
         """
-        if entry_price <= 0:
-            raise ValueError(f"Entry price must be positive, got {entry_price}")
+        _validate_positive_finite_price("entry_price", entry_price)
 
         with self._sf() as session:
             trade = session.get(PaperTrade, trade_id)
             if trade is None:
                 raise ValueError(f"Trade {trade_id} not found")
+            if trade.exit_price is not None:
+                raise ValueError(
+                    f"Trade {trade_id} is already closed "
+                    f"(exit_price={trade.exit_price}, reason={trade.exit_reason})"
+                )
             trade.entry_price = entry_price
             session.commit()
         _logger.info("Paper trade %d: entry_price set to %0.2f", trade_id, entry_price)
@@ -211,6 +231,8 @@ class PaperTradeTracker:
                 f"Invalid exit_reason: {exit_reason!r}. "
                 f"Must be one of: {sorted(_VALID_EXIT_REASONS)}"
             )
+
+        _validate_positive_finite_price("exit_price", exit_price)
 
         with self._sf() as session:
             trade = session.get(PaperTrade, trade_id)

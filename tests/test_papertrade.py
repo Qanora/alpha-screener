@@ -70,14 +70,14 @@ class TestPnlCalculation:
         """Entry price of 0 should raise ValueError."""
         from alphascreener.papertrade.tracker import calc_pnl_pct
 
-        with pytest.raises(ValueError, match="Entry price must be positive"):
+        with pytest.raises(ValueError, match="must be positive and finite"):
             calc_pnl_pct(0.0, 50.0)
 
     def test_entry_price_negative_raises(self):
         """Negative entry price should raise ValueError."""
         from alphascreener.papertrade.tracker import calc_pnl_pct
 
-        with pytest.raises(ValueError, match="Entry price must be positive"):
+        with pytest.raises(ValueError, match="must be positive and finite"):
             calc_pnl_pct(-10.0, 50.0)
 
     def test_large_gain(self):
@@ -524,8 +524,8 @@ class TestEngineeringGraduation:
         assert not result.passed
         assert "nan_rate" in result.failed_checks
 
-    def test_nan_rate_exactly_5_pct_passes(self, session_factory, db_engine):
-        """NaN rate exactly at 5% is the boundary (should pass, strict < 0.05 fails)."""
+    def test_nan_rate_exactly_5_pct_fails(self, session_factory, db_engine):
+        """NaN rate exactly at 5% should fail — PRD requires strictly <5%, so 5.0% is not <5%."""
         from alphascreener.papertrade.graduation import check_engineering_graduation
 
         result = check_engineering_graduation(
@@ -690,7 +690,7 @@ class TestPaperTradeEdgeCases:
         from alphascreener.papertrade.tracker import PaperTradeTracker
 
         tracker = PaperTradeTracker(session_factory)
-        with pytest.raises(ValueError, match="Entry price must be positive"):
+        with pytest.raises(ValueError, match="must be positive and finite"):
             tracker.enter_trade(
                 signal_date=date(2026, 5, 20),
                 ticker="BAD",
@@ -705,7 +705,7 @@ class TestPaperTradeEdgeCases:
         from alphascreener.papertrade.tracker import PaperTradeTracker
 
         tracker = PaperTradeTracker(session_factory)
-        with pytest.raises(ValueError, match="Entry price must be positive"):
+        with pytest.raises(ValueError, match="must be positive and finite"):
             tracker.enter_trade(
                 signal_date=date(2026, 5, 20),
                 ticker="BAD",
