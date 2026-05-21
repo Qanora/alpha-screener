@@ -410,12 +410,12 @@ class TestPidLockCustomName:
 class TestTaskDefinitionsStorage:
     """TASK_CRON map and TASK_IDS set exist and are correctly populated."""
 
-    def test_task_cron_map_has_eight_entries(self):
-        """The TASK_CRON dict contains exactly 8 task definitions."""
+    def test_task_cron_map_has_nine_entries(self):
+        """TASK_CRON has 9 tasks: 8 PRD 7.7.1 + daily_cusum_check (#103)."""
         from alphascreener.scheduler.tasks import TASK_CRON
 
         assert isinstance(TASK_CRON, dict)
-        assert len(TASK_CRON) == 8
+        assert len(TASK_CRON) == 9
 
     def test_task_ids_set_is_complete(self):
         """TASK_IDS matches TASK_CRON keys."""
@@ -424,7 +424,7 @@ class TestTaskDefinitionsStorage:
         assert TASK_IDS == set(TASK_CRON.keys())
 
     def test_all_expected_task_ids_present(self):
-        """All 8 task IDs from PRD 7.7.1 are present."""
+        """All 9 task IDs (8 PRD 7.7.1 + 1 #103) are present."""
         from alphascreener.scheduler.tasks import TASK_CRON
 
         expected = {
@@ -433,6 +433,7 @@ class TestTaskDefinitionsStorage:
             "monthly_isoforest_retrain",
             "biweekly_evolution",
             "monthly_universe_refresh",
+            "daily_cusum_check",
             "daily_backtest_incremental",
             "daily_health_check",
             "daily_scan",
@@ -516,14 +517,14 @@ class TestSchedulerOrchestrator:
         )
 
     def test_eight_jobs_registered(self, tmp_path):
-        """All 8 tasks are registered as jobs."""
+        """All 9 tasks are registered as jobs."""
         from alphascreener.scheduler.orchestrator import SchedulerApp
 
         db_path = str(tmp_path / "test.db")
         app = SchedulerApp(db_url=f"sqlite:///{db_path}")
         jobs = app.scheduler.get_jobs()
         job_ids = {job.id for job in jobs}
-        assert len(job_ids) == 8
+        assert len(job_ids) == 9
         from alphascreener.scheduler.tasks import TASK_IDS
 
         assert job_ids == TASK_IDS

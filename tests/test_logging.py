@@ -285,6 +285,7 @@ class TestValidModules:
         assert "refining" in VALID_MODULES
         assert "backtesting" in VALID_MODULES
         assert "evolution" in VALID_MODULES
+        assert "monitoring" in VALID_MODULES
 
-    def test_exactly_four_modules(self):
-        assert len(VALID_MODULES) == 4
+    def test_exactly_five_modules(self):
+        assert len(VALID_MODULES) == 5

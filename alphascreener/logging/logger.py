@@ -19,7 +19,7 @@ from alphascreener.config import Settings
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_MODULES = frozenset({"screening", "refining", "backtesting", "evolution"})
+VALID_MODULES = frozenset({"screening", "refining", "backtesting", "evolution", "monitoring"})
 
 
 # ---------------------------------------------------------------------------

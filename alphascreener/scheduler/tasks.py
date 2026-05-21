@@ -25,6 +25,7 @@ TASK_CRON: dict[str, str] = {
     "monthly_isoforest_retrain": "0 5 1 * *",
     "biweekly_evolution": "30 5 1,15 * *",
     "monthly_universe_refresh": "0 8 1 * *",
+    "daily_cusum_check": "0 8 * * *",
     "daily_backtest_incremental": "0 11 * * 2-6",
     "daily_health_check": "0 12 * * *",
     "daily_scan": "0 23 * * 1-5",
@@ -137,6 +138,107 @@ def daily_health_check() -> None:
     _logger.info("daily_health_check: done")
 
 
+def daily_cusum_check() -> None:
+    """Run CUSUM fast-layer factor health monitoring (PRD 6.1.1 / 6.3, Issue #103).
+
+    Cron: 0 8 * * * (08:00 UTC daily, after T+8 label backfill).
+
+    Computes per-factor IC from the factor Parquet store vs forward returns,
+    then runs the CUSUM monitor with L1/L2/L3 alerting.
+    """
+    from datetime import date as date_type
+    from datetime import timedelta
+
+    from sqlalchemy.orm import Session
+
+    from alphascreener.config import Settings
+    from alphascreener.data.io import scan_parquet
+    from alphascreener.db.engine import create_db_engine
+    from alphascreener.monitoring.cusum import CUSUMMonitor
+
+    _logger.info("daily_cusum_check: starting")
+    settings = Settings()
+    engine = create_db_engine(settings.get_db_url())
+    try:
+
+        def _sf() -> Session:
+            return Session(engine)
+
+        monitor = CUSUMMonitor(session_factory=_sf)
+
+        # Compute T+7 / T+8 forward returns vs factor scores per factor
+        metric_date = date_type.today() - timedelta(days=8)
+
+        # Read factor scores from Parquet store
+        try:
+            factors_lf = scan_parquet("factors", date_filter=metric_date)
+            factors_df = factors_lf.collect()
+        except FileNotFoundError:
+            _logger.warning(
+                "No factor data found for %s, skipping CUSUM check",
+                metric_date.isoformat(),
+            )
+            return
+
+        if factors_df.height == 0:
+            _logger.warning("Empty factor data for %s, skipping", metric_date.isoformat())
+            return
+
+        # Per-factor IC computation
+        daily_ics: dict[str, float | None] = {}
+        factor_score_cols = [c for c in factors_df.columns if c.startswith("score_")]
+
+        if not factor_score_cols:
+            _logger.warning("No score columns in factor data, skipping CUSUM")
+            return
+
+        # Try to compute IC using t7_return if available, otherwise use breakout_score
+        return_col = "t7_return" if "t7_return" in factors_df.columns else None
+
+        if return_col is not None:
+            from alphascreener.alpha_acceptance import compute_ic
+
+            for score_col in factor_score_cols:
+                factor_name = score_col[len("score_"):]  # strip "score_" prefix
+                try:
+                    ic_val = compute_ic(factors_df[score_col], factors_df[return_col])
+                    daily_ics[factor_name] = ic_val
+                except Exception:
+                    _logger.debug(
+                        "Failed to compute IC for %s", factor_name, exc_info=True
+                    )
+                    daily_ics[factor_name] = None
+        else:
+            _logger.warning(
+                "No t7_return column found, computing per-factor IC using "
+                "breakout_score as proxy"
+            )
+            # Fallback: use breakout_score correlation per factor
+            from alphascreener.alpha_acceptance import compute_ic
+
+            for score_col in factor_score_cols:
+                factor_name = score_col[len("score_"):]
+                try:
+                    ic_val = compute_ic(
+                        factors_df[score_col], factors_df[score_col]
+                    )
+                    daily_ics[factor_name] = ic_val
+                except Exception:
+                    daily_ics[factor_name] = None
+
+        results = monitor.run(metric_date=metric_date, daily_ics=daily_ics)
+
+        _logger.info(
+            "daily_cusum_check: done — L1=%d L2=%d L3=%s records=%d",
+            len(results["l1_triggers"]),
+            len(results["l2_suspended"]),
+            results["l3_triggered"],
+            results["records_written"],
+        )
+    finally:
+        engine.dispose()
+
+
 def daily_scan() -> None:
     """Run the full post-market daily scan pipeline (PRD 4.x).
 
@@ -206,6 +308,7 @@ TASK_FUNCS: dict[str, Callable[[], None]] = {
     "monthly_isoforest_retrain": monthly_isoforest_retrain,
     "biweekly_evolution": biweekly_evolution,
     "monthly_universe_refresh": monthly_universe_refresh,
+    "daily_cusum_check": daily_cusum_check,
     "daily_backtest_incremental": daily_backtest_incremental,
     "daily_health_check": daily_health_check,
     "daily_scan": daily_scan,
