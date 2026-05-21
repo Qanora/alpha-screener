@@ -220,7 +220,7 @@ def phase2_pipeline(
         industry, and all input columns.
     """
     if df.height == 0:
-        return df
+        return compute_breakout_score(df)
 
     # 1. Compute breakout score
     df = compute_breakout_score(df)

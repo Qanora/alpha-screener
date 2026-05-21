@@ -470,6 +470,7 @@ class TestPhase2Pipeline:
         empty = _scored_df([])
         result = phase2_pipeline(empty)
         assert result.height == 0
+        assert "breakout_score" in result.columns
 
     def test_pipeline_fewer_than_n_final(self):
         """When there are fewer tickers than n_final, return all of them."""
