@@ -30,8 +30,11 @@ def _validate_date_range(
 ) -> None:
     """Validate that start <= end when both are provided."""
     if start and end:
-        s = date.fromisoformat(start)
-        e = date.fromisoformat(end)
+        try:
+            s = date.fromisoformat(start)
+            e = date.fromisoformat(end)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--start/--end") from exc
         if s > e:
             raise click.BadParameter(
                 f"start ({start}) must be before end ({end})", param_hint="--start"
@@ -290,8 +293,12 @@ def evolve_review_last(days: int) -> None:
         click.echo(f"Error: Required module not available ({exc})", err=True)
         sys.exit(1)
 
-    settings = Settings()
-    engine = create_db_engine(settings.get_db_url())
+    try:
+        settings = Settings()
+        engine = create_db_engine(settings.get_db_url())
+    except Exception as exc:
+        click.echo(f"Error: Failed to initialize database: {exc}", err=True)
+        raise SystemExit(1)
 
     try:
         with Session(engine) as session:
@@ -335,7 +342,7 @@ def evolve_review_last(days: int) -> None:
             f"{r.ic_pure:.3f}" if r.ic_pure is not None else "-",
             f"{r.ic_llm:.3f}" if r.ic_llm is not None else "-",
             f"{r.lift_at_20_pure:.2f}" if r.lift_at_20_pure is not None else "-",
-            str(r.sample_size) if r.sample_size else "-",
+            str(r.sample_size) if r.sample_size is not None else "-",
         ])
     _echo_table(headers, rows)
     click.echo()
