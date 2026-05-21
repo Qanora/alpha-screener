@@ -48,8 +48,32 @@ def monthly_cost_reset() -> None:
 
     Cron: 0 0 1 * * (midnight UTC on the 1st of each month).
     """
+    from sqlalchemy.orm import Session
+
+    from alphascreener.config import Settings
+    from alphascreener.cost import CostTracker
+    from alphascreener.db.engine import create_db_engine
+
     _logger.info("monthly_cost_reset: starting")
-    # TODO: reset llm_cost_daily or cost counters for the new month
+    settings = Settings()
+    engine = create_db_engine(settings.get_db_url())
+    try:
+
+        def _sf() -> Session:
+            return Session(engine)
+
+        tracker = CostTracker(
+            _sf,
+            thresholds={
+                "l1_warning_daily": settings.cost_l1_warning_daily_usd,
+                "l2_degrade_daily": settings.cost_l2_degrade_daily_usd,
+                "l3_savings_monthly": settings.cost_l3_savings_monthly_usd,
+                "l4_circuit_monthly": settings.cost_l4_circuit_monthly_usd,
+            },
+        )
+        tracker.reset_monthly()
+    finally:
+        engine.dispose()
     _logger.info("monthly_cost_reset: done")
 
 
@@ -117,9 +141,58 @@ def daily_scan() -> None:
     """Run the full post-market daily scan pipeline (PRD 4.x).
 
     Cron: 0 23 * * 1-5 (23:00 UTC Mon-Fri).
+
+    Checks the cost circuit breaker before running the pipeline.
+    If L4 is tripped, the scan is skipped entirely.
+    If L2+ is tripped, fine screening is paused (coarse only).
     """
+    from sqlalchemy.orm import Session
+
+    from alphascreener.config import Settings
+    from alphascreener.cost import CircuitBreaker, CostTracker
+    from alphascreener.db.engine import create_db_engine
+
     _logger.info("daily_scan: starting")
-    # TODO: run full daily scan
+    settings = Settings()
+    engine = create_db_engine(settings.get_db_url())
+    try:
+
+        def _sf() -> Session:
+            return Session(engine)
+
+        tracker = CostTracker(
+            _sf,
+            model=settings.llm_model,
+            thresholds={
+                "l1_warning_daily": settings.cost_l1_warning_daily_usd,
+                "l2_degrade_daily": settings.cost_l2_degrade_daily_usd,
+                "l3_savings_monthly": settings.cost_l3_savings_monthly_usd,
+                "l4_circuit_monthly": settings.cost_l4_circuit_monthly_usd,
+            },
+        )
+        breaker = CircuitBreaker(tracker)
+        status = breaker()
+
+        _logger.info(
+            "Circuit status: level=%s daily=$%.4f monthly=$%.4f %s",
+            status.label,
+            status.daily_cost,
+            status.monthly_cost,
+            status.message,
+        )
+
+        if status.is_blocked():
+            _logger.error("L4 BREAKER: daily_scan SKIPPED — all LLM calls stopped")
+            return
+
+        if not status.fine_screening_allowed():
+            _logger.warning("L2+ DEGRADE: fine screening paused, running coarse only")
+
+        # TODO: Phase 1 hard filter + Phase 2 weighted scoring (coarse)
+        # TODO: If fine screening allowed, run Bull/Bear/PM pipeline
+        #       with cost_tracker=tracker passed to BatchConfig / run_pipeline_batch
+    finally:
+        engine.dispose()
     _logger.info("daily_scan: done")
 
 

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
 
     # ====== 路径 ======
     alphascreener_home: Path = Path("~/.alphascreener")
+    db_url: str = ""
 
     model_config = {
         "env_file": ".env",
@@ -69,3 +70,19 @@ class Settings(BaseSettings):
     @classmethod
     def _expand_path(cls, v: str | Path) -> Path:
         return Path(v).expanduser()
+
+    @property
+    def db_path(self) -> Path:
+        """Full path to the SQLite database file."""
+        return self.alphascreener_home / "alphabase.db"
+
+    def get_db_url(self) -> str:
+        """Return the SQLAlchemy database URL.
+
+        Uses ``db_url`` if explicitly set (via env ``DB_URL``), otherwise
+        derives a ``sqlite:///`` URL from ``alphascreener_home``.
+        """
+        if self.db_url:
+            return self.db_url
+        self.alphascreener_home.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{self.db_path}"
