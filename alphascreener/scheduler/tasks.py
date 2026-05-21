@@ -222,7 +222,7 @@ def daily_cusum_check() -> None:
                     ic_val = compute_ic(
                         factors_df[score_col], factors_df[score_col]
                     )
-                    daily_ics[factor_name] = 0.0  # placeholder
+                    daily_ics[factor_name] = ic_val
                 except Exception:
                     daily_ics[factor_name] = None
 

@@ -537,7 +537,7 @@ class CUSUMMonitor:
                     )
                 )
 
-        _with_session(self._session_factory, _write)
+        _with_session(self._session_factory, _write, suppress_exception=False)
 
     def _write_alert(
         self,
@@ -561,7 +561,7 @@ class CUSUMMonitor:
                 )
             )
 
-        _with_session(self._session_factory, _write)
+        _with_session(self._session_factory, _write, suppress_exception=False)
 
 
 # ---------------------------------------------------------------------------
@@ -574,10 +574,19 @@ def _with_session(
     fn: Callable[[Session], Any],
     *,
     rollback_value: Any = None,
+    suppress_exception: bool = True,
 ) -> Any:
     """Execute *fn* inside a new session, commit, and close.
 
-    On failure the session is rolled back and ``rollback_value`` is returned.
+    Args:
+        session_factory: Callable that returns a new SQLAlchemy Session.
+        fn: Function to execute with the session.
+        rollback_value: Value returned on failure when *suppress_exception* is True.
+        suppress_exception: If True (default), exceptions are logged and
+            ``rollback_value`` is returned.  If False, the exception is logged,
+            the session is rolled back, and the exception is re-raised so the
+            caller can handle it (intended for write paths where silent
+            swallowing would hide data-loss bugs).
     """
     session = session_factory()
     try:
@@ -587,6 +596,8 @@ def _with_session(
     except Exception:
         _logger.exception("CUSUM session operation failed")
         session.rollback()
-        return rollback_value
+        if suppress_exception:
+            return rollback_value
+        raise
     finally:
         session.close()
