@@ -272,6 +272,7 @@ def daily_feishu_push() -> None:
             return Session(engine)
 
         today = date_type.today()
+        tomorrow = today + timedelta(days=1)
 
         # Gather data: alpha acceptance (yesterday since today's not yet written)
         alpha_date = today - timedelta(days=1)
@@ -285,6 +286,7 @@ def daily_feishu_push() -> None:
             alerts_stmt = (
                 select(Alert)
                 .where(Alert.triggered_at >= today.isoformat())
+                .where(Alert.triggered_at < tomorrow.isoformat())
                 .where(Alert.resolved_at.is_(None))
             )
             day_alerts = session.execute(alerts_stmt).scalars().all()
@@ -306,23 +308,23 @@ def daily_feishu_push() -> None:
             top_five=[],
             p20_pure=round(alpha.precision_at_20_pure, 1)
             if alpha and alpha.precision_at_20_pure is not None
-            else 0.0,
+            else None,
             p20_llm=round(alpha.precision_at_20_llm, 1)
             if alpha and alpha.precision_at_20_llm is not None
-            else 0.0,
+            else None,
             lift_pure=round(alpha.lift_at_20_pure, 2)
             if alpha and alpha.lift_at_20_pure is not None
-            else 0.0,
+            else None,
             lift_llm=round(alpha.lift_at_20_llm, 2)
             if alpha and alpha.lift_at_20_llm is not None
-            else 0.0,
+            else None,
             base_rate=round(alpha.base_rate, 1)
             if alpha and alpha.base_rate is not None
-            else 0.0,
-            win_rate=0.0,
-            sharpe=0.0,
-            avg_return=0.0,
-            daily_cost=round(cost.total_usd, 2) if cost else 0.0,
+            else None,
+            win_rate=None,
+            sharpe=None,
+            avg_return=None,
+            daily_cost=round(cost.total_usd, 2) if cost else None,
             monthly_cost=None,  # populated by CostTracker when available
             alerts_summary=alerts_summary,
         )

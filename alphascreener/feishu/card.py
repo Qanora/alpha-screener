@@ -40,19 +40,19 @@ class CardData:
     top_five: list[dict[str, Any]] = field(default_factory=list)
 
     # Alpha acceptance — Ablation dual-track metrics
-    p20_pure: float = 0.0
-    p20_llm: float = 0.0
-    lift_pure: float = 0.0
-    lift_llm: float = 0.0
-    base_rate: float = 0.0
+    p20_pure: float | None = None
+    p20_llm: float | None = None
+    lift_pure: float | None = None
+    lift_llm: float | None = None
+    base_rate: float | None = None
 
     # Backtest performance — rolling 7-day window
-    win_rate: float = 0.0
-    sharpe: float = 0.0
-    avg_return: float = 0.0
+    win_rate: float | None = None
+    sharpe: float | None = None
+    avg_return: float | None = None
 
     # Cost tracking
-    daily_cost: float = 0.0
+    daily_cost: float | None = None
     monthly_cost: float | None = None
 
     # Alerts summary (or "ok" when no alerts)
@@ -73,6 +73,16 @@ def _na(val: Any, fmt_spec: str = "") -> str:
     return str(val)
 
 
+def _safe_pct(value: Any) -> str:
+    """Format a confidence / percentage value safely, returning "N/A" for None/non-numeric."""
+    if value is None:
+        return "N/A"
+    try:
+        return f"{float(value):.1f}%"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
 def _build_top5_table(top_five: list[dict[str, Any]]) -> str:
     """Render the Top 5 tickers as a markdown table string."""
     if not top_five:
@@ -83,7 +93,7 @@ def _build_top5_table(top_five: list[dict[str, Any]]) -> str:
         rating = t.get("rating", "-")
         confidence = t.get("confidence", 0)
         catalyst = t.get("catalyst", "-")
-        rows.append(f"| {i} | {ticker} | {rating} | {confidence:.1f}% | {catalyst} |")
+        rows.append(f"| {i} | {ticker} | {rating} | {_safe_pct(confidence)} | {catalyst} |")
     header = "| 排名 | 标的 | 评级 | 置信度 | 主要催化剂 |\n|---|---|---|---|---|"
     return header + "\n" + "\n".join(rows)
 
@@ -125,25 +135,25 @@ def build_card_json(data: CardData) -> str:
                     "tag": "markdown",
                     "content": (
                         "**Alpha (pure / llm)**\n"
-                        f"Precision@20: {data.p20_pure:.1f}% / {data.p20_llm:.1f}%\n"
-                        f"Lift@20: {data.lift_pure:.2f} / {data.lift_llm:.2f}\n"
-                        f"base_rate: {data.base_rate:.1f}%"
+                        f"Precision@20: {_na(data.p20_pure, '.1f')}% / {_na(data.p20_llm, '.1f')}%\n"
+                        f"Lift@20: {_na(data.lift_pure, '.2f')} / {_na(data.lift_llm, '.2f')}\n"
+                        f"base_rate: {_na(data.base_rate, '.1f')}%"
                     ),
                 },
                 {
                     "tag": "markdown",
                     "content": (
                         "**Backtest (7d rolling)**\n"
-                        f"Win: {data.win_rate:.1f}% | "
-                        f"Sharpe: {data.sharpe:.2f} | "
-                        f"Avg ret: {data.avg_return:.1f}%"
+                        f"Win: {_na(data.win_rate, '.1f')}% | "
+                        f"Sharpe: {_na(data.sharpe, '.2f')} | "
+                        f"Avg ret: {_na(data.avg_return, '.1f')}%"
                     ),
                 },
                 {
                     "tag": "markdown",
                     "content": (
                         "**Cost**\n"
-                        f"Today: ${data.daily_cost:.2f} | "
+                        f"Today: ${_na(data.daily_cost, '.2f')} | "
                         f"Month: ${_na(data.monthly_cost, '.2f')}/$100"
                     ),
                 },
@@ -166,11 +176,11 @@ def build_card_json(data: CardData) -> str:
 def build_fallback_text(
     report_date: str,
     top_five: list[dict[str, Any]],
-    p20_pure: float,
-    p20_llm: float,
-    lift_pure: float,
-    lift_llm: float,
-    base_rate: float,
+    p20_pure: float | None,
+    p20_llm: float | None,
+    lift_pure: float | None,
+    lift_llm: float | None,
+    base_rate: float | None,
     alerts_summary: str,
 ) -> str:
     """Build a plain-text fallback message when card rendering fails (400).
@@ -195,16 +205,16 @@ def build_fallback_text(
             lines.append(
                 f"  {i}. {t.get('ticker', '-')} "
                 f"({t.get('rating', '-')}, "
-                f"{t.get('confidence', 0):.1f}%)"
+                f"{_safe_pct(t.get('confidence', 0))})"
             )
     else:
         lines.append("Top 5: --")
 
     lines.append("")
     lines.append(
-        f"Alpha: P@20={p20_pure:.1f}%/{p20_llm:.1f}% "
-        f"Lift@20={lift_pure:.2f}/{lift_llm:.2f} "
-        f"base_rate={base_rate:.1f}%"
+        f"Alpha: P@20={_na(p20_pure, '.1f')}%/{_na(p20_llm, '.1f')}% "
+        f"Lift@20={_na(lift_pure, '.2f')}/{_na(lift_llm, '.2f')} "
+        f"base_rate={_na(base_rate, '.1f')}%"
     )
     alerts_text = alerts_summary if alerts_summary != "ok" else "ok"
     lines.append(f"Alerts: {alerts_text}")

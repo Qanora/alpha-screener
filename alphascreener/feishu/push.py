@@ -20,7 +20,7 @@ import logging
 from enum import Enum
 
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_chain, wait_fixed
 
 from alphascreener.config import Settings
 from alphascreener.feishu.card import CardData, build_card_json, build_fallback_text
@@ -34,8 +34,6 @@ _MESSAGE_URL: str = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_
 
 # Retry config (PRD 7.5.4)
 _RETRY_ATTEMPTS: int = 3
-_RETRY_WAIT_MULTIPLIER: float = 5.0  # base multiplier for exponential wait
-_RETRY_MAX_WAIT: float = 60.0  # cap at 60s
 
 # In-process consecutive failure counter
 _consecutive_failures: int = 0
@@ -133,7 +131,7 @@ def json_dumps_text(text: str) -> str:
 
 @retry(
     stop=stop_after_attempt(_RETRY_ATTEMPTS),
-    wait=wait_exponential(multiplier=_RETRY_WAIT_MULTIPLIER, max=_RETRY_MAX_WAIT),
+    wait=wait_chain(wait_fixed(5), wait_fixed(15), wait_fixed(60)),
     reraise=True,
 )
 def _send_card_with_retry(token: str, target_openid: str, card_json: str) -> requests.Response:
@@ -223,7 +221,7 @@ def push_daily_report(data: CardData) -> PushResult:
                 alerts_summary=data.alerts_summary,
             )
             resp = _send_message(token, target_openid, fallback_text, msg_type="text")
-            if resp.status_code == 200:
+            if resp.status_code == 200 and resp.json().get("code") == 0:
                 _record_success()
                 return PushResult.OK_DEGRADED
 
