@@ -103,8 +103,15 @@ class CircuitStatus:
         return self.level >= CircuitLevel.L4_BREAKER
 
     def fine_screening_allowed(self) -> bool:
-        """True when fine screening (Bull/Bear/PM) is permitted."""
-        return self.level < CircuitLevel.L2_DEGRADE
+        """True when fine screening (Bull/Bear/PM) is permitted.
+
+        L2 (daily degrade) and L4 (breaker) block fine screening entirely.
+        L3 (monthly savings mode) still allows it, just reduced to Top 10.
+        """
+        return (
+            self.level < CircuitLevel.L2_DEGRADE
+            or self.level == CircuitLevel.L3_SAVINGS
+        )
 
     @property
     def label(self) -> str:
@@ -177,6 +184,11 @@ class CostTracker:
         Returns:
             Cost in USD (float).
         """
+        if input_tokens < 0 or output_tokens < 0:
+            raise ValueError(
+                f"Token counts must be non-negative, got "
+                f"input={input_tokens}, output={output_tokens}"
+            )
         pricing = MODEL_PRICING.get(model, MODEL_PRICING["gpt-4o-mini"])
         return input_tokens * pricing["input"] + output_tokens * pricing["output"]
 
@@ -214,10 +226,20 @@ class CostTracker:
         if ref_date is None:
             ref_date = date.today()
         month_start = ref_date.replace(day=1)
+        # Compute start of next month for upper bound
+        if month_start.month == 12:
+            next_month_start = month_start.replace(
+                year=month_start.year + 1, month=1
+            )
+        else:
+            next_month_start = month_start.replace(month=month_start.month + 1)
 
         with self._sf() as session:
-            stmt = select(func.coalesce(func.sum(LlmCostDaily.total_usd), 0.0)).where(
+            stmt = select(
+                func.coalesce(func.sum(LlmCostDaily.total_usd), 0.0)
+            ).where(
                 LlmCostDaily.cost_date >= month_start,
+                LlmCostDaily.cost_date < next_month_start,
             )
             return session.scalar(stmt) or 0.0
 

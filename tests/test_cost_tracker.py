@@ -179,6 +179,10 @@ class TestMonthlyCost:
     def test_sums_all_days_in_month(self, tracker):
         """Monthly cost sums across multiple days in the same month."""
         today = date.today()
+        # Avoid cross-month boundary on the 1st: ``today - 1 day`` would
+        # land in the previous month and break the two-day assertion.
+        if today.day == 1:
+            today = today.replace(day=2)
         tracker.record_call("refining", 1_000_000, 0, model="gpt-4o-mini",
                             cost_date=today)
         tracker.record_call("refining", 1_000_000, 0, model="gpt-4o-mini",
@@ -242,6 +246,7 @@ class TestCircuitBreaker:
         tracker_l2.record_call("refining", 1_000_000, 1_000_000, model="gpt-4o-mini")  # ~$0.75
         status = tracker_l2.check_circuit()
         assert status.level == CircuitLevel.L2_DEGRADE
+        # L2 DEGRADE blocks fine screening entirely.
         assert not status.fine_screening_allowed()
 
     def test_l3_savings_when_monthly_above_savings(self, session_factory):
@@ -384,9 +389,7 @@ class TestEdgeCases:
         assert "pm" in breakdown
         assert row.call_count == 2
 
-    def test_negative_tokens_treated_as_zero(self):
-        """Negative token counts don't crash (cost is zero)."""
-        cost = CostTracker.calc_call_cost(-100, -50, model="gpt-4o-mini")
-        # Still computes mathematically, just negative values result in negative cost
-        # This is a robustness test; actual callers should never pass negative values
-        assert isinstance(cost, float)
+    def test_negative_tokens_raises_error(self):
+        """Negative token counts raise ValueError."""
+        with pytest.raises(ValueError, match="Token counts must be non-negative"):
+            CostTracker.calc_call_cost(-100, -50, model="gpt-4o-mini")

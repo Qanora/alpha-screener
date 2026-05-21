@@ -745,7 +745,13 @@ def run_bull_bear_pm(
         total_tokens += in_tok + out_tok
         input_tokens_total += in_tok
         if cost_tracker is not None:
-            cost_tracker.record_call("bull", in_tok, out_tok)
+            try:
+                cost_tracker.record_call("bull", in_tok, out_tok)
+            except Exception:
+                _logger.warning(
+                    "Failed to record bull call cost for %s",
+                    context.ticker, exc_info=True,
+                )
     except Exception as exc:
         _logger.error("Bull researcher invocation failed for %s: %s", context.ticker, exc)
         bull_raw = _validate_bull_result({})
@@ -769,7 +775,13 @@ def run_bull_bear_pm(
                     total_tokens += in_tok + out_tok
                     input_tokens_total += in_tok
                     if cost_tracker is not None:
-                        cost_tracker.record_call("bull", in_tok, out_tok)
+                        try:
+                            cost_tracker.record_call("bull", in_tok, out_tok)
+                        except Exception:
+                            _logger.warning(
+                                "Failed to record bull retry call cost for %s",
+                                context.ticker, exc_info=True,
+                            )
                     bull_raw = _extract_json_response(bull_response)
                     bull_raw = _validate_bull_result(bull_raw)
                 except Exception as exc2:
@@ -791,7 +803,13 @@ def run_bull_bear_pm(
         total_tokens += in_tok + out_tok
         input_tokens_total += in_tok
         if cost_tracker is not None:
-            cost_tracker.record_call("bear", in_tok, out_tok)
+            try:
+                cost_tracker.record_call("bear", in_tok, out_tok)
+            except Exception:
+                _logger.warning(
+                    "Failed to record bear call cost for %s",
+                    context.ticker, exc_info=True,
+                )
     except Exception as exc:
         _logger.error("Bear researcher invocation failed for %s: %s", context.ticker, exc)
         bear_raw = _validate_bear_result({})
@@ -815,7 +833,13 @@ def run_bull_bear_pm(
                     total_tokens += in_tok + out_tok
                     input_tokens_total += in_tok
                     if cost_tracker is not None:
-                        cost_tracker.record_call("bear", in_tok, out_tok)
+                        try:
+                            cost_tracker.record_call("bear", in_tok, out_tok)
+                        except Exception:
+                            _logger.warning(
+                                "Failed to record bear retry call cost for %s",
+                                context.ticker, exc_info=True,
+                            )
                     bear_raw = _extract_json_response(bear_response)
                     bear_raw = _validate_bear_result(bear_raw)
                 except Exception as exc2:
@@ -841,7 +865,13 @@ def run_bull_bear_pm(
         total_tokens += in_tok + out_tok
         input_tokens_total += in_tok
         if cost_tracker is not None:
-            cost_tracker.record_call("pm", in_tok, out_tok)
+            try:
+                cost_tracker.record_call("pm", in_tok, out_tok)
+            except Exception:
+                _logger.warning(
+                    "Failed to record PM call cost for %s",
+                    context.ticker, exc_info=True,
+                )
     except Exception as exc:
         _logger.error("PM invocation failed for %s: %s", context.ticker, exc)
         pm_raw = _validate_pm_result(
@@ -875,7 +905,13 @@ def run_bull_bear_pm(
                     total_tokens += in_tok + out_tok
                     input_tokens_total += in_tok
                     if cost_tracker is not None:
-                        cost_tracker.record_call("pm", in_tok, out_tok)
+                        try:
+                            cost_tracker.record_call("pm", in_tok, out_tok)
+                        except Exception:
+                            _logger.warning(
+                                "Failed to record PM retry call cost for %s",
+                                context.ticker, exc_info=True,
+                            )
                     pm_parsed = _extract_json_response(pm_response)
                     pm_raw = _validate_pm_result(
                         pm_parsed,
