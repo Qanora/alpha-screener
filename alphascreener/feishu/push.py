@@ -33,7 +33,7 @@ _logger: logging.Logger = get_logger("screening")
 _MESSAGE_URL: str = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
 
 # Retry config (PRD 7.5.4)
-_RETRY_ATTEMPTS: int = 3
+_RETRY_ATTEMPTS: int = 4  # 1 initial + 3 retries => all 3 waits (5s/15s/60s) used
 
 # In-process consecutive failure counter
 _consecutive_failures: int = 0
