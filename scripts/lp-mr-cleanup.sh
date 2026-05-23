@@ -21,8 +21,9 @@ if ! echo "$ISSUE_NUM" | grep -qE '^[0-9]+$'; then
   echo "ERROR: issue-number must be numeric, got: $ISSUE_NUM"
   exit 2
 fi
-if ! echo "$BRANCH" | grep -q '^feature/'; then
-  echo "ERROR: branch must start with 'feature/', got: $BRANCH"
+EXPECTED_BRANCH="feature/issue-$ISSUE_NUM"
+if [ "$BRANCH" != "$EXPECTED_BRANCH" ]; then
+  echo "ERROR: branch must be '$EXPECTED_BRANCH', got: $BRANCH"
   exit 2
 fi
 
@@ -59,7 +60,17 @@ echo "[3/5] Checking for remote residual branch 'origin/$BRANCH'..."
 git fetch --prune
 if git branch -r | grep -q "origin/$BRANCH"; then
   echo "  Deleting remote branch 'origin/$BRANCH'..."
-  gh api "repos/$REPO/git/refs/heads/$BRANCH" -X DELETE 2>/dev/null || echo "  (failed — may already be deleted)"
+  if ! gh api "repos/$REPO/git/refs/heads/$BRANCH" -X DELETE 2>/tmp/lp_mr_cleanup_err; then
+    if grep -q '"status":404' /tmp/lp_mr_cleanup_err 2>/dev/null; then
+      echo "  Remote branch already deleted."
+    else
+      echo "ERROR: failed to delete remote branch 'origin/$BRANCH'"
+      cat /tmp/lp_mr_cleanup_err
+      rm -f /tmp/lp_mr_cleanup_err
+      exit 3
+    fi
+  fi
+  rm -f /tmp/lp_mr_cleanup_err
   git fetch --prune
 else
   echo "  No remote residual."
