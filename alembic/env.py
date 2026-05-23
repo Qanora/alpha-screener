@@ -11,6 +11,8 @@ from sqlalchemy import engine_from_config, event, pool
 from alembic import context
 from alphascreener.db.models import Base  # noqa: F401 — imports all models for autogenerate
 
+DEFAULT_ALEMBIC_URL = "sqlite:///alembic_generation.db"
+
 # Alembic Config object
 config = context.config
 
@@ -20,6 +22,21 @@ if config.config_file_name is not None:
 
 # All ORM models inherit from Base — use its metadata for autogenerate
 target_metadata = Base.metadata
+
+
+def _get_db_url(alembic_config):
+    """Return the database URL, falling back to Settings if the config has the
+    default placeholder (``alembic_generation.db`` or empty).
+
+    Explicit overrides (e.g. ``set_main_option`` from tests) take priority
+    because they won't match the placeholder check.
+    """
+    url = alembic_config.get_main_option("sqlalchemy.url")
+    if not url or url.strip() == DEFAULT_ALEMBIC_URL:
+        from alphascreener.config import Settings
+
+        return Settings().get_db_url()
+    return url
 
 
 def _enable_wal_and_pragmas(dbapi_connection, connection_record):
@@ -37,7 +54,7 @@ def run_migrations_offline() -> None:
 
     Useful for generating SQL scripts for manual review.
     """
-    url = config.get_main_option("sqlalchemy.url")
+    url = _get_db_url(config)
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -55,8 +72,12 @@ def run_migrations_online() -> None:
     Creates an engine, attaches WAL pragma listener, and executes all pending
     migrations.
     """
+    url = _get_db_url(config)
+    section = dict(config.get_section(config.config_ini_section, {}))
+    section["sqlalchemy.url"] = url
+
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
