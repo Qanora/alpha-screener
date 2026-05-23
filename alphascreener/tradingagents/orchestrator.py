@@ -15,7 +15,7 @@ import copy
 import json
 import re
 from collections.abc import Callable
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from alphascreener.logging import get_logger
 from alphascreener.tradingagents.breakout_retriever import (
@@ -44,6 +44,15 @@ _logger = get_logger("screening")
 # LLM text response.
 Invoker = Callable[[str, int], str]
 # Signature: (system_prompt: str, max_output_tokens: int) -> str
+
+# Providers whose API is OpenAI-compatible (chat completions).
+# ``base_url`` and ``api_key`` are only forwarded for these providers;
+# non-OpenAI providers (anthropic, google, azure) have their own auth
+# mechanisms and should not receive OpenAI-specific configuration.
+_OPENAI_COMPATIBLE_PROVIDERS: frozenset[str] = frozenset(
+    {"openai", "xai", "deepseek", "qwen", "qwen-cn", "glm", "glm-cn",
+     "minimax", "minimax-cn", "ollama", "openrouter"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -257,11 +266,15 @@ def build_llm_invoker(
 
     from alphascreener.tradingagents.llm_adapter import create_llm_client_safe
 
+    # Only forward base_url and api_key for OpenAI-compatible providers.
+    # Non-OpenAI providers (anthropic, google, azure) use their own auth
+    # mechanisms and should not receive OpenAI-specific configuration.
+    is_compat = provider.lower() in _OPENAI_COMPATIBLE_PROVIDERS
     llm = create_llm_client_safe(
         provider,
         settings.llm_model,
-        base_url=settings.openai_base_url or None,
-        api_key=settings.openai_api_key or None,
+        base_url=settings.openai_base_url if is_compat and settings.openai_base_url else None,
+        api_key=settings.openai_api_key if is_compat and settings.openai_api_key else None,
     ).get_llm()
 
     def invoker(prompt: str, max_out_tok: int) -> str:
@@ -271,7 +284,7 @@ def build_llm_invoker(
             [SystemMessage(content=prompt)],
             max_tokens=max_out_tok,
         )
-        return msg.content
+        return _normalize_content(msg.content)
 
     return invoker
 
@@ -399,6 +412,43 @@ class AnalystOrchestrator:
 # ---------------------------------------------------------------------------
 
 _JSON_PATTERN = re.compile(r"\{[\s\S]*?\}")
+
+
+def _normalize_content(content: Any) -> str:
+    """Normalise LLM response content to a plain string.
+
+    LangChain ``BaseMessage.content`` is typed as ``str | list[str | dict]``.
+    Some models (or tool-calling paths) return a list of content blocks
+    instead of a plain string.  This helper converts any form to ``str``
+    so the downstream JSON extraction and error-reporting code can safely
+    assume a string.
+
+    Args:
+        content: The raw ``msg.content`` value.
+
+    Returns:
+        A plain ``str``.
+
+    Raises:
+        TypeError: If *content* is not a ``str`` or ``list``.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                # Prefer "text" key; fall back to str(item)
+                parts.append(str(item.get("text", item)))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    raise TypeError(
+        f"Unexpected LLM content type {type(content).__name__!r}; "
+        f"expected str or list, got {content!r}"
+    )
 
 
 def _extract_json(text: str) -> dict[str, Any]:
