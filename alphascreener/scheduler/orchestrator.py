@@ -43,7 +43,7 @@ class SchedulerApp:
 
     Usage::
 
-        app = SchedulerApp(db_url="sqlite:///path/to/alphabase.db")
+        app = SchedulerApp(db_url="sqlite:///path/to/alphascreener.db")
         app.start()  # blocks forever
 
     Or for testing / inspection::

@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         """Full path to the SQLite database file."""
-        return self.alphascreener_home / "alphabase.db"
+        return self.alphascreener_home / "data" / "alphascreener.db"
 
     def get_db_url(self) -> str:
         """Return the SQLAlchemy database URL.
@@ -84,5 +84,5 @@ class Settings(BaseSettings):
         """
         if self.db_url:
             return self.db_url
-        self.alphascreener_home.mkdir(parents=True, exist_ok=True)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{self.db_path}"

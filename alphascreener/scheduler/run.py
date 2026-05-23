@@ -4,32 +4,43 @@ Usage::
 
     python -m alphascreener.scheduler.run
 
-Reads DB path from the ``ALPHASCREENER_HOME`` environment variable,
-defaulting to ``<ALPHASCREENER_HOME>/db/alphabase.db``.
+Reads DB URL from settings (env ``DB_URL`` or derived from ``ALPHASCREENER_HOME``).
 """
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
+from alembic.command import upgrade
+from alembic.config import Config
+
 from alphascreener.config import Settings
-from alphascreener.db.engine import create_db_engine
-from alphascreener.db.models import Base
 from alphascreener.scheduler.orchestrator import SchedulerApp
+
+_logger = logging.getLogger("scheduler")
+
+
+def _run_migrations(db_url: str) -> None:
+    """Run all pending Alembic migrations against the configured database."""
+    alembic_ini = Path(__file__).parent.parent.parent / "alembic.ini"
+    alembic_cfg = Config(str(alembic_ini))
+    alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+    _logger.info("Running alembic upgrade head on %s", db_url)
+    upgrade(alembic_cfg, "head")
+    _logger.info("Alembic upgrade complete")
 
 
 def main() -> None:
-    """Bootstrap the database schema and start the scheduler (blocks forever)."""
+    """Run pending DB migrations and start the scheduler (blocks forever)."""
     settings = Settings()
-    db_dir = settings.alphascreener_home / "db"
-    db_dir.mkdir(parents=True, exist_ok=True)
-    db_path = db_dir / "alphabase.db"
+    db_url = settings.get_db_url()
 
-    # Bootstrap the database schema if needed.
-    engine = create_db_engine(str(db_path))
-    Base.metadata.create_all(engine)
-    engine.dispose()
+    # Auto-run all pending migrations so the schema is always current.
+    _run_migrations(db_url)
 
     # Start the scheduler (blocks forever).
-    app = SchedulerApp(db_url=f"sqlite:///{db_path}")
+    app = SchedulerApp(db_url=db_url)
     app.start()
 
 
