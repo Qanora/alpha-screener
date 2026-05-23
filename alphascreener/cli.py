@@ -298,7 +298,7 @@ def evolve_review_last(days: int) -> None:
         engine = create_db_engine(settings.get_db_url())
     except Exception as exc:
         click.echo(f"Error: Failed to initialize database: {exc}", err=True)
-        raise SystemExit(1)
+        return
 
     try:
         with Session(engine) as session:
@@ -310,6 +310,17 @@ def evolve_review_last(days: int) -> None:
             )
             records = session.execute(stmt).scalars().all()
     except Exception as exc:
+        from sqlalchemy.exc import OperationalError
+
+        err_msg = str(exc)
+        if isinstance(exc, OperationalError) and ("no such table" in err_msg or "no such column" in err_msg):
+            click.echo(
+                "Error: Database schema not ready. Run:\n"
+                "  alembic upgrade head\n"
+                "to create/migrate the database tables, then retry.",
+                err=True,
+            )
+            return
         click.echo(f"No acceptance metrics available: {exc}", err=True)
         return
     finally:
