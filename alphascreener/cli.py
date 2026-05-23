@@ -449,6 +449,114 @@ def walk_forward(version: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# case-library (group)
+# ---------------------------------------------------------------------------
+
+
+@click.group()
+def case_library() -> None:
+    """Manage the breakout case library for similarity search.
+
+    Subcommands:
+
+        init     Build or rebuild the case library from historical data
+        status   Show current case library status
+
+    The case library is used by the Breakout Analyst to find similar
+    historical breakout patterns when evaluating new candidates.
+    """
+    pass
+
+
+@case_library.command(name="init")
+@click.option(
+    "--score-pct",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.75,
+    show_default=True,
+    help="Percentile threshold for breakout_score (0.75 = top 25%).",
+)
+@click.option(
+    "--min-return",
+    type=click.FloatRange(0.0, 10.0),
+    default=0.10,
+    show_default=True,
+    help="Minimum T+7 forward return to qualify as a positive case (0.10 = 10%).",
+)
+def case_library_init(score_pct: float, min_return: float) -> None:
+    """Build or rebuild the breakout case library from historical data.
+
+    Scans all available factor data in the Parquet store, computes T+7
+    forward returns from OHLCV data, identifies positive breakout cases
+    (high breakout score + strong forward return), and writes them to
+    ~/.alphascreener/data/case_library/cases.parquet.
+
+    Example:
+
+        alphascreener case-library init
+
+        alphascreener case-library init --score-pct 0.80 --min-return 0.15
+    """
+    click.echo("\nAlpha Screener — Case Library Init")
+    click.echo(f"  Score percentile : {score_pct}")
+    click.echo(f"  Min return       : {min_return}")
+    click.echo()
+
+    try:
+        from alphascreener.tradingagents.case_library import rebuild_case_library
+
+        n = rebuild_case_library(
+            breakout_score_pct=score_pct,
+            min_return=min_return,
+        )
+    except Exception as exc:
+        click.echo(f"Error building case library: {exc}", err=True)
+        return
+
+    if n > 0:
+        click.echo(f"  Case library built with {n} positive cases.")
+    else:
+        click.echo(
+            "  No positive cases found. This may be expected if:\n"
+            "    - No historical factor/OHLCV data exists yet\n"
+            "    - Threshold is too strict\n"
+            "    - Forward returns are not yet available (need OHLCV data T+7 later)"
+        )
+    click.echo()
+
+
+@case_library.command(name="status")
+def case_library_status_cmd() -> None:
+    """Show the current breakout case library status.
+
+    Displays the number of cases, unique tickers, and date range
+    of the cases.parquet file.
+
+    Example:
+
+        alphascreener case-library status
+    """
+    click.echo("\nAlpha Screener — Case Library Status")
+    click.echo()
+
+    try:
+        from alphascreener.tradingagents.case_library import case_library_status
+
+        info = case_library_status()
+    except Exception as exc:
+        click.echo(f"Error reading case library: {exc}", err=True)
+        return
+
+    click.echo(f"  Path       : {info['path']}")
+    click.echo(f"  Exists     : {info['exists']}")
+    click.echo(f"  Cases      : {info['n_cases']}")
+    click.echo(f"  Tickers    : {info['n_unique_tickers']}")
+    if info["date_range"] is not None:
+        click.echo(f"  Date range : {info['date_range'][0]} ~ {info['date_range'][1]}")
+    click.echo()
+
+
+# ---------------------------------------------------------------------------
 # Main CLI group and entry point
 # ---------------------------------------------------------------------------
 
@@ -470,6 +578,7 @@ main.add_command(screen)
 main.add_command(backtest)
 main.add_command(evolve)
 main.add_command(walk_forward)
+main.add_command(case_library)
 
 
 if __name__ == "__main__":
