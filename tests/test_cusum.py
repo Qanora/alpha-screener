@@ -1,6 +1,7 @@
 """Tests for CUSUM fast-layer factor health monitoring.
 
 Issue #103: CUSUM fast-layer monitoring.
+Issue #189: CUSUM alert storm fixes — NaN guard, dedup, L3 cooldown.
 Reference: PRD 6.1.1 / 6.3.
 """
 
@@ -338,10 +339,14 @@ class TestDBPersistence:
         )
 
         with Session(db_engine) as s:
-            row = s.query(FactorHealthDaily).filter_by(
-                metric_date=date(2025, 1, 15),
-                factor_name="MOM_5D",
-            ).one()
+            row = (
+                s.query(FactorHealthDaily)
+                .filter_by(
+                    metric_date=date(2025, 1, 15),
+                    factor_name="MOM_5D",
+                )
+                .one()
+            )
             assert row.daily_ic == pytest.approx(0.06)
             assert row.rolling_ic_mean_90d == pytest.approx(0.05)
             assert row.cusum_value == pytest.approx(0.005)
@@ -366,10 +371,14 @@ class TestDBPersistence:
         )
 
         with Session(db_engine) as s:
-            row = s.query(FactorHealthDaily).filter_by(
-                metric_date=date(2025, 2, 1),
-                factor_name="PTH",
-            ).one()
+            row = (
+                s.query(FactorHealthDaily)
+                .filter_by(
+                    metric_date=date(2025, 2, 1),
+                    factor_name="PTH",
+                )
+                .one()
+            )
             assert row.cusum_alert is True
             assert row.consecutive_alerts == 3
 
@@ -387,9 +396,7 @@ class TestDBPersistence:
         monitor._persist_record(dt, "F1", 0.08, 0.05, 0.035, True, 1)
 
         with Session(db_engine) as s:
-            rows = s.query(FactorHealthDaily).filter_by(
-                metric_date=dt, factor_name="F1"
-            ).all()
+            rows = s.query(FactorHealthDaily).filter_by(metric_date=dt, factor_name="F1").all()
             assert len(rows) == 1
             assert rows[0].daily_ic == pytest.approx(0.08)
             assert rows[0].cusum_alert is True
@@ -680,10 +687,13 @@ class TestFeishuNotification:
         Uses a mock Settings object since pydantic-settings fields cannot be
         monkey-patched via mock.patch.object.
         """
-        with mock.patch(
-            "alphascreener.monitoring.cusum.Settings",
-            return_value=mock.MagicMock(feishu_push_enabled=False),
-        ), mock.patch("alphascreener.monitoring.cusum._logger") as mock_logger:
+        with (
+            mock.patch(
+                "alphascreener.monitoring.cusum.Settings",
+                return_value=mock.MagicMock(feishu_push_enabled=False),
+            ),
+            mock.patch("alphascreener.monitoring.cusum._logger") as mock_logger,
+        ):
             _send_feishu_notification("test message", severity="warning")
             mock_logger.warning.assert_not_called()
 
@@ -762,3 +772,228 @@ class TestEdgeCases:
         # That's today-4, today-3, today-2, today-1 = 4 records
         count = monitor._count_recent_alerts("F1", window_days=5, before_date=today)
         assert count == 4
+
+
+# ============================================================================
+# 13. NaN IC handling (Issue #189)
+# ============================================================================
+
+
+class TestNaNHandling:
+    """NaN IC values are guarded against in CUSUM computation and monitor."""
+
+    def test_compute_cusum_with_nan_ic(self):
+        """NaN IC input to _compute_cusum returns 0.0 (safe default)."""
+        result = _compute_cusum(
+            ic_t=float("nan"),
+            s_prev=0.05,
+            mu_ic=0.05,
+            k=0.005,
+        )
+        assert result == 0.0
+
+    def test_compute_cusum_with_nan_s_prev(self):
+        """NaN S_prev input to _compute_cusum returns 0.0 (safe default)."""
+        result = _compute_cusum(
+            ic_t=0.06,
+            s_prev=float("nan"),
+            mu_ic=0.05,
+            k=0.005,
+        )
+        assert result == 0.0
+
+    def test_compute_cusum_with_nan_mu_ic(self):
+        """NaN mu_ic input to _compute_cusum returns 0.0 (safe default)."""
+        result = _compute_cusum(
+            ic_t=0.06,
+            s_prev=0.05,
+            mu_ic=float("nan"),
+            k=0.005,
+        )
+        assert result == 0.0
+
+    def test_run_skips_nan_ic(self, db_engine, default_config):
+        """Monitor.run() skips factors with NaN IC, treating them like None."""
+
+        def sf():
+            return Session(db_engine)
+
+        monitor = CUSUMMonitor(session_factory=sf, config=default_config)
+        daily_ics = {"MOM_5D": float("nan"), "PTH": 0.04}
+        results = monitor.run(metric_date=date(2025, 1, 15), daily_ics=daily_ics)
+
+        # PTH processed, MOM_5D skipped
+        assert results["records_written"] == 1
+        with Session(db_engine) as s:
+            rows = s.query(FactorHealthDaily).filter_by(metric_date=date(2025, 1, 15)).all()
+            factor_names = {r.factor_name for r in rows}
+            assert "MOM_5D" not in factor_names
+            assert "PTH" in factor_names
+
+
+# ============================================================================
+# 14. Alert deduplication (Issue #189)
+# ============================================================================
+
+
+class TestAlertDeduplication:
+    """L1/L2/L3 alerts are deduplicated to prevent alert storms."""
+
+    def test_l1_dedup_same_factor_same_day(self, db_engine, default_config):
+        """L1 alert for same factor on same date only writes once."""
+
+        def sf():
+            return Session(db_engine)
+
+        monitor = CUSUMMonitor(session_factory=sf, config=default_config)
+
+        # High IC that triggers L1 for MOM_5D
+        daily_ics = {"MOM_5D": 0.10}
+        results1 = monitor.run(metric_date=date(2025, 1, 15), daily_ics=daily_ics)
+
+        assert "MOM_5D" in results1["l1_triggers"]
+
+        # Run again on same date with same factor => L1 should still trigger
+        # but should NOT create a duplicate Alert row
+        results2 = monitor.run(metric_date=date(2025, 1, 15), daily_ics=daily_ics)
+
+        assert "MOM_5D" in results2["l1_triggers"]
+
+        with Session(db_engine) as s:
+            l1_alerts = s.query(Alert).filter_by(rule_name="cusum_l1").all()
+            # Only 1 L1 alert should exist for this factor+date
+            assert len(l1_alerts) == 1
+
+    def test_l2_dedup_same_factor(self, db_engine):
+        """L2 alert for same factor only writes once per window."""
+
+        def sf():
+            return Session(db_engine)
+
+        config = CUSUMConfig(k=0.0, h=0.01)
+        monitor = CUSUMMonitor(session_factory=sf, config=config)
+
+        # Day 1: Establish first L1 trigger for F0
+        monitor.run(
+            metric_date=date(2025, 1, 15),
+            daily_ics={"F0": 0.05, "F1": 0.04},
+        )
+
+        # Day 2: F0 triggers L1 again (2nd in window -> L2 fires), F1 also now triggers
+        results = monitor.run(
+            metric_date=date(2025, 1, 16),
+            daily_ics={"F0": 0.05, "F1": 0.05},
+        )
+        # F0 has 2 triggers in 2 days => L2 should fire for F0
+        # F1 has only 1 trigger (first time today) => no L2 for F1 yet
+        assert "F0" in results["l2_suspended"]
+
+        # Day 3: F0 triggers again (3rd L1 in 3 days)
+        # L2 conditions still met but should NOT create duplicate L2 alert
+        monitor.run(
+            metric_date=date(2025, 1, 17),
+            daily_ics={"F0": 0.05, "F1": 0.05},
+        )
+
+        with Session(db_engine) as s:
+            l2_alerts = s.query(Alert).filter_by(rule_name="cusum_l2").all()
+            # Dedup: at most 1 L2 alert per factor
+            by_factor: dict[str, list[Alert]] = {}
+            for a in l2_alerts:
+                if a.notes and "factor=" in a.notes:
+                    factor = a.notes.split("factor=")[1].split(" ")[0]
+                    by_factor.setdefault(factor, []).append(a)
+            for factor, alerts in by_factor.items():
+                assert len(alerts) == 1, f"Factor {factor} has {len(alerts)} L2 alerts"
+
+    def test_l3_dedup_cooldown(self, db_engine):
+        """L3 alert has a cooldown period - no duplicate within cooldown."""
+
+        def sf():
+            return Session(db_engine)
+
+        config = CUSUMConfig(k=0.0, h=0.01, l3_cooldown_hours=24)
+        monitor = CUSUMMonitor(session_factory=sf, config=config)
+
+        # 6 factors all trigger L1 -> L3 fires
+        daily_ics = {f"F{i}": 0.05 for i in range(6)}
+        results1 = monitor.run(metric_date=date(2025, 1, 15), daily_ics=daily_ics)
+        assert results1["l3_triggered"] is True
+
+        # Same day, same factors -> L3 should NOT create duplicate alert
+        results2 = monitor.run(metric_date=date(2025, 1, 15), daily_ics=daily_ics)
+        assert results2["l3_triggered"] is True  # still detected, but no new alert
+
+        with Session(db_engine) as s:
+            l3_alerts = s.query(Alert).filter_by(rule_name="cusum_l3").all()
+            assert len(l3_alerts) == 1
+
+    def test_l3_dedup_different_days_within_cooldown(self, db_engine):
+        """L3 on different days within cooldown still suppresses."""
+
+        def sf():
+            return Session(db_engine)
+
+        config = CUSUMConfig(k=0.0, h=0.01, l3_cooldown_hours=48)
+        monitor = CUSUMMonitor(session_factory=sf, config=config)
+
+        daily_ics = {f"F{i}": 0.05 for i in range(6)}
+
+        # Day 1
+        monitor.run(metric_date=date(2025, 1, 15), daily_ics=daily_ics)
+        with Session(db_engine) as s:
+            l3_alerts = s.query(Alert).filter_by(rule_name="cusum_l3").all()
+            assert len(l3_alerts) == 1
+
+        # Day 2 (within 48h cooldown) -> no new L3 alert
+        monitor.run(metric_date=date(2025, 1, 16), daily_ics=daily_ics)
+        with Session(db_engine) as s:
+            l3_alerts = s.query(Alert).filter_by(rule_name="cusum_l3").all()
+            assert len(l3_alerts) == 1
+
+    def test_l3_fires_again_after_cooldown(self, db_engine):
+        """L3 fires again after cooldown period expires."""
+
+        def sf():
+            return Session(db_engine)
+
+        config = CUSUMConfig(k=0.0, h=0.01, l3_cooldown_hours=0)
+        monitor = CUSUMMonitor(session_factory=sf, config=config)
+
+        daily_ics = {f"F{i}": 0.05 for i in range(6)}
+
+        # Day 1
+        monitor.run(metric_date=date(2025, 1, 15), daily_ics=daily_ics)
+        with Session(db_engine) as s:
+            l3_alerts = s.query(Alert).filter_by(rule_name="cusum_l3").all()
+            assert len(l3_alerts) == 1
+
+        # Day 2 (cooldown=0h means no suppression)
+        monitor.run(metric_date=date(2025, 1, 16), daily_ics=daily_ics)
+        with Session(db_engine) as s:
+            l3_alerts = s.query(Alert).filter_by(rule_name="cusum_l3").all()
+            assert len(l3_alerts) == 2
+
+
+# ============================================================================
+# 15. L3 cooldown config (Issue #189)
+# ============================================================================
+
+
+class TestL3CooldownConfig:
+    """CUSUMConfig includes l3_cooldown_hours for alert suppression."""
+
+    def test_default_cooldown(self):
+        """Default L3 cooldown is 24 hours."""
+        cfg = CUSUMConfig()
+        assert cfg.l3_cooldown_hours == 24
+
+    def test_custom_cooldown(self):
+        """L3 cooldown can be overridden."""
+        cfg = CUSUMConfig(l3_cooldown_hours=48)
+        assert cfg.l3_cooldown_hours == 48
+
+    def test_zero_cooldown_disables_dedup(self):
+        """l3_cooldown_hours=0 means no suppression."""
+        cfg = CUSUMConfig(l3_cooldown_hours=0)
+        assert cfg.l3_cooldown_hours == 0
