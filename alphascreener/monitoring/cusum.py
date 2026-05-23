@@ -15,9 +15,10 @@ Environment: EVOLUTION_WEIGHT_ADJUST_ENABLED=false (MVP — no weight adjustment
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -50,6 +51,7 @@ class CUSUMConfig:
     l2_window_days: int = 5  # L2 lookback window
     l2_trigger_count: int = 2  # triggers needed in window for L2
     l3_trigger_count: int = 5  # simultaneous factor triggers for L3
+    l3_cooldown_hours: int = 24  # minimum hours between repeated L3 alerts (Issue #189)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +76,12 @@ def _compute_cusum(
     Returns:
         Updated CUSUM value S_t >= 0.
     """
+    # Guard against NaN propagation (Issue #189): NaN IC can occur when
+    # compute_ic receives all-constant input or falls back to 0.0.
+    # Pythonʼs max(0.0, NaN) is implementation-defined; we return 0.0
+    # explicitly to keep CUSUM state clean.
+    if math.isnan(ic_t) or math.isnan(s_prev) or math.isnan(mu_ic):
+        return 0.0
     raw = s_prev + ic_t - mu_ic - k
     return max(0.0, raw)
 
@@ -189,6 +197,9 @@ class CUSUMMonitor:
             if ic_t is None:
                 _logger.debug("CUSUM: skipping %s (null IC)", factor_name)
                 continue
+            if isinstance(ic_t, float) and math.isnan(ic_t):
+                _logger.debug("CUSUM: skipping %s (NaN IC)", factor_name)
+                continue
 
             # 1. Retrieve S_{t-1}
             s_prev = self._get_previous_cusum(factor_name, metric_date)
@@ -239,7 +250,7 @@ class CUSUMMonitor:
                 )
                 if self._check_l2(trigger_dates):
                     l2_suspended.add(factor_name)
-                    self._write_alert(
+                    l2_written = self._write_alert(
                         rule_name="cusum_l2",
                         severity="warning",
                         metric_value=float(len(trigger_dates)),
@@ -248,30 +259,34 @@ class CUSUMMonitor:
                             f"{len(trigger_dates)} triggers in "
                             f"{self.config.l2_window_days} days"
                         ),
+                        dedup_key=factor_name,
                     )
-                    _send_feishu_notification(
-                        f"CUSUM L2: factor {factor_name} degraded "
-                        f"(weight freeze), {len(trigger_dates)} triggers "
-                        f"in {self.config.l2_window_days}d",
-                        severity="warning",
-                    )
+                    if l2_written:
+                        _send_feishu_notification(
+                            f"CUSUM L2: factor {factor_name} degraded "
+                            f"(weight freeze), {len(trigger_dates)} triggers "
+                            f"in {self.config.l2_window_days}d",
+                            severity="warning",
+                        )
 
-                # L1 feishu notification
-                _send_feishu_notification(
-                    f"CUSUM L1: factor {factor_name} cusum={s_t:.4f} >= h={self.config.h}",
-                    severity="warning",
-                )
-                self._write_alert(
+                # L1 alert + feishu notification (dedup: one per factor per day)
+                l1_written = self._write_alert(
                     rule_name="cusum_l1",
                     severity="warning",
                     metric_value=s_t,
                     notes=f"factor={factor_name} cusum={s_t:.4f}",
+                    dedup_key=factor_name,
                 )
+                if l1_written:
+                    _send_feishu_notification(
+                        f"CUSUM L1: factor {factor_name} cusum={s_t:.4f} >= h={self.config.h}",
+                        severity="warning",
+                    )
 
         # 8. L3 global check
         l3_triggered = self._check_l3(l1_triggers)
         if l3_triggered:
-            self._write_alert(
+            l3_written = self._write_alert(
                 rule_name="cusum_l3",
                 severity="critical",
                 metric_value=float(len(l1_triggers)),
@@ -279,12 +294,14 @@ class CUSUMMonitor:
                     f"global low-activity mode: {len(l1_triggers)} factors "
                     f"triggered simultaneously on {metric_date.isoformat()}"
                 ),
+                dedup_key="l3",
             )
-            _send_feishu_notification(
-                f"CUSUM L3: global low-activity mode activated — "
-                f"{len(l1_triggers)} factors triggered simultaneously",
-                severity="critical",
-            )
+            if l3_written:
+                _send_feishu_notification(
+                    f"CUSUM L3: global low-activity mode activated — "
+                    f"{len(l1_triggers)} factors triggered simultaneously",
+                    severity="critical",
+                )
 
         _logger.info(
             "CUSUM monitor complete: %d records, L1=%d, L2=%d, L3=%s",
@@ -545,11 +562,40 @@ class CUSUMMonitor:
         severity: str,
         metric_value: float | None = None,
         notes: str | None = None,
-    ) -> None:
-        """Write an alert row to the alerts table."""
+        dedup_key: str | None = None,
+    ) -> bool:
+        """Write an alert row to the alerts table.
 
-        def _write(session: Session) -> None:
-            from datetime import UTC, datetime
+        Args:
+            rule_name: Alert rule identifier (e.g. ``cusum_l1``).
+            severity: ``warning`` or ``critical``.
+            metric_value: Numeric metric associated with the alert.
+            notes: Human-readable description.
+            dedup_key: Optional deduplication key. When provided, the method
+                first checks whether a matching alert already exists in the DB.
+                For L1/L2 this is ``factor_name``; for L3 this is ``l3``.
+                Returns ``False`` without writing if a duplicate is found.
+
+        Returns:
+            ``True`` if the alert was written, ``False`` if it was suppressed
+            by deduplication.
+        """
+
+        def _write(session: Session) -> bool:
+            # Deduplication: check for existing matching alert
+            if dedup_key is not None:
+                existing = self._find_recent_alert(
+                    session,
+                    rule_name,
+                    dedup_key,
+                )
+                if existing:
+                    _logger.debug(
+                        "CUSUM dedup: suppressed %s alert (key=%s)",
+                        rule_name,
+                        dedup_key,
+                    )
+                    return False
 
             session.add(
                 Alert(
@@ -560,8 +606,71 @@ class CUSUMMonitor:
                     notes=notes,
                 )
             )
+            return True
 
-        _with_session(self._session_factory, _write, suppress_exception=False)
+        return _with_session(
+            self._session_factory,
+            _write,
+            rollback_value=False,
+            suppress_exception=False,
+        )
+
+    def _find_recent_alert(
+        self,
+        session: Session,
+        rule_name: str,
+        dedup_key: str,
+    ) -> Alert | None:
+        """Find a recent alert matching *rule_name* and *dedup_key*.
+
+        Deduplication windows by rule:
+        - ``cusum_l1``: same factor on the same calendar date.
+        - ``cusum_l2``: same factor within ``l2_window_days``.
+        - ``cusum_l3``: any L3 alert within ``l3_cooldown_hours``.
+        """
+        now = datetime.now(UTC)
+
+        if rule_name == "cusum_l1":
+            # Same factor + same calendar date: check notes contains the
+            # factor name and the alert is from today (UTC).
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            return (
+                session.query(Alert)
+                .filter(
+                    Alert.rule_name == rule_name,
+                    Alert.notes.like(f"%factor={dedup_key}%"),
+                    Alert.triggered_at >= today_start.isoformat(),
+                )
+                .first()
+            )
+
+        if rule_name == "cusum_l2":
+            # Same factor within l2_window_days.
+            cutoff = now - timedelta(days=self.config.l2_window_days)
+            return (
+                session.query(Alert)
+                .filter(
+                    Alert.rule_name == rule_name,
+                    Alert.notes.like(f"%factor={dedup_key}%"),
+                    Alert.triggered_at >= cutoff.isoformat(),
+                )
+                .first()
+            )
+
+        if rule_name == "cusum_l3":
+            if self.config.l3_cooldown_hours <= 0:
+                return None  # cooldown disabled
+            cutoff = now - timedelta(hours=self.config.l3_cooldown_hours)
+            return (
+                session.query(Alert)
+                .filter(
+                    Alert.rule_name == rule_name,
+                    Alert.triggered_at >= cutoff.isoformat(),
+                )
+                .first()
+            )
+
+        return None
 
 
 # ---------------------------------------------------------------------------
