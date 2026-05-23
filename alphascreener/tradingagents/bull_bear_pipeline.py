@@ -9,7 +9,7 @@ Pipeline per symbol:
   3. Portfolio Manager (4.5.3) ─┘ score correction + risk audit
   4. Output validation (4.5.5) → BreakoutAssessment Pydantic model
 
-Execution model: batch-serial (3 symbols/batch, 7 batches),
+Execution model: batch-serial (default: 3 symbols/batch, unlimited batches),
 within each batch (Bull || Bear) → PM.
 """
 
@@ -984,7 +984,7 @@ def run_bull_bear_pm(
 # ============================================================================
 
 DEFAULT_BATCH_SIZE: int = 3
-DEFAULT_N_BATCHES: int = 7
+DEFAULT_N_BATCHES: int | None = None
 
 
 @dataclass
@@ -992,7 +992,8 @@ class BatchConfig:
     """Configuration for batch processing."""
 
     batch_size: int = DEFAULT_BATCH_SIZE
-    n_batches: int = DEFAULT_N_BATCHES
+    n_batches: int | None = DEFAULT_N_BATCHES
+    """Maximum number of batches to process (None = unlimited)."""
     max_output_tokens: int = 800
     retry_on_json_failure: bool = True
     cost_tracker: CostTracker | None = None
@@ -1061,8 +1062,10 @@ def run_pipeline_batch(
         _logger.info("Fine screening skipped due to circuit breaker — returning empty results")
         return []
 
-    # Limit to n_batches
-    batches = _chunk_contexts(contexts, cfg.batch_size)[: cfg.n_batches]
+    # Limit to n_batches (None = no limit)
+    batches = _chunk_contexts(contexts, cfg.batch_size)
+    if cfg.n_batches is not None:
+        batches = batches[: cfg.n_batches]
 
     results: list[BreakoutAssessment] = []
     total_symbols = 0
