@@ -120,8 +120,9 @@ def screen(market: str, top: int) -> None:
 
     # Filter to latest date, dedup, compute factors, run screening
     df = ohlcv.filter(pl.col("dt") == latest_date)
-    # Defensive dedup: keep last occurrence of duplicate (ticker, dt) rows
-    df = df.unique(subset=["ticker", "dt"], keep="last")
+    # Defensive dedup: keep last occurrence of duplicate (ticker, dt) rows,
+    # then sort so downstream factor computation sees correct time-series order.
+    df = df.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
     n_tickers = df["ticker"].n_unique()
 
     try:
