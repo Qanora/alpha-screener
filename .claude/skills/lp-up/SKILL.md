@@ -10,7 +10,7 @@ description: 第一层——执行引擎+分析运行时数据，持续发现架
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    lp-up (第一层)                     │
-│  执行 → 观察 → 分析 → 报告 → 确认 → subagent:lp-ms   │
+│  执行 → 观察 → 分析 → 报告 → subagent:lp-ms（自动）   │
 └────────┬────────────────────────────────────────────┘
          │ milestone (via subagent)
          ▼
@@ -344,20 +344,21 @@ FROM alpha_acceptance_daily WHERE dt >= date('now', '-30 days') ORDER BY day
 ---
 ```
 
-### 阶段 F：用户确认
+### 阶段 F：自动派发 lp-ms
 
-```text
-请选择要推进的发现（编号，空格分隔，all=全部，none=不推进）:
-> 1 2
-```
+报告生成后**自动推进，不询问用户**。派发规则：
 
-### 阶段 G：Subagent 交付 lp-ms
+| 严重度 | 动作 |
+|--------|------|
+| CRITICAL | **自动推进** — 立即通过 subagent 启动 lp-ms |
+| WARNING | **自动推进** — 立即通过 subagent 启动 lp-ms |
+| INFO | **自动跳过** — 记录到 findings.json，下一轮若升级则推进 |
 
-**关键**：对每个用户选中的发现，通过 `Agent` 工具以 subagent 模式启动 lp-ms：
+对每个自动推进的发现，通过 `Agent` 工具以 subagent 模式启动 lp-ms：
 
 ```text
 Agent(
-  description: "启动 lp-ms 拆解 milestone",
+  description: "lp-ms: <简述>",
   subagent_type: "lp-ms",
   prompt: "<milestone 描述>"
 )
@@ -377,27 +378,9 @@ Agent(
 **建议范围**: <涉及模块/文件>
 ```
 
-**调用示例**：
+**串行派发**：按严重度排序（CRITICAL → WARNING），依次启动 subagent。每个 subagent 完成后启动下一个。派发完成后输出推进摘要。
 
-```text
-Agent(
-  description: "lp-ms: 修复 screen KeyError",
-  subagent_type: "lp-ms",
-  prompt: "[lp-up][IMPLEMENTATION] 修复 screen 命令 KeyError: phase2_pipeline 返回缺少 breakout_score 列
-
-**来源**: lp-up Round 3 分析报告
-**严重度**: CRITICAL
-**类别**: IMPLEMENTATION
-**证据摘要**: screen --top 20 退出码=1，stderr: KeyError: 'breakout_score'，发生于 2026-05-23
-**根因假设**: phase2_pipeline 返回的 DataFrame 缺少 breakout_score 列，可能权重配置变更导致字段名不匹配
-**预期收益**: 恢复 screen 命令正常运行，确保每日粗筛可执行
-**建议范围**: alphascreener/screening/phase2.py, alphascreener/cli.py"
-)
-```
-
-**串行派发**：多个 milestone 按严重度排序（CRITICAL → WARNING → INFO），依次启动 subagent。每个 subagent 完成后启动下一个。
-
-### 阶段 H：状态持久化
+### 阶段 G：状态持久化
 
 每轮结束后保存状态：
 
@@ -427,7 +410,7 @@ Agent(
 }
 ```
 
-### 阶段 I：下一轮预告
+### 阶段 H：下一轮预告
 
 ```text
 ## 本轮总结
@@ -450,7 +433,7 @@ Agent(
 
 - **执行权限**：`--run` 模式需要 Bash 权限运行 CLI 命令；纯分析模式只读
 - **只读分析**：除 `--run` 中的引擎执行外，不修改任何代码、配置或数据
-- **Subagent 交付**：必须通过 `Agent` 工具启动 lp-ms subagent，不直接创建 issue
+- **自动推进**：CRITICAL 和 WARNING 发现自动通过 subagent 派发 lp-ms，不询问用户；INFO 记录到 findings.json 供后续跟踪
 - **串行派发**：多个 milestone 按严重度排序依次派发，不并行
 - **数据采样上限**：单次分析不超过 30 天数据或 10 万行日志
 - **证据驱动**：每个发现必须有可追溯的数据证据
