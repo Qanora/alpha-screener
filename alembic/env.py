@@ -11,6 +11,8 @@ from sqlalchemy import engine_from_config, event, pool
 from alembic import context
 from alphascreener.db.models import Base  # noqa: F401 — imports all models for autogenerate
 
+DEFAULT_ALEMBIC_URL = "sqlite:///alembic_generation.db"
+
 # Alembic Config object
 config = context.config
 
@@ -30,7 +32,7 @@ def _get_db_url(alembic_config):
     because they won't match the placeholder check.
     """
     url = alembic_config.get_main_option("sqlalchemy.url")
-    if not url or "alembic_generation.db" in url:
+    if not url or url.strip() == DEFAULT_ALEMBIC_URL:
         from alphascreener.config import Settings
 
         return Settings().get_db_url()
