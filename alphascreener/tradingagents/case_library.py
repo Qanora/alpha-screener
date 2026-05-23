@@ -137,7 +137,9 @@ class CaseLibraryBuilder:
             return 0
 
         # 5. Map to case library schema
-        case_rows = self._to_case_schema(cases)
+        case_rows = self._to_case_schema(cases).unique(
+            subset=["ticker", "date"], keep="last", maintain_order=True
+        )
 
         # 6. Write
         self._output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,12 +334,17 @@ class CaseLibraryBuilder:
         # Left-join to factor data
         result = df.join(fwd_df, on=["ticker", "dt"], how="left")
 
-        # Compute t7_return
+        # Compute t7_return (guard against close <= 0 to avoid Inf/-Inf)
         if "close" in result.columns:
             result = result.with_columns(
-                (
-                    (pl.col("_fwd_close") - pl.col("close")) / pl.col("close")
-                ).alias("t7_return")
+                pl.when(
+                    pl.col("_fwd_close").is_not_null()
+                    & pl.col("close").is_not_null()
+                    & (pl.col("close") > 0)
+                )
+                .then((pl.col("_fwd_close") - pl.col("close")) / pl.col("close"))
+                .otherwise(pl.lit(None, dtype=pl.Float64))
+                .alias("t7_return")
             )
         else:
             result = result.with_columns(pl.lit(None, dtype=pl.Float64).alias("t7_return"))
@@ -361,10 +368,13 @@ class CaseLibraryBuilder:
             return df
 
         required_z = [z_col for z_col, _ in _FACTOR_VECTOR_MAP]
-        z_cols_present = [c for c in required_z if c in df.columns]
-        if not z_cols_present:
-            _logger.warning("No z_capped columns in factor data — cannot select cases")
-            return df.clear()
+        missing_required = [c for c in required_z if c not in df.columns]
+        if missing_required:
+            raise ValueError(
+                f"Missing required z_capped columns ({len(missing_required)}): "
+                + ", ".join(missing_required)
+            )
+        z_cols_present = required_z
 
         # Compute score threshold (top percentile)
         if "breakout_score" in df.columns:
@@ -405,11 +415,9 @@ class CaseLibraryBuilder:
             selects.append(pl.lit(0.0, dtype=pl.Float64).alias("actual_pnl"))
 
         # Map z_capped_* columns to f_* columns
+        # All required columns are guaranteed present by _select_positive_cases
         for z_col, f_col in _FACTOR_VECTOR_MAP:
-            if z_col in df.columns:
-                selects.append(pl.col(z_col).alias(f_col))
-            else:
-                selects.append(pl.lit(0.0, dtype=pl.Float64).alias(f_col))
+            selects.append(pl.col(z_col).cast(pl.Float64).alias(f_col))
 
         return df.select(selects)
 

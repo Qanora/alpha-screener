@@ -245,13 +245,12 @@ class TestCaseLibraryBuilder:
             builder.rebuild()
             first_count = pl.read_parquet(str(output)).height
 
-            # Simulate append_date with the same data
-            builder._load_all_factors = lambda: df
-            builder.rebuild()
+            # Exercise append_date with same ticker+date data
+            target_dt = df["dt"][0]
+            same_day = df.filter(pl.col("dt") == target_dt)
+            builder.append_date(target_dt, df=same_day)
             second_count = pl.read_parquet(str(output)).height
 
-            # rebuild is a full rebuild so it replaces — let's test append_date
-            # with a dedicated test
             assert first_count == second_count
 
     def test_append_date_adds_new_cases(self):
@@ -324,16 +323,18 @@ class TestCaseLibraryBuilder:
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "cases.parquet"
             builder = CaseLibraryBuilder(
-                breakout_score_pct=0.5,
+                breakout_score_pct=0.0,
                 min_return=0.10,
                 output_path=output,
             )
             builder._load_all_factors = lambda: df
             n = builder.rebuild()
-            # Should compute breakout_score and proceed
-            assert n >= 0
-            if n > 0:
-                assert output.exists()
+            # breakout_score_pct=0.0 ensures all rows pass the percentile filter;
+            # with t7_return=0.15 > min_return=0.10, we expect positive cases
+            assert n > 0
+            assert output.exists()
+            result = pl.read_parquet(str(output))
+            assert result.height == n
 
 
 class TestRebuildConvenience:

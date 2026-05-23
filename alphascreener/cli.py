@@ -510,8 +510,7 @@ def case_library_init(score_pct: float, min_return: float) -> None:
             min_return=min_return,
         )
     except Exception as exc:
-        click.echo(f"Error building case library: {exc}", err=True)
-        return
+        raise click.ClickException(f"Error building case library: {exc}") from exc
 
     if n > 0:
         click.echo(f"  Case library built with {n} positive cases.")
@@ -544,8 +543,7 @@ def case_library_status_cmd() -> None:
 
         info = case_library_status()
     except Exception as exc:
-        click.echo(f"Error reading case library: {exc}", err=True)
-        return
+        raise click.ClickException(f"Error reading case library: {exc}") from exc
 
     click.echo(f"  Path       : {info['path']}")
     click.echo(f"  Exists     : {info['exists']}")
