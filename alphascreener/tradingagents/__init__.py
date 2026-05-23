@@ -100,6 +100,8 @@ from alphascreener.tradingagents.llm_adapter import (
 )
 from alphascreener.tradingagents.orchestrator import (
     AnalystOrchestrator,
+    InvocationStats,
+    LLMInvocationTracker,
     build_context,
     build_llm_invoker,
     check_token_budget,
@@ -154,6 +156,9 @@ __all__ = [
     "build_llm_invoker",
     "check_token_budget",
     "run_analyst",
+    # Invocation monitoring (Issue #188)
+    "InvocationStats",
+    "LLMInvocationTracker",
     # Bull/Bear/PM pipeline (Issue #98)
     "ALLOWED_RISK_TAGS",
     "BULL_PROMPT",

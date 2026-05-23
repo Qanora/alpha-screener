@@ -13,8 +13,12 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import re
+import threading
+import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from alphascreener.logging import get_logger
@@ -34,6 +38,230 @@ if TYPE_CHECKING:
     from alphascreener.config import Settings
 
 _logger = get_logger("screening")
+
+# ---------------------------------------------------------------------------
+# Error classification for retry logic
+# ---------------------------------------------------------------------------
+
+
+def _is_retryable_error(exc: BaseException) -> bool:
+    """Return True if *exc* is a transient failure worth retrying.
+
+    Retryable categories:
+      - OpenAI rate-limit, server errors, connection/timeout errors
+      - Python built-in TimeoutError, ConnectionError
+      - Generic HTTP 429 / 5xx from any provider's HTTP stack
+
+    Non-retryable (fail-fast):
+      - Authentication / authorisation errors (401, 403)
+      - BadRequest / validation errors (400, 404, 422)
+      - ValueError from missing API key / misconfiguration
+    """
+    # ── OpenAI SDK errors ──────────────────────────────────────────────
+    try:
+        import openai
+
+        if isinstance(exc, openai.RateLimitError):
+            return True
+        if isinstance(exc, openai.InternalServerError):
+            return True
+        if isinstance(exc, openai.APIConnectionError):
+            return True
+        if isinstance(exc, openai.APITimeoutError):
+            return True
+        # Non-retryable OpenAI errors: AuthenticationError, BadRequestError,
+        # PermissionDeniedError, NotFoundError, ConflictError,
+        # UnprocessableEntityError — all descend from APIStatusError but
+        # NOT from the retryable subtypes above.
+    except ImportError:
+        pass
+
+    # ── Anthropic SDK errors ───────────────────────────────────────────
+    try:
+        import anthropic
+
+        if isinstance(exc, anthropic.RateLimitError):
+            return True
+        if isinstance(exc, anthropic.InternalServerError):
+            return True
+        if isinstance(exc, anthropic.APIConnectionError):
+            return True
+        if isinstance(exc, anthropic.APITimeoutError):
+            return True
+    except ImportError:
+        pass
+
+    # ── Google Generative AI SDK errors ────────────────────────────────
+    try:
+        import google.api_core.exceptions as google_exc
+
+        if isinstance(exc, google_exc.ResourceExhausted):  # 429
+            return True
+        if isinstance(exc, google_exc.InternalServerError):  # 500
+            return True
+        if isinstance(exc, google_exc.ServiceUnavailable):  # 503
+            return True
+        if isinstance(exc, google_exc.DeadlineExceeded):
+            return True
+    except ImportError:
+        pass
+
+    # ── Generic Python / stdlib errors ─────────────────────────────────
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, ConnectionError):
+        return True
+
+    # ── HTTP-level errors from any HTTP library ────────────────────────
+    if hasattr(exc, "status_code"):
+        code = getattr(exc, "status_code", 0)
+        if code == 429 or (500 <= code < 600):
+            return True
+
+    # ── LangGraph / LangChain retryable wrappers ───────────────────────
+    exc_name = type(exc).__name__
+    exc_msg = str(exc).lower()
+    for keyword in ("rate limit", "too many requests", "server error",
+                     "service unavailable", "internal server error",
+                     "connection", "timeout", "timed out"):
+        if keyword in exc_msg or keyword in exc_name.lower():
+            return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Invocation stats tracking (Issue #188)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class InvocationStats:
+    """Per-call-type invocation statistics.
+
+    Thread-safe counters for tracking LLM invocation success/failure rates.
+    """
+
+    call_type: str = ""
+    call_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    retry_count: int = 0
+    total_retries: int = 0
+    last_error: str = ""
+    last_error_type: str = ""
+
+    @property
+    def success_rate(self) -> float:
+        if self.call_count == 0:
+            return 1.0
+        return self.success_count / self.call_count
+
+    @property
+    def avg_retries_per_call(self) -> float:
+        if self.call_count == 0:
+            return 0.0
+        return self.total_retries / self.call_count
+
+
+@dataclass
+class LLMInvocationTracker:
+    """Collect per-call-type invocation stats and emit summary logs.
+
+    Usage::
+
+        tracker = LLMInvocationTracker()
+        tracker.record_success("bull", retries=1)
+        tracker.record_failure("bull", "RateLimitError", retries=2)
+        tracker.log_summary()  # emits a single log line with all stats
+    """
+
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+    _stats: dict[str, InvocationStats] = field(default_factory=dict, init=False)
+    _created_at: float = field(default_factory=time.monotonic, init=False)
+
+    def _get_or_create(self, call_type: str) -> InvocationStats:
+        with self._lock:
+            if call_type not in self._stats:
+                self._stats[call_type] = InvocationStats(call_type=call_type)
+            return self._stats[call_type]
+
+    def record_success(self, call_type: str, *, retries: int = 0) -> None:
+        """Record a successful LLM invocation."""
+        stats = self._get_or_create(call_type)
+        with self._lock:
+            stats.call_count += 1
+            stats.success_count += 1
+            if retries > 0:
+                stats.retry_count += 1
+                stats.total_retries += retries
+
+    def record_failure(self, call_type: str, error: str,
+                       error_type: str = "", *, retries: int = 0) -> None:
+        """Record a failed LLM invocation (after all retries exhausted)."""
+        stats = self._get_or_create(call_type)
+        with self._lock:
+            stats.call_count += 1
+            stats.failure_count += 1
+            if retries > 0:
+                stats.retry_count += 1
+                stats.total_retries += retries
+            stats.last_error = error
+            stats.last_error_type = error_type
+
+    def log_summary(self, *, logger: logging.Logger | None = None) -> None:
+        """Emit a summary log line with per-type and aggregate stats."""
+        _log = logger or _logger
+        elapsed = time.monotonic() - self._created_at
+        with self._lock:
+            stats_list = [copy.copy(s) for s in self._stats.values()]
+
+        if not stats_list:
+            return
+
+        total_calls = sum(s.call_count for s in stats_list)
+        total_success = sum(s.success_count for s in stats_list)
+        total_failures = sum(s.failure_count for s in stats_list)
+        total_retries = sum(s.total_retries for s in stats_list)
+        overall_rate = total_success / total_calls if total_calls > 0 else 1.0
+
+        per_type: list[str] = []
+        for s in sorted(stats_list, key=lambda x: x.call_type):
+            pct = int(s.success_rate * 100)
+            per_type.append(
+                f"{s.call_type}={s.success_count}/{s.call_count}({pct}pct)"
+            )
+
+        overall_pct = int(overall_rate * 100)
+        _log.info(
+            "LLM invocation stats (%.0fs): "
+            "overall=%d/%d (%dpct) retries=%d | %s",
+            elapsed,
+            total_success,
+            total_calls,
+            overall_pct,
+            total_retries,
+            " ".join(per_type),
+        )
+
+        if total_failures > 0:
+            failures_detail: list[str] = []
+            for s in stats_list:
+                if s.failure_count > 0:
+                    failures_detail.append(
+                        f"{s.call_type}: {s.failure_count} failures "
+                        f"(last: {s.last_error_type} — {s.last_error[:120]})"
+                    )
+            _log.warning(
+                "LLM invocation failures: %d total | %s",
+                total_failures,
+                " | ".join(failures_detail),
+            )
+
+    def snapshot(self) -> dict[str, InvocationStats]:
+        """Return a thread-safe snapshot of current stats."""
+        with self._lock:
+            return {k: copy.copy(v) for k, v in self._stats.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +470,10 @@ def run_analyst(
 def build_llm_invoker(
     settings: Settings | None = None,
     provider: str = "openai",
+    *,
+    max_retries: int = 3,
+    retry_base_delay: float = 1.0,
+    invocation_tracker: LLMInvocationTracker | None = None,
 ) -> Invoker:
     """Build an LLM invoker callable from application settings.
 
@@ -255,6 +487,9 @@ def build_llm_invoker(
             ``Settings()`` instance is created.
         provider: LLM provider name forwarded to
             :func:`~alphascreener.tradingagents.llm_adapter.create_llm_client_safe`.
+        max_retries: Maximum retry attempts for transient failures (default 3).
+        retry_base_delay: Base delay in seconds for exponential backoff (default 1.0).
+        invocation_tracker: Optional tracker for recording per-call stats.
 
     Returns:
         A callable ``(prompt, max_output_tokens) -> str``.
@@ -263,6 +498,13 @@ def build_llm_invoker(
         from alphascreener.config import Settings as _Settings
 
         settings = _Settings()  # type: ignore[call-arg]
+
+    if max_retries < 0:
+        raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+    if retry_base_delay < 0:
+        raise ValueError(
+            f"retry_base_delay must be >= 0, got {retry_base_delay}"
+        )
 
     from alphascreener.tradingagents.llm_adapter import create_llm_client_safe
 
@@ -280,11 +522,73 @@ def build_llm_invoker(
     def invoker(prompt: str, max_out_tok: int) -> str:
         from langchain_core.messages import SystemMessage
 
-        msg = llm.invoke(
-            [SystemMessage(content=prompt)],
-            max_tokens=max_out_tok,
-        )
-        return _normalize_content(msg.content)
+        last_exc: BaseException | None = None
+        retries_used = 0
+
+        for attempt_num in range(max_retries + 1):
+            try:
+                msg = llm.invoke(
+                    [SystemMessage(content=prompt)],
+                    max_tokens=max_out_tok,
+                )
+                result = _normalize_content(msg.content)
+                # Success — record and return
+                if invocation_tracker is not None:
+                    invocation_tracker.record_success(
+                        "invoke", retries=retries_used,
+                    )
+                if retries_used > 0:
+                    _logger.info(
+                        "LLM invocation succeeded after %d retries", retries_used,
+                    )
+                return result
+            except Exception as exc:
+                last_exc = exc
+
+                if not _is_retryable_error(exc):
+                    # Non-retryable — fail immediately
+                    _logger.error(
+                        "LLM invocation failed with non-retryable error: %s: %s",
+                        type(exc).__name__, exc,
+                    )
+                    if invocation_tracker is not None:
+                        invocation_tracker.record_failure(
+                            "invoke", str(exc), type(exc).__name__,
+                            retries=retries_used,
+                        )
+                    raise
+
+                if attempt_num < max_retries:
+                    delay = retry_base_delay * (2 ** attempt_num)
+                    _logger.warning(
+                        "LLM invocation attempt %d/%d failed: %s: %s — "
+                        "retrying in %.1fs",
+                        attempt_num + 1,
+                        max_retries + 1,
+                        type(exc).__name__,
+                        exc,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    retries_used += 1
+                else:
+                    # All retries exhausted
+                    _logger.error(
+                        "LLM invocation failed after %d attempts: %s: %s",
+                        max_retries + 1,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    if invocation_tracker is not None:
+                        invocation_tracker.record_failure(
+                            "invoke", str(exc), type(exc).__name__,
+                            retries=retries_used,
+                        )
+                    raise
+
+        # Unreachable — but placate type-checkers
+        assert last_exc is not None
+        raise last_exc
 
     return invoker
 
