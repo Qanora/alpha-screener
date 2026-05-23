@@ -763,6 +763,7 @@ def weekly_case_library_rebuild() -> None:
         _logger.info("weekly_case_library_rebuild: done — %d cases written", n)
     except Exception:
         _logger.exception("weekly_case_library_rebuild: failed")
+        raise
     else:
         _logger.info("weekly_case_library_rebuild: done")
 

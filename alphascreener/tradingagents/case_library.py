@@ -196,16 +196,19 @@ class CaseLibraryBuilder:
             try:
                 existing = pl.read_parquet(str(self._output_path))
             except Exception:
-                _logger.warning("Failed to read existing case library — overwriting")
+                _logger.exception("Failed to read existing case library, cannot append safely")
+                raise
 
+        n_before = existing.height if existing is not None and existing.height > 0 else 0
         if existing is not None and existing.height > 0:
             merged = pl.concat([existing, new_rows], how="diagonal_relaxed")
             merged = merged.unique(subset=["ticker", "date"], keep="last", maintain_order=True)
         else:
             merged = new_rows
 
+        self._output_path.parent.mkdir(parents=True, exist_ok=True)
         merged.write_parquet(str(self._output_path))
-        n_new = new_rows.height
+        n_new = max(0, merged.height - n_before)
         _logger.info("Appended %d cases for %s (total: %d)", n_new, dt.isoformat(), merged.height)
         return n_new
 
@@ -311,8 +314,10 @@ class CaseLibraryBuilder:
             # Build price lookup: ticker -> close
             for row in ohlcv.select(["ticker", "close"]).iter_rows(named=True):
                 ticker = str(row["ticker"])
-                close = float(row["close"])
-                forward_map[(ticker, obs_date)] = close
+                close_val = row["close"]
+                if close_val is None:
+                    continue
+                forward_map[(ticker, obs_date)] = float(close_val)
 
         if not forward_map:
             _logger.warning("No forward price data available — all t7_return will be null")

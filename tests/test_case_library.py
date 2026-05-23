@@ -343,12 +343,14 @@ class TestRebuildConvenience:
         """rebuild_case_library returns 0 when scan_parquet raises FileNotFoundError."""
         # The convenience function calls CaseLibraryBuilder().rebuild()
         # which calls _load_all_factors -> scan_parquet("factors")
-        # We patch scan_parquet to raise FileNotFoundError
-        import alphascreener.tradingagents.case_library as cl
+        # We patch scan_parquet to raise FileNotFoundError to test the
+        # real exception handling path in _load_all_factors.
+        import alphascreener.data.io as io
 
         def _raise(*args, **kwargs):
             raise FileNotFoundError("No data")
 
-        monkeypatch.setattr(cl.CaseLibraryBuilder, "_load_all_factors", lambda self: None)
+        monkeypatch.setattr(io, "scan_parquet", _raise)
+        import alphascreener.tradingagents.case_library as cl
         n = cl.rebuild_case_library()
         assert n == 0
