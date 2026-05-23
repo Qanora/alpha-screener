@@ -495,7 +495,15 @@ def daily_scan() -> None:
 
         # Build invoker adapter: orchestrator invoker (str -> str)
         # wrapped for the pipeline's (str, int) -> (str, int, int) signature.
-        base_invoker = build_llm_invoker(settings)
+        from alphascreener.tradingagents.orchestrator import LLMInvocationTracker
+
+        inv_tracker = LLMInvocationTracker()
+        base_invoker = build_llm_invoker(
+            settings,
+            max_retries=settings.llm_max_retries,
+            retry_base_delay=settings.llm_retry_base_delay,
+            invocation_tracker=inv_tracker,
+        )
         pipeline_invoker = _PipelineInvoker(base_invoker)
 
         cfg = BatchConfig(
@@ -508,11 +516,14 @@ def daily_scan() -> None:
             cfg.batch_size,
         )
 
+        assessments = []
         try:
             assessments = run_pipeline_batch(contexts, pipeline_invoker, cfg)
         except RuntimeError as exc:
             _logger.error("Pipeline stopped by circuit breaker: %s", exc)
-            assessments = []
+        finally:
+            # Emit invocation stats summary (Issue #188)
+            inv_tracker.log_summary()
 
         _logger.info(
             "Pipeline complete: %d assessments for %d symbols",
@@ -716,6 +727,9 @@ class _PipelineInvoker:
     """Adapt the orchestrator's ``(prompt, max_tokens) -> str`` invoker to the
     pipeline's ``(prompt, max_tokens) -> (str, int, int)`` signature by
     estimating token counts.
+
+    Retry logic and invocation tracking are handled inside the base invoker
+    (see :func:`~alphascreener.tradingagents.orchestrator.build_llm_invoker`).
     """
 
     def __init__(self, base_invoker) -> None:

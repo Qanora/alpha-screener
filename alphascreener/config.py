@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     llm_rps: int = 5
     llm_batch_size: int = 3
     llm_max_concurrent_stage1: int = 6
+    llm_max_retries: int = 3
+    llm_retry_base_delay: float = 1.0
 
     # ====== 成本熔断阈值 ======
     cost_l1_warning_daily_usd: float = 0.80
