@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     # ====== LLM ======
     openai_api_key: str = ""
+    openai_base_url: str = ""
     llm_model: str = "gpt-4o-mini"
     llm_rps: int = 5
     llm_batch_size: int = 3

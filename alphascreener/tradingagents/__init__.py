@@ -101,6 +101,7 @@ from alphascreener.tradingagents.llm_adapter import (
 from alphascreener.tradingagents.orchestrator import (
     AnalystOrchestrator,
     build_context,
+    build_llm_invoker,
     check_token_budget,
     run_analyst,
 )
@@ -150,6 +151,7 @@ __all__ = [
     # Orchestrator (Issue #97)
     "AnalystOrchestrator",
     "build_context",
+    "build_llm_invoker",
     "check_token_budget",
     "run_analyst",
     # Bull/Bear/PM pipeline (Issue #98)
