@@ -60,17 +60,20 @@ echo "[3/5] Checking for remote residual branch 'origin/$BRANCH'..."
 git fetch --prune
 if git branch -r | grep -q "origin/$BRANCH"; then
   echo "  Deleting remote branch 'origin/$BRANCH'..."
-  if ! gh api "repos/$REPO/git/refs/heads/$BRANCH" -X DELETE 2>/tmp/lp_mr_cleanup_err; then
-    if grep -q '"status":404' /tmp/lp_mr_cleanup_err 2>/dev/null; then
+  TMP_ERR=$(mktemp)
+  trap 'rm -f "$TMP_ERR"' EXIT
+  if ! gh api "repos/$REPO/git/refs/heads/$BRANCH" -X DELETE 2>"$TMP_ERR"; then
+    if grep -q '"status":404' "$TMP_ERR" 2>/dev/null; then
       echo "  Remote branch already deleted."
     else
       echo "ERROR: failed to delete remote branch 'origin/$BRANCH'"
-      cat /tmp/lp_mr_cleanup_err
-      rm -f /tmp/lp_mr_cleanup_err
+      cat "$TMP_ERR"
+      rm -f "$TMP_ERR"
       exit 3
     fi
   fi
-  rm -f /tmp/lp_mr_cleanup_err
+  rm -f "$TMP_ERR"
+  trap - EXIT
   git fetch --prune
 else
   echo "  No remote residual."
