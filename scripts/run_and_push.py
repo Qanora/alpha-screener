@@ -5,7 +5,6 @@ Usage:
 """
 
 import argparse
-import asyncio
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -56,7 +55,7 @@ def fetch_sp500_tickers() -> list[str]:
     ]
 
 
-async def download_data(tickers: list[str], end_date: date) -> pl.DataFrame:
+def download_data(tickers: list[str], end_date: date) -> pl.DataFrame:
     """Download OHLCV for tickers and write Parquet partitions."""
     import pandas as pd
     import yfinance as yf
@@ -140,7 +139,7 @@ async def download_data(tickers: list[str], end_date: date) -> pl.DataFrame:
     return combined
 
 
-async def fetch_meta(tickers: list[str]) -> pl.DataFrame:
+def fetch_meta(tickers: list[str]) -> pl.DataFrame:
     """Fetch sector/industry metadata for tickers."""
     import yfinance as yf
     from datetime import datetime, UTC
@@ -187,12 +186,12 @@ def main():
     tickers = tickers[: args.tickers]
 
     if not args.skip_download:
-        ohlcv_df = asyncio.run(download_data(tickers, today))
+        ohlcv_df = download_data(tickers, today)
         print(f"      Latest trading day: {ohlcv_df['dt'].max()}")
 
         # Fetch and cache universe metadata
         print("\n[3/5] Fetching sector/industry metadata ...")
-        meta_df = asyncio.run(fetch_meta(tickers))
+        meta_df = fetch_meta(tickers)
         if meta_df.height > 0:
             from alphascreener.universe.meta import write_meta_cache
 
@@ -298,7 +297,7 @@ def main():
     data = CardData(
         report_date=today.isoformat(),
         total_symbols=n_total,
-        coarse_pass=filtered.height,
+        coarse_pass=n_passed,
         refine_count=n_passed,
         top_five=top_five,
         p20_pure=None,
