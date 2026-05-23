@@ -172,7 +172,7 @@ class LLMInvocationTracker:
 
         tracker = LLMInvocationTracker()
         tracker.record_success("bull", retries=1)
-        tracker.record_failure("bull", "RateLimitError")
+        tracker.record_failure("bull", "RateLimitError", retries=2)
         tracker.log_summary()  # emits a single log line with all stats
     """
 
@@ -197,12 +197,15 @@ class LLMInvocationTracker:
                 stats.total_retries += retries
 
     def record_failure(self, call_type: str, error: str,
-                       error_type: str = "") -> None:
+                       error_type: str = "", *, retries: int = 0) -> None:
         """Record a failed LLM invocation (after all retries exhausted)."""
         stats = self._get_or_create(call_type)
         with self._lock:
             stats.call_count += 1
             stats.failure_count += 1
+            if retries > 0:
+                stats.retry_count += 1
+                stats.total_retries += retries
             stats.last_error = error
             stats.last_error_type = error_type
 
@@ -211,7 +214,7 @@ class LLMInvocationTracker:
         _log = logger or _logger
         elapsed = time.monotonic() - self._created_at
         with self._lock:
-            stats_list = list(self._stats.values())
+            stats_list = [copy.copy(s) for s in self._stats.values()]
 
         if not stats_list:
             return
@@ -258,7 +261,7 @@ class LLMInvocationTracker:
     def snapshot(self) -> dict[str, InvocationStats]:
         """Return a thread-safe snapshot of current stats."""
         with self._lock:
-            return dict(self._stats)
+            return {k: copy.copy(v) for k, v in self._stats.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +499,13 @@ def build_llm_invoker(
 
         settings = _Settings()  # type: ignore[call-arg]
 
+    if max_retries < 0:
+        raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+    if retry_base_delay < 0:
+        raise ValueError(
+            f"retry_base_delay must be >= 0, got {retry_base_delay}"
+        )
+
     from alphascreener.tradingagents.llm_adapter import create_llm_client_safe
 
     # Only forward base_url and api_key for OpenAI-compatible providers.
@@ -544,6 +554,7 @@ def build_llm_invoker(
                     if invocation_tracker is not None:
                         invocation_tracker.record_failure(
                             "invoke", str(exc), type(exc).__name__,
+                            retries=retries_used,
                         )
                     raise
 
@@ -571,6 +582,7 @@ def build_llm_invoker(
                     if invocation_tracker is not None:
                         invocation_tracker.record_failure(
                             "invoke", str(exc), type(exc).__name__,
+                            retries=retries_used,
                         )
                     raise
 

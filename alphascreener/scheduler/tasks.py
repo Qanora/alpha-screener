@@ -516,14 +516,14 @@ def daily_scan() -> None:
             cfg.batch_size,
         )
 
+        assessments = []
         try:
             assessments = run_pipeline_batch(contexts, pipeline_invoker, cfg)
         except RuntimeError as exc:
             _logger.error("Pipeline stopped by circuit breaker: %s", exc)
-            assessments = []
-
-        # Emit invocation stats summary (Issue #188)
-        inv_tracker.log_summary()
+        finally:
+            # Emit invocation stats summary (Issue #188)
+            inv_tracker.log_summary()
 
         _logger.info(
             "Pipeline complete: %d assessments for %d symbols",
