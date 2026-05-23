@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
+from uuid import uuid4
 
 import pytest
 
@@ -19,16 +20,18 @@ from alphascreener.logging import VALID_MODULES, JsonFormatter, get_logger
 # ============================================================================
 
 
-def _capture_one(level: int, msg: str, *, logger_name: str = "test", **extra) -> dict:
-    """Emit a single log record and return the parsed JSON dict."""
+def _capture_one(level: int, msg: str, **extra) -> dict:
+    """Emit a single log record and return the parsed JSON dict.
+
+    Uses a UUID-based logger name so every call gets a fresh logger, avoiding
+    test-order pollution from modules that pre-configure well-known loggers.
+    """
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(JsonFormatter())
 
+    logger_name = f"test_{uuid4().hex}"
     logger = logging.getLogger(logger_name)
-    # Remove _alphascreener_configured flag so get_logger() won't skip
-    # handler setup (prevents interference from pre-configured loggers).
-    logger.__dict__.pop("_alphascreener_configured", None)
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
     logger.addHandler(handler)
@@ -71,13 +74,13 @@ class TestJsonFormatter:
         # ISO8601 UTC ends with +00:00 or Z
         assert ts.endswith("+00:00") or ts.endswith("Z")
 
-    @pytest.mark.skipif(
-        "CI" in os.environ or "GITHUB_ACTIONS" in os.environ,
-        reason="flaky in CI: pre-configured screening logger interferes with stream capture",
-    )
     def test_module_field_from_logger_name(self):
-        record = _capture_one(logging.INFO, "scan_completed", logger_name="screening")
-        assert record["module"] == "screening"
+        """Module field reflects the logger name (a UUID-based unique name)."""
+        record = _capture_one(logging.INFO, "scan_completed")
+        module = record["module"]
+        # Logger name is "test_<32-hex-chars>"
+        assert module.startswith("test_"), f"Expected module to start with 'test_', got {module!r}"
+        assert len(module) == 37, f"Expected 37-char module name, got {len(module)}: {module!r}"
 
     def test_event_field_from_message(self):
         record = _capture_one(logging.INFO, "alpha_analysis_completed")
