@@ -36,15 +36,15 @@ def _partition_key(dt: date, category: str) -> str:
 def _write_partition(df: pl.DataFrame, partition_dir: Path) -> None:
     """Write a DataFrame slice to a single partition directory.
 
-    If the directory already exists, the new file is written alongside existing
-    files (append mode via unique filename).
+    Clears existing parquet files in the directory first so that every write
+    is a full replacement (overwrite semantics).  Callers are responsible for
+    grouping all rows that belong to the same partition into a single call.
     """
     partition_dir.mkdir(parents=True, exist_ok=True)
-    # Use a timestamp-based filename to avoid collisions on append
-    import time
-
-    fname = f"data_{int(time.time() * 1_000_000)}.parquet"
-    df.write_parquet(partition_dir / fname)
+    # Delete old parquet files to prevent data accumulation across sync runs
+    for old_file in partition_dir.glob("*.parquet"):
+        old_file.unlink()
+    df.write_parquet(partition_dir / "data.parquet")
 
 
 # -- public API ---------------------------------------------------------------
@@ -54,13 +54,12 @@ def write_parquet(df: pl.DataFrame, category: str) -> None:
     """Write a DataFrame to Hive-partitioned Parquet files.
 
     The DataFrame **must** contain a ``dt`` column (date type). Rows are
-    grouped by ``dt`` and written into the appropriate partition directory.
+    grouped by partition key and written into the appropriate partition
+    directory.  Existing files in the target partition are removed before
+    writing (overwrite semantics).
 
     Daily categories (ohlcv/factors/signals) produce dt=YYYY-MM-DD/.
     Monthly category (backtest) produces dt=YYYY-MM/.
-
-    If a partition directory already exists, the new file is added alongside
-    existing files (append semantics).
 
     Args:
         df: DataFrame with a ``dt`` column of type ``pl.Date``.
@@ -84,11 +83,17 @@ def write_parquet(df: pl.DataFrame, category: str) -> None:
     elif dt_dtype != pl.Date:
         raise ValueError(f"DataFrame 'dt' column must be pl.Date or pl.Datetime, got {dt_dtype!r}")
 
-    # Group rows by partition key and write each group to its own directory
-    for (dt_val,) in df.select("dt").unique().sort("dt").iter_rows():
-        part_key = _partition_key(dt_val, category)
+    # Group rows by partition key so that monthly partitions (backtest)
+    # have all their dates gathered before the directory is cleared.
+    df = df.with_columns(
+        pl.col("dt")
+        .map_elements(lambda d: _partition_key(d, category), return_dtype=pl.String)
+        .alias("_part_key")
+    )
+
+    for (part_key,) in df.select("_part_key").unique().sort("_part_key").iter_rows():
         part_dir = get_data_dir(category) / f"dt={part_key}"
-        part_df = df.filter(pl.col("dt") == dt_val)
+        part_df = df.filter(pl.col("_part_key") == part_key).drop("_part_key")
         _write_partition(part_df, part_dir)
 
 
