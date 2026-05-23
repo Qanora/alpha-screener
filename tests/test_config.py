@@ -46,7 +46,10 @@ class TestSettingsDefaults:
         assert s.sector_cap == 3
         assert s.industry_cap == 2
 
-    def test_default_feishu(self):
+    def test_default_feishu(self, monkeypatch):
+        monkeypatch.setenv("FEISHU_APP_ID", "")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "")
+        monkeypatch.setenv("FEISHU_TARGET_OPENID", "")
         s = Settings()
         assert s.feishu_app_id == ""
         assert s.feishu_app_secret == ""

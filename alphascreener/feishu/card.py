@@ -90,7 +90,8 @@ def _build_top5_table(top_five: list[dict[str, Any]]) -> str:
     rows = []
     for i, t in enumerate(top_five[:5], start=1):
         ticker = t.get("ticker", "-")
-        rating = t.get("rating", "-")
+        # Support both "rating" and "score"-only input
+        rating = t.get("rating") or (f"{t['score']:.4f}" if t.get("score") is not None else "-")
         confidence = t.get("confidence", 0)
         catalyst = t.get("catalyst", "-")
         rows.append(f"| {i} | {ticker} | {rating} | {_safe_pct(confidence)} | {catalyst} |")
@@ -111,59 +112,60 @@ def build_card_json(data: CardData) -> str:
     alerts_text = data.alerts_summary if data.alerts_summary != _NO_ALERTS else "ok"
 
     card = {
-        "msg_type": "interactive",
-        "card": {
-            "header": {
-                "title": f"AlphaScreener | {data.report_date}",
-                "template": "blue",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": f"AlphaScreener | {data.report_date}",
             },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": (
-                        "**Scan**\n"
-                        f"Universe: {_na(data.total_symbols)} | "
-                        f"Coarse: {_na(data.coarse_pass)} | "
-                        f"Refine: {_na(data.refine_count)}"
-                    ),
-                },
-                {
-                    "tag": "markdown",
-                    "content": (f"**Top 5**\n{_build_top5_table(data.top_five)}"),
-                },
-                {
-                    "tag": "markdown",
-                    "content": (
-                        "**Alpha (pure / llm)**\n"
-                        f"Precision@20: {_na(data.p20_pure, '.1f')}% / {_na(data.p20_llm, '.1f')}%\n"
-                        f"Lift@20: {_na(data.lift_pure, '.2f')} / {_na(data.lift_llm, '.2f')}\n"
-                        f"base_rate: {_na(data.base_rate, '.1f')}%"
-                    ),
-                },
-                {
-                    "tag": "markdown",
-                    "content": (
-                        "**Backtest (7d rolling)**\n"
-                        f"Win: {_na(data.win_rate, '.1f')}% | "
-                        f"Sharpe: {_na(data.sharpe, '.2f')} | "
-                        f"Avg ret: {_na(data.avg_return, '.1f')}%"
-                    ),
-                },
-                {
-                    "tag": "markdown",
-                    "content": (
-                        "**Cost**\n"
-                        f"Today: ${_na(data.daily_cost, '.2f')} | "
-                        f"Month: ${_na(data.monthly_cost, '.2f')}/$100"
-                    ),
-                },
-                {"tag": "hr"},
-                {
-                    "tag": "markdown",
-                    "content": f"**Alerts**\n{alerts_text}",
-                },
-            ],
+            "template": "blue",
         },
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": (
+                    "**Scan**\n"
+                    f"Universe: {_na(data.total_symbols)} | "
+                    f"Coarse: {_na(data.coarse_pass)} | "
+                    f"Refine: {_na(data.refine_count)}"
+                ),
+            },
+            {
+                "tag": "markdown",
+                "content": (f"**Top 5**\n{_build_top5_table(data.top_five)}"),
+            },
+            {
+                "tag": "markdown",
+                "content": (
+                    "**Alpha (pure / llm)**\n"
+                    f"Precision@20: {_na(data.p20_pure, '.1f')}% / {_na(data.p20_llm, '.1f')}%\n"
+                    f"Lift@20: {_na(data.lift_pure, '.2f')} / {_na(data.lift_llm, '.2f')}\n"
+                    f"base_rate: {_na(data.base_rate, '.1f')}%"
+                ),
+            },
+            {
+                "tag": "markdown",
+                "content": (
+                    "**Backtest (7d rolling)**\n"
+                    f"Win: {_na(data.win_rate, '.1f')}% | "
+                    f"Sharpe: {_na(data.sharpe, '.2f')} | "
+                    f"Avg ret: {_na(data.avg_return, '.1f')}%"
+                ),
+            },
+            {
+                "tag": "markdown",
+                "content": (
+                    "**Cost**\n"
+                    f"Today: ${_na(data.daily_cost, '.2f')} | "
+                    f"Month: ${_na(data.monthly_cost, '.2f')}/$100"
+                ),
+            },
+            {"tag": "hr"},
+            {
+                "tag": "markdown",
+                "content": f"**Alerts**\n{alerts_text}",
+            },
+        ],
     }
     return json.dumps(card, ensure_ascii=False)
 
@@ -202,9 +204,11 @@ def build_fallback_text(
     if top_five:
         lines.append("Top 5:")
         for i, t in enumerate(top_five[:5], start=1):
+            ticker = t.get("ticker", "-")
+            rating = t.get("rating") or (f"{t['score']:.4f}" if t.get("score") is not None else "-")
             lines.append(
-                f"  {i}. {t.get('ticker', '-')} "
-                f"({t.get('rating', '-')}, "
+                f"  {i}. {ticker} "
+                f"({rating}, "
                 f"{_safe_pct(t.get('confidence', 0))})"
             )
     else:

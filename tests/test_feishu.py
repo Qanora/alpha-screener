@@ -214,23 +214,24 @@ class TestBuildCardJson:
 
         result = build_card_json(sample_card_data)
         parsed = json.loads(result)
-        assert parsed["msg_type"] == "interactive"
-        assert "card" in parsed
+        assert "config" in parsed
+        assert "header" in parsed
+        assert "elements" in parsed
 
     def test_header_contains_date(self, sample_card_data):
         from alphascreener.feishu.card import build_card_json
 
         result = build_card_json(sample_card_data)
         parsed = json.loads(result)
-        title = parsed["card"]["header"]["title"]
-        assert "2026-05-22" in title
+        title_content = parsed["header"]["title"]["content"]
+        assert "2026-05-22" in title_content
 
     def test_contains_scan_overview(self, sample_card_data):
         from alphascreener.feishu.card import build_card_json
 
         result = build_card_json(sample_card_data)
         parsed = json.loads(result)
-        scan_content = parsed["card"]["elements"][0]["content"]
+        scan_content = parsed["elements"][0]["content"]
         assert "2000" in scan_content
         assert "150" in scan_content
         assert "10" in scan_content
@@ -240,7 +241,7 @@ class TestBuildCardJson:
 
         result = build_card_json(sample_card_data)
         parsed = json.loads(result)
-        top5_content = parsed["card"]["elements"][1]["content"]
+        top5_content = parsed["elements"][1]["content"]
         for t in ("AAPL", "NVDA", "MSFT", "GOOGL", "META"):
             assert t in top5_content
 
@@ -249,7 +250,7 @@ class TestBuildCardJson:
 
         result = build_card_json(sample_card_data)
         parsed = json.loads(result)
-        alpha_content = parsed["card"]["elements"][2]["content"]
+        alpha_content = parsed["elements"][2]["content"]
         for v in ("35.0", "45.0", "1.5", "2.1", "10.0"):
             assert v in alpha_content
 
@@ -258,7 +259,7 @@ class TestBuildCardJson:
 
         result = build_card_json(sample_card_data)
         parsed = json.loads(result)
-        backtest_content = parsed["card"]["elements"][3]["content"]
+        backtest_content = parsed["elements"][3]["content"]
         for v in ("62.5", "1.32", "3.8"):
             assert v in backtest_content
 
@@ -267,7 +268,7 @@ class TestBuildCardJson:
 
         result = build_card_json(sample_card_data)
         parsed = json.loads(result)
-        cost_content = parsed["card"]["elements"][4]["content"]
+        cost_content = parsed["elements"][4]["content"]
         assert "0.45" in cost_content
         assert "12.80" in cost_content
 
@@ -276,7 +277,7 @@ class TestBuildCardJson:
 
         result = build_card_json(sample_card_data)
         parsed = json.loads(result)
-        alerts_content = parsed["card"]["elements"][6]["content"]
+        alerts_content = parsed["elements"][6]["content"]
         assert "ok" in alerts_content
 
     def test_fewer_than_five_tickers(self):
@@ -305,7 +306,7 @@ class TestBuildCardJson:
         )
         result = build_card_json(data)
         parsed = json.loads(result)
-        top5_content = parsed["card"]["elements"][1]["content"]
+        top5_content = parsed["elements"][1]["content"]
         assert "AAPL" in top5_content
         assert "NVDA" in top5_content
 
