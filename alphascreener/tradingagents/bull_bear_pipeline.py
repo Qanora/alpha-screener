@@ -232,6 +232,7 @@ BULL_RESEARCHER_CONTEXT_VARS: tuple[str, ...] = (
     "price",
     "mom_5d",
     "factor_scores_summary",
+    "factor_vector",
     "news_summary",
     "technical_pattern",
 )
@@ -274,6 +275,7 @@ BEAR_RESEARCHER_CONTEXT_VARS: tuple[str, ...] = (
     "price",
     "mom_5d",
     "factor_scores_summary",
+    "factor_vector",
     "news_summary",
     "technical_pattern",
 )
@@ -388,6 +390,7 @@ class BullBearContext:
             "factor_scores_summary": self.factor_scores_summary,
             "news_summary": self.news_summary,
             "technical_pattern": self.technical_pattern,
+            "factor_vector": json.dumps(self.factor_vector, ensure_ascii=False),
             "bull_result": json.dumps(self.bull_result, ensure_ascii=False),
             "bear_result": json.dumps(self.bear_result, ensure_ascii=False),
             "phase1_pass": "true" if self.phase1_pass else "false",

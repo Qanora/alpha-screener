@@ -431,11 +431,16 @@ def daily_scan() -> None:
             if meta.height > 0:
                 meta_subset = meta.select(["ticker", "sector", "industry"])
                 factors_df = factors_df.join(meta_subset, on="ticker", how="left")
+        except (FileNotFoundError, KeyError):
+            _logger.info(
+                "Universe meta cache not available, skipping sector join"
+            )
         except Exception:
-            _logger.debug(
-                "Universe meta cache not available, skipping sector join",
+            _logger.error(
+                "Unexpected error loading universe meta cache",
                 exc_info=True,
             )
+            raise
 
         # Phase 1: hard filter
         filtered = hard_filter(factors_df)
@@ -519,11 +524,13 @@ def daily_scan() -> None:
         if assessments:
             strong_buys = [a for a in assessments if a.final_rating.value == "Strong Buy"]
             buys = [a for a in assessments if a.final_rating.value == "Buy"]
+            holds = [a for a in assessments if a.final_rating.value == "Hold"]
             avoids = [a for a in assessments if a.final_rating.value == "Avoid"]
             _logger.info(
-                "Pipeline results: Strong Buy=%d Buy=%d Hold/Avoid=%d",
+                "Pipeline results: Strong Buy=%d Buy=%d Hold=%d Avoid=%d",
                 len(strong_buys),
                 len(buys),
+                len(holds),
                 len(avoids),
             )
 
