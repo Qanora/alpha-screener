@@ -50,6 +50,7 @@ def create_llm_client_safe(
     provider: str,
     model: str,
     base_url: str | None = None,
+    api_key: str | None = None,
     **kwargs: Any,
 ) -> BaseLLMClient:
     """Create an LLM client with graceful fallback for unsupported providers.
@@ -62,6 +63,7 @@ def create_llm_client_safe(
         provider: LLM provider name (e.g. ``"openai"``, ``"anthropic"``).
         model: Model identifier.
         base_url: Optional base URL override.
+        api_key: Optional API key to override the environment variable.
         **kwargs: Provider-specific arguments forwarded to the client.
 
     Returns:
@@ -79,4 +81,16 @@ def create_llm_client_safe(
             f"Unsupported LLM provider: {provider!r}. "
             f"Supported: {', '.join(sorted(SUPPORTED_PROVIDERS))}"
         )
-    return create_llm_client(provider, model, base_url=base_url, **kwargs)
+
+    client_kwargs: dict[str, Any] = dict(kwargs)
+    if api_key:
+        client_kwargs["api_key"] = api_key
+
+    _logger.info(
+        "Creating LLM client: provider=%s model=%s base_url=%s",
+        provider,
+        model,
+        base_url or "(default)",
+    )
+
+    return create_llm_client(provider, model, base_url=base_url, **client_kwargs)

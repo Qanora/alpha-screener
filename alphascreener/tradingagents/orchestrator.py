@@ -15,7 +15,7 @@ import copy
 import json
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from alphascreener.logging import get_logger
 from alphascreener.tradingagents.breakout_retriever import (
@@ -30,6 +30,9 @@ from alphascreener.tradingagents.prompts import (
     truncate_context,
 )
 
+if TYPE_CHECKING:
+    from alphascreener.config import Settings
+
 _logger = get_logger("screening")
 
 
@@ -41,6 +44,15 @@ _logger = get_logger("screening")
 # LLM text response.
 Invoker = Callable[[str, int], str]
 # Signature: (system_prompt: str, max_output_tokens: int) -> str
+
+# Providers whose API is OpenAI-compatible (chat completions).
+# ``base_url`` and ``api_key`` are only forwarded for these providers;
+# non-OpenAI providers (anthropic, google, azure) have their own auth
+# mechanisms and should not receive OpenAI-specific configuration.
+_OPENAI_COMPATIBLE_PROVIDERS: frozenset[str] = frozenset(
+    {"openai", "xai", "deepseek", "qwen", "qwen-cn", "glm", "glm-cn",
+     "minimax", "minimax-cn", "ollama", "openrouter"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +174,19 @@ def run_analyst(
     # Invoke LLM with output token cap
     try:
         response = invoker(prompt, MAX_OUTPUT_TOKENS)
+    except TimeoutError as exc:
+        _logger.error(
+            "%s analyst timed out for %s: %s", analyst_type, ctx.ticker, exc
+        )
+        return {
+            "analyst_type": analyst_type,
+            "prompt": prompt,
+            "response": "",
+            "input_tokens": input_tokens,
+            "budget_ok": budget_ok,
+            "parsed_json": None,
+            "error": f"LLM invocation timed out: {exc}",
+        }
     except Exception as exc:
         _logger.error("%s analyst invocation failed: %s", analyst_type, exc)
         return {
@@ -179,9 +204,24 @@ def run_analyst(
     parse_error: str | None = None
     try:
         parsed = _extract_json(response)
-    except (json.JSONDecodeError, ValueError) as exc:
-        _logger.warning("%s analyst response JSON parse failed: %s", analyst_type, exc)
-        parse_error = str(exc)
+    except json.JSONDecodeError as exc:
+        snippet = response[:200].replace("\n", " ")
+        _logger.warning(
+            "%s analyst returned invalid JSON: %s (response preview: %s)",
+            analyst_type,
+            exc,
+            snippet,
+        )
+        parse_error = f"Invalid JSON in LLM response: {exc}"
+    except ValueError as exc:
+        snippet = response[:200].replace("\n", " ")
+        _logger.warning(
+            "%s analyst returned no JSON object: %s (response preview: %s)",
+            analyst_type,
+            exc,
+            snippet,
+        )
+        parse_error = f"No JSON object found in LLM response: {exc}"
 
     return {
         "analyst_type": analyst_type,
@@ -195,6 +235,61 @@ def run_analyst(
 
 
 # ---------------------------------------------------------------------------
+# LLM invoker factory
+# ---------------------------------------------------------------------------
+
+
+def build_llm_invoker(
+    settings: Settings | None = None,
+    provider: str = "openai",
+) -> Invoker:
+    """Build an LLM invoker callable from application settings.
+
+    Reads ``openai_api_key``, ``openai_base_url``, and ``llm_model`` from
+    the given :class:`~alphascreener.config.Settings` (or the default
+    ``Settings()`` if none is provided).  The resulting invoker is suitable
+    for use with :class:`AnalystOrchestrator`.
+
+    Args:
+        settings: Optional application settings.  When ``None``, a default
+            ``Settings()`` instance is created.
+        provider: LLM provider name forwarded to
+            :func:`~alphascreener.tradingagents.llm_adapter.create_llm_client_safe`.
+
+    Returns:
+        A callable ``(prompt, max_output_tokens) -> str``.
+    """
+    if settings is None:
+        from alphascreener.config import Settings as _Settings
+
+        settings = _Settings()  # type: ignore[call-arg]
+
+    from alphascreener.tradingagents.llm_adapter import create_llm_client_safe
+
+    # Only forward base_url and api_key for OpenAI-compatible providers.
+    # Non-OpenAI providers (anthropic, google, azure) use their own auth
+    # mechanisms and should not receive OpenAI-specific configuration.
+    is_compat = provider.lower() in _OPENAI_COMPATIBLE_PROVIDERS
+    llm = create_llm_client_safe(
+        provider,
+        settings.llm_model,
+        base_url=settings.openai_base_url if is_compat and settings.openai_base_url else None,
+        api_key=settings.openai_api_key if is_compat and settings.openai_api_key else None,
+    ).get_llm()
+
+    def invoker(prompt: str, max_out_tok: int) -> str:
+        from langchain_core.messages import SystemMessage
+
+        msg = llm.invoke(
+            [SystemMessage(content=prompt)],
+            max_tokens=max_out_tok,
+        )
+        return _normalize_content(msg.content)
+
+    return invoker
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -204,18 +299,13 @@ class AnalystOrchestrator:
 
     Usage::
 
-        from alphascreener.tradingagents.llm_adapter import create_llm_client_safe
-        llm = create_llm_client_safe("openai", "gpt-4o-mini").get_llm()
+        from alphascreener.config import Settings
+        from alphascreener.tradingagents.orchestrator import build_llm_invoker
 
-        def my_invoker(prompt, max_out_tok):
-            from langchain_core.messages import SystemMessage
-            msg = llm.invoke(
-                [SystemMessage(content=prompt)],
-                max_tokens=max_out_tok,
-            )
-            return msg.content
+        settings = Settings()
+        invoker = build_llm_invoker(settings=settings)
 
-        orch = AnalystOrchestrator(invoker=my_invoker)
+        orch = AnalystOrchestrator(invoker=invoker)
         ctx = build_context("AAPL", 185.50, factor_scores_summary="...")
         results = orch.run(ctx)
         # results["market"]["parsed_json"] -> dict
@@ -322,6 +412,43 @@ class AnalystOrchestrator:
 # ---------------------------------------------------------------------------
 
 _JSON_PATTERN = re.compile(r"\{[\s\S]*?\}")
+
+
+def _normalize_content(content: Any) -> str:
+    """Normalise LLM response content to a plain string.
+
+    LangChain ``BaseMessage.content`` is typed as ``str | list[str | dict]``.
+    Some models (or tool-calling paths) return a list of content blocks
+    instead of a plain string.  This helper converts any form to ``str``
+    so the downstream JSON extraction and error-reporting code can safely
+    assume a string.
+
+    Args:
+        content: The raw ``msg.content`` value.
+
+    Returns:
+        A plain ``str``.
+
+    Raises:
+        TypeError: If *content* is not a ``str`` or ``list``.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                # Prefer "text" key; fall back to str(item)
+                parts.append(str(item.get("text", item)))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    raise TypeError(
+        f"Unexpected LLM content type {type(content).__name__!r}; "
+        f"expected str or list, got {content!r}"
+    )
 
 
 def _extract_json(text: str) -> dict[str, Any]:
