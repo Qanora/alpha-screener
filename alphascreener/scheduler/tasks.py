@@ -551,6 +551,7 @@ def daily_scan() -> None:
                 score_map[str(row["ticker"])] = float(row["breakout_score"])
 
             from datetime import date as _date
+            from datetime import datetime as _datetime
 
             from alphascreener.tradingagents.ablation import (
                 AblationEntry,
@@ -558,11 +559,12 @@ def daily_scan() -> None:
             )
 
             # Ensure latest_date is a native Python date
-            _scan_dt: _date = (
-                latest_date
-                if isinstance(latest_date, _date)
-                else _date.fromisoformat(str(latest_date))
-            )
+            if isinstance(latest_date, _datetime):
+                _scan_dt: _date = latest_date.date()
+            elif isinstance(latest_date, _date):
+                _scan_dt = latest_date
+            else:
+                _scan_dt = _date.fromisoformat(str(latest_date)[:10])
 
             tracker = create_ablation_tracker()
             entries: list[AblationEntry] = []
@@ -583,7 +585,7 @@ def daily_scan() -> None:
                 tracker.record_batch(entries)
                 tracker.flush()
                 _logger.info(
-                    "Ablation: persisted %d signal records to signals store", len(entries)
+                    "Ablation: attempted to persist %d signal records", len(entries)
                 )
     finally:
         engine.dispose()
