@@ -26,7 +26,7 @@ def _run_migrations(db_url: str) -> None:
     alembic_ini = Path(__file__).parent.parent.parent / "alembic.ini"
     alembic_cfg = Config(str(alembic_ini))
     alembic_cfg.set_main_option("sqlalchemy.url", db_url)
-    _logger.info("Running alembic upgrade head on %s", db_url)
+    _logger.info("Starting alembic upgrade head")
     upgrade(alembic_cfg, "head")
     _logger.info("Alembic upgrade complete")
 

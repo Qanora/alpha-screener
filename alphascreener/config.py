@@ -1,9 +1,12 @@
 """Application configuration via pydantic-settings, loaded from environment / .env."""
 
+import logging
 from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+_logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -81,8 +84,25 @@ class Settings(BaseSettings):
 
         Uses ``db_url`` if explicitly set (via env ``DB_URL``), otherwise
         derives a ``sqlite:///`` URL from ``alphascreener_home``.
+
+        When no explicit ``db_url`` is given, the old default location
+        ``<home>/alphabase.db`` is checked first.  If it exists the legacy
+        path is used so existing installations do not lose data, and a
+        WARNING is logged advising the operator to migrate.
         """
         if self.db_url:
             return self.db_url
+
+        legacy_path = self.alphascreener_home / "alphabase.db"
+        if legacy_path.exists():
+            _logger.warning(
+                "Legacy database found at %s.  "
+                "The default path has moved to %s.  "
+                "Move the file to the new location to suppress this warning.",
+                legacy_path,
+                self.db_path,
+            )
+            return f"sqlite:///{legacy_path}"
+
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{self.db_path}"
