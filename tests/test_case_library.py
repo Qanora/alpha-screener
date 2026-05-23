@@ -118,7 +118,9 @@ class TestCaseLibraryBuilder:
 
             n = builder.rebuild()
             assert n == 0
-            assert not output.exists()
+            assert output.exists()
+            df = pl.read_parquet(str(output))
+            assert df.height == 0
 
     def test_rebuild_empty_when_no_positives(self):
         """rebuild() returns 0 when no rows meet thresholds."""
@@ -139,6 +141,9 @@ class TestCaseLibraryBuilder:
 
             n = builder.rebuild()
             assert n == 0
+            assert output.exists()
+            df = pl.read_parquet(str(output))
+            assert df.height == 0
 
     def test_select_positive_cases_filters_correctly(self):
         """_select_positive_cases enforces both score and return thresholds."""

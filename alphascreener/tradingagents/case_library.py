@@ -109,6 +109,7 @@ class CaseLibraryBuilder:
         # 1. Load factor data
         factors_df = self._load_all_factors()
         if factors_df is None or factors_df.height == 0:
+            self._write_empty_library()
             _logger.warning("No factor data found — case library remains empty")
             return 0
 
@@ -128,6 +129,7 @@ class CaseLibraryBuilder:
         # 4. Select positive breakout cases
         cases = self._select_positive_cases(factors_df)
         if cases.height == 0:
+            self._write_empty_library()
             _logger.warning(
                 "No positive breakout cases found (score_pct=%.0f, min_return=%.0f%%) — "
                 "case library remains empty",
@@ -233,8 +235,11 @@ class CaseLibraryBuilder:
 
         try:
             df = pl.read_parquet(str(self._output_path))
-        except Exception:
+        except Exception as e:
             _logger.warning("Failed to read case library for status", exc_info=True)
+            info["error"] = str(e)
+            info["corrupt"] = True
+            info["exists"] = False
             return info
 
         if df.height == 0:
@@ -250,6 +255,25 @@ class CaseLibraryBuilder:
         return info
 
     # -- internal --------------------------------------------------------------
+
+    def _write_empty_library(self) -> None:
+        """Write an empty case library with the canonical schema to disk.
+
+        Ensures any stale ``cases.parquet`` from a previous build is replaced
+        with a clean empty file so that the on-disk state matches the result of
+        :meth:`rebuild` (zero cases).
+        """
+        schema: dict[str, type] = {
+            "ticker": str,
+            "date": str,
+            "actual_pnl": float,
+        }
+        for _, f_col in _FACTOR_VECTOR_MAP:
+            schema[f_col] = float
+        empty_df = pl.DataFrame(schema=schema)
+        self._output_path.parent.mkdir(parents=True, exist_ok=True)
+        empty_df.write_parquet(str(self._output_path))
+        _logger.debug("Wrote empty case library to %s", self._output_path)
 
     def _load_all_factors(self) -> pl.DataFrame | None:
         """Load all historical factor data from the Parquet store."""

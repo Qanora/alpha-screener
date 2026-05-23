@@ -478,10 +478,10 @@ def case_library() -> None:
 )
 @click.option(
     "--min-return",
-    type=click.FloatRange(0.0, 10.0),
+    type=click.FloatRange(0.0, 1.0),
     default=0.10,
     show_default=True,
-    help="Minimum T+7 forward return to qualify as a positive case (0.10 = 10%).",
+    help="Minimum T+7 forward return as a decimal (0.10 = 10%).",
 )
 def case_library_init(score_pct: float, min_return: float) -> None:
     """Build or rebuild the breakout case library from historical data.
