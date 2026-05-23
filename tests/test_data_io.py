@@ -315,8 +315,8 @@ class TestWriteParquet:
         parquet_files = list(partition_dir.glob("*.parquet"))
         assert len(parquet_files) >= 1
 
-    def test_append_mode(self, tmp_path, monkeypatch):
-        """Appending data to an existing partition should not lose existing data."""
+    def test_write_overwrites_existing_partition(self, tmp_path, monkeypatch):
+        """Writing to an existing partition overwrites old data instead of appending."""
         home = tmp_path / ".alphascreener"
         monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: home)
 
@@ -339,8 +339,9 @@ class TestWriteParquet:
         write_parquet(df2, "ohlcv")
 
         result = read_parquet("ohlcv").collect().sort("ticker")
-        assert result.height == 2
-        assert result["ticker"].to_list() == ["AAPL", "GOOGL"]
+        # Second write replaces first — only GOOGL remains
+        assert result.height == 1
+        assert result["ticker"].to_list() == ["GOOGL"]
 
     def test_rejects_unknown_category(self, tmp_path, sample_df, monkeypatch):
         home = tmp_path / ".alphascreener"
