@@ -118,8 +118,10 @@ def screen(market: str, top: int) -> None:
     except Exception:
         pass
 
-    # Filter to latest date, compute factors, run screening
+    # Filter to latest date, dedup, compute factors, run screening
     df = ohlcv.filter(pl.col("dt") == latest_date)
+    # Defensive dedup: keep last occurrence of duplicate (ticker, dt) rows
+    df = df.unique(subset=["ticker", "dt"], keep="last")
     n_tickers = df["ticker"].n_unique()
 
     try:

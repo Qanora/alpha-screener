@@ -55,13 +55,17 @@ def _ohlcv_df(
     low_mult: float = 0.98,
     volume: float = 1_000_000.0,
 ) -> pl.DataFrame:
-    """Build a tidy OHLCV DataFrame for a single ticker."""
+    """Build a tidy OHLCV DataFrame for a single ticker.
+
+    Each row gets a distinct date starting from *dt* (default 2025-01-15),
+    so that (ticker, dt) pairs are unique.
+    """
     n = len(close)
-    d = dt or date(2025, 1, 15)
+    d_start = dt or date(2025, 1, 15)
     return pl.DataFrame(
         {
             "ticker": [ticker] * n,
-            "dt": [d] * n,
+            "dt": [d_start + timedelta(days=i) for i in range(n)],
             "open": [c * 0.995 for c in close],
             "high": [c * high_mult for c in close],
             "low": [c * low_mult for c in close],
@@ -72,7 +76,10 @@ def _ohlcv_df(
 
 
 def _multi_ticker_df(tickers: list[str], n_rows: int = 30) -> pl.DataFrame:
-    """Generate a multi-ticker OHLCV DataFrame with synthetic prices."""
+    """Generate a multi-ticker OHLCV DataFrame with synthetic price series.
+
+    Each ticker gets *n_rows* days of data starting from 2025-01-01.
+    """
     rng = np.random.RandomState(42)
     rows = []
     for i, ticker in enumerate(tickers):
@@ -82,7 +89,7 @@ def _multi_ticker_df(tickers: list[str], n_rows: int = 30) -> pl.DataFrame:
             rows.append(
                 {
                     "ticker": ticker,
-                    "dt": date(2025, 1, 15),
+                    "dt": date(2025, 1, 1) + timedelta(days=j),
                     "open": float(c * 0.99),
                     "high": float(c * 1.02),
                     "low": float(c * 0.98),
@@ -646,6 +653,59 @@ class TestProcessChunk:
 
 
 class TestComputeFactors:
+    def test_dedup_ticker_dt(self):
+        """compute_factors deduplicates by (ticker, dt), keeping last row.
+
+        Simulates the screening use case: each ticker has one row per date,
+        but some (ticker, dt) pairs appear multiple times due to data bugs.
+        """
+        rng = np.random.RandomState(42)
+        n_tickers = 3
+        n_dates = 250  # enough warmup for SMA_200
+
+        rows = []
+        for ticker_idx in range(n_tickers):
+            ticker = f"DUP_{chr(65 + ticker_idx)}"
+            base_price = 100.0 + ticker_idx * 20.0
+            prices = base_price + rng.randn(n_dates).cumsum()
+            for day_idx in range(n_dates):
+                rows.append({
+                    "ticker": ticker,
+                    "dt": date(2025, 1, 1) + timedelta(days=day_idx),
+                    "open": float(prices[day_idx] * 0.99),
+                    "high": float(prices[day_idx] * 1.02),
+                    "low": float(prices[day_idx] * 0.98),
+                    "close": float(prices[day_idx]),
+                    "volume": float(1_000_000 + rng.randn() * 100_000),
+                })
+
+        base = pl.DataFrame(rows)
+        n_orig = base.height  # 3 * 250 = 750
+
+        # Duplicate one specific (ticker, dt) pair 2x with different closes
+        target_dt = date(2025, 3, 15)  # mid-series, within valid date range
+        dup_mask = (pl.col("ticker") == "DUP_A") & (pl.col("dt") == target_dt)
+        dup_row = base.filter(dup_mask)
+        assert dup_row.height == 1  # exactly one match
+
+        dup_extra = pl.concat([
+            dup_row.with_columns(close=pl.lit(50.0)),
+            dup_row.with_columns(close=pl.lit(999.0)),
+        ], how="diagonal_relaxed")
+        df_with_dupes = pl.concat([base, dup_extra], how="diagonal_relaxed")
+        assert df_with_dupes.height == n_orig + 2  # 750 + 2 = 752
+
+        result = compute_factors(df_with_dupes, dt=date(2025, 1, 15), batch_size=10)
+        # Dedup removes the 2 extras -> back to 750 rows
+        assert result.height == n_orig
+        assert result["ticker"].n_unique() == n_tickers
+        # The kept row should have close=999.0 (last duplicate wins)
+        dup_result = result.filter(
+            (pl.col("ticker") == "DUP_A") & (pl.col("dt") == target_dt)
+        )
+        assert dup_result.height == 1
+        assert dup_result.get_column("close")[0] == pytest.approx(999.0)
+
     def test_chunked_processing(self):
         """compute_factors splits multiple tickers into chunks."""
         tickers = [f"T{i:03d}" for i in range(10)]

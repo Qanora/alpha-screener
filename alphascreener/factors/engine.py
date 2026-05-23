@@ -401,6 +401,9 @@ def compute_factors(
     if df.height == 0:
         return df
 
+    # Defensive dedup: keep last occurrence of duplicate (ticker, dt) rows
+    df = df.unique(subset=["ticker", "dt"], keep="last")
+
     tickers = sorted(df["ticker"].unique().to_list())
     chunks = _chunk_tickers(tickers, batch_size)
 
