@@ -1,11 +1,11 @@
 ---
 name: lp-dev
-description: 第三层飞轮——纯本地开发：实现/修复 → 本地验证 → simplify。不做任何 git 或 MR 操作。
+description: 第四层飞轮——纯本地开发：实现/修复 → 本地验证 → simplify。不做任何 git 或 MR 操作。
 ---
 
-# LP-DEV（第三层）
+# LP-DEV（第四层）
 
-纯本地开发管理。只负责写代码和验证，**不做 commit/push/MR 等任何 git 操作**（全部由第二层负责）。
+纯本地开发管理。只负责写代码和验证，**不做 commit/push/MR 等任何 git 操作**（全部由第三层负责）。
 
 **顺序开发模式**：一次只处理一个 issue，在主仓库内直接开发，不使用 worktree。
 
@@ -150,7 +150,7 @@ Error types：
 
 ## 修复模式 (`--fix <mr-number>)
 
-由第二层 `/lp-mr` 调用。获取上下文 → 修复 → 验证 → simplify → 退出。**不 commit，不 push。**
+由第三层 `/lp-mr` 调用。获取上下文 → 修复 → 验证 → simplify → 退出。**不 commit，不 push。**
 
 ### 1. 切换到已有分支 + 同步 master
 
@@ -184,7 +184,7 @@ git merge origin/master --no-edit
 
 ### 2. 获取评审意见
 
-第二层已通过 `fetch-review.sh` + CI log 收集好。直接读取上下文修复。
+第三层已通过 `fetch-review.sh` + CI log 收集好。直接读取上下文修复。
 
 ### 3. 修复
 
@@ -226,7 +226,7 @@ Error types 同开发模式。
 ## 约束
 
 - **顺序开发**：一次只处理一个 issue，在主仓库直接开发
-- **不做任何 git 操作**：不 add、不 commit、不 push（全部由第二层负责）
+- **不做任何 git 操作**：不 add、不 commit、不 push（全部由第三层负责）
 - 只做本地开发：写代码 + 验证 + simplify
 - 修复模式只修问题，不新增功能
 - **TDD 开发**：严格先写测试 → 测试失败 → 实现 → 测试通过 → 重构
