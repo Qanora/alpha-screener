@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import polars as pl
 
 _logger = logging.getLogger("scheduler")
 
@@ -386,12 +390,295 @@ def daily_scan() -> None:
         if not status.fine_screening_allowed():
             _logger.warning("L2+ DEGRADE: fine screening paused, running coarse only")
 
-        # TODO: Phase 1 hard filter + Phase 2 weighted scoring (coarse)
-        # TODO: If fine screening allowed, run Bull/Bear/PM pipeline
-        #       with cost_tracker=tracker passed to BatchConfig / run_pipeline_batch
+        # ---- Phase 1: hard filter + Phase 2: weighted scoring (coarse) ----
+
+        import polars as pl
+
+        from alphascreener.cost.tracker import CircuitLevel
+        from alphascreener.data.io import scan_parquet
+        from alphascreener.screening.phase1 import hard_filter
+        from alphascreener.screening.phase2 import phase2_pipeline
+        from alphascreener.tradingagents.bull_bear_pipeline import (
+            BatchConfig,
+            run_pipeline_batch,
+        )
+        from alphascreener.tradingagents.orchestrator import build_llm_invoker
+
+        # Load latest factor data
+        try:
+            factors_lf = scan_parquet("factors")
+            factors_df = factors_lf.collect()
+        except FileNotFoundError:
+            _logger.warning("No factor data found, skipping daily_scan")
+            return
+
+        if factors_df.height == 0:
+            _logger.warning("Empty factor data, skipping daily_scan")
+            return
+
+        latest_date = factors_df["dt"].max()
+        _logger.info("Using factor data from %s", latest_date)
+        factors_df = factors_df.filter(pl.col("dt") == latest_date)
+
+        n_total = factors_df.height
+        _logger.info("Loaded %d tickers for screening", n_total)
+
+        # Join sector/industry from universe meta (for Phase 2 dedup)
+        try:
+            from alphascreener.universe.meta import read_meta_cache
+
+            meta = read_meta_cache().collect()
+            if meta.height > 0:
+                meta_subset = meta.select(["ticker", "sector", "industry"])
+                factors_df = factors_df.join(meta_subset, on="ticker", how="left")
+        except (FileNotFoundError, KeyError):
+            _logger.info(
+                "Universe meta cache not available, skipping sector join"
+            )
+        except Exception:
+            _logger.error(
+                "Unexpected error loading universe meta cache",
+                exc_info=True,
+            )
+            raise
+
+        # Phase 1: hard filter
+        filtered = hard_filter(factors_df)
+        passers = filtered.filter(pl.col("pass_phase1"))
+        n_pass = passers.height
+        _logger.info("Phase 1: %d/%d tickers passed hard filter", n_pass, n_total)
+
+        if n_pass == 0:
+            _logger.info("No tickers passed Phase 1, daily_scan: done")
+            return
+
+        # Phase 2: weighted scoring + industry dedup
+        phase2_result = phase2_pipeline(
+            passers,
+            sector_cap=settings.sector_cap,
+            industry_cap=settings.industry_cap,
+        )
+        _logger.info(
+            "Phase 2: %d candidates after scoring + dedup", phase2_result.height,
+        )
+
+        if phase2_result.height == 0:
+            _logger.info("No candidates after Phase 2 dedup, daily_scan: done")
+            return
+
+        # Log top candidates from coarse screening for observability
+        top_preview = (
+            phase2_result.select(["ticker", "breakout_score"])
+            .head(5)
+            .to_dicts()
+        )
+        _logger.info("Coarse Top 5: %s", top_preview)
+
+        # ---- Fine screening (Bull/Bear/PM pipeline) ----
+
+        if not status.fine_screening_allowed():
+            _logger.warning("L2+ DEGRADE: fine screening paused, coarse only — done")
+            return
+
+        # L3 savings mode: reduce to Top 10
+        if (
+            status.level >= CircuitLevel.L3_SAVINGS
+            and status.level < CircuitLevel.L4_BREAKER
+        ):
+            n_fine = min(phase2_result.height, 10)
+            _logger.info("L3 SAVINGS: fine screening reduced to Top %d", n_fine)
+        else:
+            n_fine = phase2_result.height
+
+        # Build BullBearContext list
+        contexts = _build_contexts(phase2_result.head(n_fine))
+
+        # Build invoker adapter: orchestrator invoker (str -> str)
+        # wrapped for the pipeline's (str, int) -> (str, int, int) signature.
+        base_invoker = build_llm_invoker(settings)
+        pipeline_invoker = _PipelineInvoker(base_invoker)
+
+        cfg = BatchConfig(
+            batch_size=settings.llm_batch_size,
+            cost_tracker=tracker,
+        )
+        _logger.info(
+            "Starting Bull/Bear/PM pipeline on %d symbols (batch_size=%d)",
+            len(contexts),
+            cfg.batch_size,
+        )
+
+        try:
+            assessments = run_pipeline_batch(contexts, pipeline_invoker, cfg)
+        except RuntimeError as exc:
+            _logger.error("Pipeline stopped by circuit breaker: %s", exc)
+            assessments = []
+
+        _logger.info(
+            "Pipeline complete: %d assessments for %d symbols",
+            len(assessments),
+            len(contexts),
+        )
+
+        # Log pipeline result summary
+        if assessments:
+            strong_buys = [a for a in assessments if a.final_rating.value == "Strong Buy"]
+            buys = [a for a in assessments if a.final_rating.value == "Buy"]
+            holds = [a for a in assessments if a.final_rating.value == "Hold"]
+            avoids = [a for a in assessments if a.final_rating.value == "Avoid"]
+            _logger.info(
+                "Pipeline results: Strong Buy=%d Buy=%d Hold=%d Avoid=%d",
+                len(strong_buys),
+                len(buys),
+                len(holds),
+                len(avoids),
+            )
+
+            # Log Strong Buy tickers explicitly
+            if strong_buys:
+                sb_tickers = [a.ticker for a in strong_buys]
+                _logger.info("Strong Buy tickers: %s", sb_tickers)
     finally:
         engine.dispose()
     _logger.info("daily_scan: done")
+
+
+# ---------------------------------------------------------------------------
+# Helper: BullBearContext construction from Phase 2 result DataFrame
+# ---------------------------------------------------------------------------
+
+
+_FACTOR_SUMMARY_COLS: list[tuple[str, str]] = [
+    ("MOM_5D", "MOM_5D"),
+    ("score_PTH", "PTH"),
+    ("score_MOM_SLOPE", "MOM_SLOPE"),
+    ("score_BB_SQUEEZE", "BB_SQ"),
+    ("ATR_RATIO", "ATR"),
+    ("score_MFI_14", "MFI_14"),
+    ("score_CMF_21", "CMF"),
+    ("score_RSI_OVERSOLD", "RSI_OVS"),
+]
+
+_FACTOR_VECTOR_COLS: list[str] = [
+    "z_capped_MOM_5D",
+    "z_capped_PTH",
+    "z_capped_MOM_SLOPE",
+    "z_capped_BB_SQUEEZE",
+    "z_capped_ATR_RATIO",
+    "z_capped_MFI_14",
+    "z_capped_CMF_21",
+    "z_capped_VOL_ANOMALY",
+    "z_capped_RSI_OVERSOLD",
+    "z_capped_REV_ACCEL",
+]
+
+
+def _build_factor_summary(row: dict) -> str:
+    """Build a human-readable factor summary string from a factor data row."""
+    parts: list[str] = []
+    for col, label in _FACTOR_SUMMARY_COLS:
+        val = row.get(col)
+        if val is None:
+            continue
+        if col == "ATR_RATIO":
+            parts.append(f"{label}: {float(val):.2f}")
+        elif col == "MOM_5D":
+            parts.append(f"{label}: {float(val):+.1f}%")
+        elif isinstance(val, float):
+            parts.append(f"{label}: {val:.0f}")
+        else:
+            parts.append(f"{label}: {val}")
+
+    for flag, label in [
+        ("MACD_CROSS", "MACD_X"),
+        ("GOLDEN_CROSS", "GC"),
+        ("VOL_ANOMALY", "VOL_ANOM"),
+    ]:
+        if row.get(flag) == 1:
+            parts.append(f"{label}=1")
+
+    bs = row.get("breakout_score")
+    if bs is not None:
+        parts.append(f"Coarse: {float(bs):.2f}")
+
+    return " | ".join(parts)
+
+
+def _build_technical_pattern(row: dict) -> str:
+    """Derive technical pattern description from binary factors."""
+    patterns: list[str] = []
+    if row.get("MACD_CROSS") == 1:
+        patterns.append("MACD golden cross")
+    elif row.get("MACD_CROSS") == -1:
+        patterns.append("MACD death cross")
+    if row.get("GOLDEN_CROSS") == 1:
+        patterns.append("Golden cross (SMA50>SMA200)")
+    elif row.get("GOLDEN_CROSS") == -1:
+        patterns.append("Death cross (SMA50<SMA200)")
+    if row.get("BB_SQUEEZE") == 1:
+        patterns.append("Bollinger squeeze")
+    if row.get("VOL_ANOMALY") == 1:
+        patterns.append("Volume anomaly")
+    if row.get("PEAD_FLAG") == 1:
+        patterns.append("PEAD signal")
+    return "; ".join(patterns) if patterns else ""
+
+
+def _build_factor_vector(row: dict) -> list[float]:
+    """Build a factor vector from z_capped columns in a deterministic order."""
+    vec: list[float] = []
+    for col in _FACTOR_VECTOR_COLS:
+        val = row.get(col, 0.0)
+        vec.append(float(val) if val is not None else 0.0)
+    return vec
+
+
+def _build_contexts(df: pl.DataFrame) -> list:
+    """Build BullBearContext list from a Phase 2 result DataFrame.
+
+    *df* must contain ticker, breakout_score, factor columns and z_capped
+    columns (the output of :func:`~alphascreener.screening.phase2.phase2_pipeline`
+    applied to factor data with ``close`` column preserved).
+    """
+    from alphascreener.tradingagents.bull_bear_pipeline import (
+        build_bull_bear_context,
+    )
+
+    contexts = []
+    for row in df.iter_rows(named=True):
+        price = float(row.get("close", 0.0))
+        ticker = str(row["ticker"])
+
+        ctx = build_bull_bear_context(
+            ticker=ticker,
+            price=price,
+            mom_5d=float(row.get("MOM_5D", 0.0)),
+            factor_scores_summary=_build_factor_summary(row),
+            news_summary="",
+            technical_pattern=_build_technical_pattern(row),
+            phase1_pass=True,
+            factor_vector=_build_factor_vector(row),
+        )
+        contexts.append(ctx)
+    return contexts
+
+
+class _PipelineInvoker:
+    """Adapt the orchestrator's ``(prompt, max_tokens) -> str`` invoker to the
+    pipeline's ``(prompt, max_tokens) -> (str, int, int)`` signature by
+    estimating token counts.
+    """
+
+    def __init__(self, base_invoker) -> None:
+        self._base = base_invoker
+
+    def __call__(self, prompt: str, max_output_tokens: int) -> tuple[str, int, int]:
+        from alphascreener.tradingagents.prompts import estimate_tokens
+
+        input_tokens = estimate_tokens(prompt)
+        response = self._base(prompt, max_output_tokens)
+        output_tokens = estimate_tokens(response)
+        return response, input_tokens, output_tokens
 
 
 # ---------------------------------------------------------------------------
