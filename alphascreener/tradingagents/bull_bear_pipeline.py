@@ -9,7 +9,7 @@ Pipeline per symbol:
   3. Portfolio Manager (4.5.3) ─┘ score correction + risk audit
   4. Output validation (4.5.5) → BreakoutAssessment Pydantic model
 
-Execution model: batch-serial (3 symbols/batch, 7 batches),
+Execution model: batch-serial (default: 3 symbols/batch, unlimited batches),
 within each batch (Bull || Bear) → PM.
 """
 
@@ -993,6 +993,7 @@ class BatchConfig:
 
     batch_size: int = DEFAULT_BATCH_SIZE
     n_batches: int | None = DEFAULT_N_BATCHES
+    """Maximum number of batches to process (None = unlimited)."""
     max_output_tokens: int = 800
     retry_on_json_failure: bool = True
     cost_tracker: CostTracker | None = None
