@@ -298,7 +298,7 @@ def evolve_review_last(days: int) -> None:
         engine = create_db_engine(settings.get_db_url())
     except Exception as exc:
         click.echo(f"Error: Failed to initialize database: {exc}", err=True)
-        raise SystemExit(1)
+        return
 
     try:
         with Session(engine) as session:
@@ -320,7 +320,7 @@ def evolve_review_last(days: int) -> None:
                 "to create/migrate the database tables, then retry.",
                 err=True,
             )
-            raise SystemExit(1)
+            return
         click.echo(f"No acceptance metrics available: {exc}", err=True)
         return
     finally:
