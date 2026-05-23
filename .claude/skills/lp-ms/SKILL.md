@@ -1,9 +1,9 @@
 ---
 name: lp-ms
-description: 第一层飞轮——需求拆解、Issue 创建、依赖分析、批次编排、进度追踪
+description: 第二层飞轮——需求拆解、Issue 创建、依赖分析、批次编排、进度追踪
 ---
 
-# LP-MS（第一层）
+# LP-MS（第二层）
 
 Issue 生命周期管理。只负责 issue 层面编排，不直接操作代码或 MR。
 
@@ -83,7 +83,7 @@ gh issue create --repo Qanora/alpha-screener --title "<title>" --body "<body>" -
 
 ### 5. 派发执行
 
-批次内 **串行执行**，每个 issue 依次交给第二层：
+批次内 **串行执行**，每个 issue 依次交给第三层：
 
 ```text
 /lp-mr <issue-number>
@@ -122,8 +122,8 @@ gh api -X PATCH repos/Qanora/alpha-screener/milestones/<N> -f state=closed
 ## 约束
 
 - 仅做 issue 层面编排和追踪
-- 不写代码（第三层负责）
-- 不操作 MR（第二层负责）
+- 不写代码（第四层负责）
+- 不操作 MR（第三层负责）
 
 ---
 

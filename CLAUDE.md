@@ -1,19 +1,24 @@
 # Alpha Screener 项目配置
 
-## 三层开发飞轮
+## 四层开发飞轮
 
 从需求到合入的全流程自动化。
 
 | 层  | Skill     | 职责                                            | Git 操作      |
 | --- | --------- | ----------------------------------------------- | ------------- |
-| 1   | `/lp-ms`  | Issue 生命周期：拆解、创建、依赖、批次、追踪    | 无            |
-| 2   | `/lp-mr`  | MR 全生命周期：commit、push、监控、review、修复 | 全部 git 操作 |
-| 3   | `/lp-dev` | 纯本地开发：实现/修复 → 验证 → cr review        | 无            |
+| 1   | `/lp-up`  | 执行引擎+分析运行时数据，持续发现缺陷，提出 milestone | 无            |
+| 2   | `/lp-ms`  | Issue 生命周期：拆解、创建、依赖、批次、追踪    | 无            |
+| 3   | `/lp-mr`  | MR 全生命周期：commit、push、监控、review、修复 | 全部 git 操作 |
+| 4   | `/lp-dev` | 纯本地开发：实现/修复 → 验证 → cr review        | 无            |
 
 **协作流程**：
 
 ```
+lp-up（执行+分析+提案）
+  ↓ milestone (via subagent)
 lp-ms → lp-mr → lp-dev（写代码）→ lp-mr（commit+push）→ watch → lp-dev（修复）→ lp-mr（commit+push）→ merge
+  ↓ (代码改进后)
+lp-up（再执行 → 验证修复 → 发现新问题 → ...）
 ```
 
 ## Scripts
