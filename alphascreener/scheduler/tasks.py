@@ -538,6 +538,53 @@ def daily_scan() -> None:
             if strong_buys:
                 sb_tickers = [a.ticker for a in strong_buys]
                 _logger.info("Strong Buy tickers: %s", sb_tickers)
+
+            # ---- Ablation: persist signals for backtest feed ----
+
+            # Build ticker -> coarse_final_score map from Phase 2 results
+            # (the same rows used to build contexts for the pipeline)
+            score_map: dict[str, float] = {}
+            _fine_rows = phase2_result.head(n_fine).select(
+                ["ticker", "breakout_score"]
+            )
+            for row in _fine_rows.iter_rows(named=True):
+                score_map[str(row["ticker"])] = float(row["breakout_score"])
+
+            from datetime import date as _date
+
+            from alphascreener.tradingagents.ablation import (
+                AblationEntry,
+                create_ablation_tracker,
+            )
+
+            # Ensure latest_date is a native Python date
+            _scan_dt: _date = (
+                latest_date
+                if isinstance(latest_date, _date)
+                else _date.fromisoformat(str(latest_date))
+            )
+
+            tracker = create_ablation_tracker()
+            entries: list[AblationEntry] = []
+            for a in assessments:
+                coarse = score_map.get(a.ticker, 50.0)
+                entry = AblationEntry.from_assessment(
+                    ticker=str(a.ticker),
+                    dt=_scan_dt,
+                    coarse_final_score=coarse,
+                    score_correction=a.score_correction,
+                    risk_tags=list(a.risk_tags),
+                    data_conflict_detected=a.data_conflict_detected,
+                    phase1_pass=True,
+                )
+                entries.append(entry)
+
+            if entries:
+                tracker.record_batch(entries)
+                tracker.flush()
+                _logger.info(
+                    "Ablation: persisted %d signal records to signals store", len(entries)
+                )
     finally:
         engine.dispose()
     _logger.info("daily_scan: done")
