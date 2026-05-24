@@ -34,6 +34,7 @@ TASK_CRON: dict[str, str] = {
     "daily_health_check": "0 12 * * *",
     "daily_scan": "0 23 * * 1-5",
     "daily_feishu_push": "5 23 * * 1-5",
+    "weekly_case_library_rebuild": "0 10 * * 6",
 }
 
 TASK_IDS: set[str] = set(TASK_CRON.keys())
@@ -744,6 +745,29 @@ class _PipelineInvoker:
         return response, input_tokens, output_tokens
 
 
+def weekly_case_library_rebuild() -> None:
+    """Rebuild the breakout case library from historical factor + OHLCV data.
+
+    Cron: 0 10 * * 6 (10:00 UTC Saturday, after weekday daily_scans).
+
+    Scans all available factor data, computes T+7 forward returns, and
+    populates ~/.alphascreener/data/case_library/cases.parquet with
+    positive breakout cases (high breakout_score + strong forward return).
+    Used by the Breakout Analyst for similar-historical-case retrieval.
+    """
+    _logger.info("weekly_case_library_rebuild: starting")
+    try:
+        from alphascreener.tradingagents.case_library import rebuild_case_library
+
+        n = rebuild_case_library()
+        _logger.info("weekly_case_library_rebuild: done — %d cases written", n)
+    except Exception:
+        _logger.exception("weekly_case_library_rebuild: failed")
+        raise
+    else:
+        _logger.info("weekly_case_library_rebuild: done")
+
+
 # ---------------------------------------------------------------------------
 # Task function lookup
 # ---------------------------------------------------------------------------
@@ -759,4 +783,5 @@ TASK_FUNCS: dict[str, Callable[[], None]] = {
     "daily_health_check": daily_health_check,
     "daily_scan": daily_scan,
     "daily_feishu_push": daily_feishu_push,
+    "weekly_case_library_rebuild": weekly_case_library_rebuild,
 }
