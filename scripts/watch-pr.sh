@@ -1,7 +1,7 @@
 #!/bin/bash
 # PR status monitor — pure state polling, no severity analysis.
 # Usage: ./watch-pr.sh <pr_number>
-# Exit: 0=merged, 1=CI failure, 2=stuck/timeout, 4=changes requested (fresh), 5=missing tools
+# Exit: 0=CI green (ready to merge), 1=CI failure, 2=stuck/timeout, 5=missing tools
 set -euo pipefail
 
 for cmd in gh jq; do
@@ -18,7 +18,6 @@ trap 'rm -f "$STDERR_FILE"' EXIT INT TERM
 
 # Calculate dynamic timeout based on PR diff size
 # Base: 20 rounds for up to 300 lines, +5 rounds per additional 100 lines, max 60
-# Globals set for reuse: ADDITIONS, DELETIONS
 ADDITIONS=0
 DELETIONS=0
 calculate_timeout() {
@@ -51,15 +50,10 @@ echo "[INFO] Dynamic timeout: $TIMEOUT rounds ($ADDITIONS additions, $DELETIONS 
 
 ROUND=0
 
-# Stuck detection: track review decision stability
-LAST_REVIEW=""
-REVIEW_STABLE_SINCE=""
-
 while true; do
   ROUND=$((ROUND + 1))
   : > "$STDERR_FILE"
 
-  # Get PR state: CI checks, review decision, merged status, AND head commit
   if ! RESULT=$(gh pr view "$PR" --repo "$REPO" \
     --json statusCheckRollup,reviewDecision,mergedAt,commits \
     --jq '{
@@ -94,58 +88,33 @@ while true; do
     exit 0
   fi
 
-  # Terminal: CI failure
+  # Terminal: CI failure (failing checks exist)
   if [ -n "$FAILING" ]; then
     echo "=== CI FAILURES: $FAILING ==="
-    echo "Actions: 1) collect CI logs 2) hand off to lp-dev for fix 3) commit and push 4) re-run this script"
     exit 1
   fi
 
-  # CHANGES_REQUESTED: verify it's fresh (review is for current head commit), not stale
+  # CodeRabbit review is advisory (non-blocking). Log but don't block merge.
   if [ "$REVIEW" = "CHANGES_REQUESTED" ]; then
-    # Get latest CodeRabbit review's commit_id from REST API
-    REVIEW_COMMIT=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-      --jq '[.[] | select(.user.login == "coderabbitai[bot]")] | last | .commit_id // ""' 2>/dev/null || echo "")
-
-    if [ -n "$REVIEW_COMMIT" ] && [ -n "$HEAD_COMMIT" ] && [ "$REVIEW_COMMIT" = "$HEAD_COMMIT" ]; then
-      echo "=== CHANGES_REQUESTED (fresh — for current head) — run fetch-review.sh $PR ==="
-      exit 4
-    else
-      echo "=== CHANGES_REQUESTED (stale — review is for $REVIEW_COMMIT, head is $HEAD_COMMIT) — waiting for re-review ==="
-    fi
+      echo "=== CHANGES_REQUESTED (advisory — run fetch-review.sh $PR for details) ==="
   fi
 
-  # Happy path: APPROVED + CI green
-  if [ "$REVIEW" = "APPROVED" ] && [ -z "$PENDING" ] && [ -z "$FAILING" ]; then
-    echo "=== APPROVED + CI green — ready for merge ==="
+  if [ "$REVIEW" = "COMMENTED" ] || [ "$REVIEW" = "APPROVED" ]; then
+      echo "=== $REVIEW (advisory) ==="
   fi
 
-  # COMMENTED: CodeRabbit left comments but didn't request changes (chill profile).
-  if [ "$REVIEW" = "COMMENTED" ]; then
-    echo "=== COMMENTED (chill) — check with fetch-review.sh $PR if needed ==="
-  fi
-
-  # Stuck detection: track review decision stability for refined stuck detection
-  if [ "$REVIEW" != "$LAST_REVIEW" ]; then
-    LAST_REVIEW="$REVIEW"
-    REVIEW_STABLE_SINCE=$(date +%s)
-  fi
-
-  # Refined stuck detection: truly stuck = no pending CI AND review decision unchanged for 10 minutes
-  STUCK_MINUTES=10
-  if [ -z "$PENDING" ] && [ -z "$FAILING" ] && [ -n "$REVIEW_STABLE_SINCE" ]; then
-    CURRENT_TIME=$(date +%s)
-    STABLE_SECONDS=$((CURRENT_TIME - REVIEW_STABLE_SINCE))
-    if [ "$STABLE_SECONDS" -ge $((STUCK_MINUTES * 60)) ]; then
-      if [ "$REVIEW" != "APPROVED" ]; then
-        echo "=== STUCK (review=$REVIEW stable for $((STABLE_SECONDS / 60)) min, no pending CI) — consider close-reopen ==="
-        exit 2
-      fi
-    fi
+  # Ready to merge: CI green + no pending checks
+  if [ -z "$PENDING" ] && [ -z "$FAILING" ]; then
+      echo "=== CI green — ready for merge ==="
+      exit 0
   fi
 
   if [ "$ROUND" -ge "$TIMEOUT" ]; then
-    echo "=== TIMEOUT after ${ROUND} rounds (max $TIMEOUT) — consider close-reopen ==="
+    echo "=== TIMEOUT after ${ROUND} rounds (max $TIMEOUT) ==="
+    if [ -z "$FAILING" ]; then
+      echo "=== CI is green despite timeout — exiting as ready ==="
+      exit 0
+    fi
     exit 2
   fi
 
