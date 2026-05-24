@@ -93,6 +93,12 @@ class CaseLibraryBuilder:
         forward_days: int = DEFAULT_FORWARD_DAYS,
         output_path: Path | None = None,
     ) -> None:
+        if not 0.0 <= breakout_score_pct <= 1.0:
+            raise ValueError("breakout_score_pct must be within [0.0, 1.0]")
+        if not 0.0 <= min_return <= 1.0:
+            raise ValueError("min_return must be within [0.0, 1.0]")
+        if forward_days <= 0:
+            raise ValueError("forward_days must be > 0")
         self._breakout_score_pct = breakout_score_pct
         self._min_return = min_return
         self._forward_days = forward_days
@@ -322,10 +328,9 @@ class CaseLibraryBuilder:
 
         for obs_date in dates:
             if isinstance(obs_date, str):
-                obs_date = date_type.fromisoformat(obs_date) if isinstance(obs_date, str) else obs_date
-            if isinstance(obs_date, pl.Date):
-                # polars Date type
-                obs_date = date_type(obs_date.year, obs_date.month, obs_date.day)
+                obs_date = date_type.fromisoformat(obs_date)
+            elif type(obs_date) is not date_type:
+                obs_date = date_type.fromisoformat(str(obs_date)[:10])
             fwd_date = obs_date + timedelta(days=self._forward_days)
 
             try:

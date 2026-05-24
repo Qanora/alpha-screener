@@ -341,6 +341,30 @@ class TestCaseLibraryBuilder:
             result = pl.read_parquet(str(output))
             assert result.height == n
 
+    def test_rebuild_computes_forward_returns_when_t7_missing(self):
+        """rebuild() calls _compute_forward_returns when t7_return is absent."""
+        df = _make_factor_df(n_rows=6, with_t7_return=False)
+        df = df.with_columns(pl.lit(2.0).alias("breakout_score"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "cases.parquet"
+            builder = CaseLibraryBuilder(
+                breakout_score_pct=0.5,
+                min_return=0.10,
+                output_path=output,
+            )
+            builder._load_all_factors = lambda: df
+
+            called = {"v": False}
+            def _fake_forward(x: pl.DataFrame) -> pl.DataFrame:
+                called["v"] = True
+                return x.with_columns(pl.lit(0.15).alias("t7_return"))
+            builder._compute_forward_returns = _fake_forward
+
+            n = builder.rebuild()
+            assert called["v"] is True
+            assert n > 0
+
 
 class TestRebuildConvenience:
     """Tests for the rebuild_case_library convenience function."""
