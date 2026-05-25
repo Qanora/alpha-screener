@@ -94,15 +94,6 @@ while true; do
     exit 1
   fi
 
-  # CodeRabbit review is advisory (non-blocking). Log but don't block merge.
-  if [ "$REVIEW" = "CHANGES_REQUESTED" ]; then
-      echo "=== CHANGES_REQUESTED (advisory — run fetch-review.sh $PR for details) ==="
-  fi
-
-  if [ "$REVIEW" = "COMMENTED" ] || [ "$REVIEW" = "APPROVED" ]; then
-      echo "=== $REVIEW (advisory) ==="
-  fi
-
   # Ready to merge: CI green + no pending checks
   if [ -z "$PENDING" ] && [ -z "$FAILING" ]; then
       echo "=== CI green — ready for merge ==="
