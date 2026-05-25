@@ -173,7 +173,6 @@ Session 中断后，从 GitHub 反推当前状态继续执行。
 | Issue 状态  | MR 状态           | 恢复动作                                 |
 | ----------- | ----------------- | ---------------------------------------- |
 | open, 无 MR | —                 | 启动 `/lp-mr <issue>`                  |
-| open, 有 MR | CHANGES_REQUESTED | `/lp-mr --resume` (fetch-review → fix) |
 | open, 有 MR | CI_FAILURE        | 收集 CI log → `/lp-mr --resume`        |
 | open, 有 MR | PENDING           | 继续监控 (`watch-pr.sh`)                 |
 | closed      | MR merged         | 跳过                                     |
@@ -186,22 +185,10 @@ Session 中断后，从 GitHub 反推当前状态继续执行。
 gh issue list --repo Qanora/alpha-screener --state all --milestone "<milestone-number>" --json number,state,title
 
 # 2. 对每个 issue，查询关联的 MR
-gh pr list --repo Qanora/alpha-screener --state all --json number,headRefName,state,reviewDecision,statusCheckRollup
+gh pr list --repo Qanora/alpha-screener --state all --json number,headRefName,state,statusCheckRollup
 
 # 3. 根据状态表决定恢复动作
 ```
-
-### Round 计数推断
-
-从 GitHub PR timeline 事件推断当前 round：
-
-```bash
-gh api repos/Qanora/alpha-screener/pulls/<pr-number>/timeline --paginate \
-  --jq '[.[] | select(.event == "closed" or .event == "reopened")] | length'
-```
-
-- 每次 close-reopen 操作会创建新 MR，round 从 0 开始
-- 修复 push 后 round +1
 
 ### 恢复示例
 
@@ -211,11 +198,11 @@ gh api repos/Qanora/alpha-screener/pulls/<pr-number>/timeline --paginate \
 ### Issue 状态分析
 | Issue | MR | 状态 | 恢复动作 |
 |-------|-----|------|----------|
-| #26 | #27 | CHANGES_REQUESTED | /lp-mr 26 --resume |
+| #26 | #27 | CI_FAILURE | /lp-mr 26 --resume |
 | #28 | — | open | /lp-mr 28 |
 
 ### 执行计划
-1. 恢复 #26: 修复 review comments
+1. 恢复 #26: 修复 CI 失败
 2. 启动 #28: 新建 MR
 ```
 
