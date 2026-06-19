@@ -49,6 +49,16 @@ CONTINUITY_FAILURE_RATE_THRESHOLD: float = 0.30
 # diff threshold for Stooq cross-validation (relative difference > 0.5%)
 DIFF_THRESHOLD_PCT: float = 0.005
 
+# Auto-recovery: health probe tickers (Issue #224)
+# These well-known liquid tickers are used to test whether yfinance is healthy.
+HEALTH_PROBE_TICKERS: list[str] = ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]
+
+# Auto-recovery: minimum successful ticker fraction to consider primary source healthy
+HEALTH_PROBE_SUCCESS_THRESHOLD: float = 0.80
+
+# Auto-recovery: maximum consecutive days in fallback mode before forced health probe
+MAX_FALLBACK_DAYS: int = 1
+
 
 # ---------------------------------------------------------------------------
 # Report dataclasses
@@ -138,6 +148,9 @@ class SyncOrchestrator:
     stooq_validate_n: int = STOOQ_VALIDATE_TOP_N
     max_nan_fraction: float = MAX_NAN_FRACTION
     diff_store: Any | None = None  # DiffStore for persisting data_source_diff records
+    health_probe_tickers: list[str] = field(
+        default_factory=lambda: list(HEALTH_PROBE_TICKERS)
+    )
 
     _logger: logging.Logger = field(
         default_factory=lambda: get_logger("screening"), repr=False, init=False
@@ -146,6 +159,11 @@ class SyncOrchestrator:
     # -- Continuity tracker (persistent across sync runs) ---------------------
 
     _daily_failure_rates: list[float] = field(default_factory=list, repr=False, init=False)
+
+    # -- Auto-recovery state (Issue #224) --------------------------------------
+
+    _primary_healthy: bool = field(default=True, repr=False, init=False)
+    _consecutive_fallback_days: int = field(default=0, repr=False, init=False)
 
     # ------------------------------------------------------------------
     # Public API
@@ -214,23 +232,40 @@ class SyncOrchestrator:
             incremental,
         )
 
-        # -- Step 1: yfinance OHLCV download ---------------------------------
-        try:
-            ohlcv_df = await self.yfinance.download_ohlcv(tickers, start, end)
-            report.ohlcv_rows = ohlcv_df.height
-            report.tickers_succeeded = (
-                len(ohlcv_df["ticker"].unique()) if ohlcv_df.height > 0 else 0
-            )
-        except Exception as e:
-            self._logger.error("yfinance OHLCV download failed: %s", e)
-            report.errors.append(f"yfinance download: {e}")
-            ohlcv_df = _empty_ohlcv_df()
+        # -- Step 1: yfinance OHLCV download (primary source) -----------------
+        ohlcv_df = await self._download_primary(tickers, start, end, report)
 
         # Per-ticker failure tracking
         succeeded_tickers: set[str] = set()
         if ohlcv_df.height > 0:
             succeeded_tickers = set(ohlcv_df["ticker"].unique().to_list())
         report.tickers_failed = len(tickers) - len(succeeded_tickers)
+
+        # -- Step 1b: OHLCV fallback via Stooq for failed tickers (Issue #224) -
+        if self.stooq is not None and report.tickers_failed > 0:
+            failed_tickers = [t for t in tickers if t not in succeeded_tickers]
+            self._logger.warning(
+                "yfinance missed %d/%d tickers — falling back to Stooq OHLCV",
+                len(failed_tickers),
+                len(tickers),
+            )
+            fallback_df = await self._download_fallback(failed_tickers, start, end)
+            if fallback_df.height > 0:
+                fallback_succeeded = set(fallback_df["ticker"].unique().to_list())
+                report.tickers_failed -= len(fallback_succeeded)
+                self._logger.info(
+                    "Stooq fallback covered %d additional tickers (%d still missing)",
+                    len(fallback_succeeded),
+                    report.tickers_failed,
+                )
+                # Merge fallback results into the main OHLCV DataFrame
+                combined = [ohlcv_df] if ohlcv_df.height > 0 else []
+                combined.append(fallback_df)
+                ohlcv_df = pl.concat(combined)
+                report.ohlcv_rows = ohlcv_df.height
+                report.tickers_succeeded = (
+                    len(ohlcv_df["ticker"].unique()) if ohlcv_df.height > 0 else 0
+                )
 
         # -- Step 2: Stooq cross-validation (top N) --------------------------
         if self.stooq is not None and ohlcv_df.height > 0:
@@ -271,10 +306,12 @@ class SyncOrchestrator:
         if ohlcv_df.height > 0:
             report.integrity = self._check_integrity(ohlcv_df, len(tickers))
 
-        # -- Step 7: Continuity tracker update --------------------------------
+        # -- Step 7: Continuity tracker + auto-recovery update (Issue #224) -----
         if len(tickers) > 0:
             failure_rate = report.tickers_failed / len(tickers)
             self._update_continuity(failure_rate, report)
+            # Auto-recovery: track fallback days and probe primary source health
+            self._update_auto_recovery(failure_rate)
 
         report.elapsed_s = (datetime.now(UTC) - t0).total_seconds()
         self._logger.info(
@@ -286,6 +323,79 @@ class SyncOrchestrator:
         )
 
         return report
+
+    # ------------------------------------------------------------------
+    # Primary / fallback OHLCV download (Issue #224)
+    # ------------------------------------------------------------------
+
+    async def _download_primary(
+        self,
+        tickers: list[str],
+        start: date,
+        end: date,
+        report: SyncReport,
+    ) -> pl.DataFrame:
+        """Download OHLCV from the primary source (yfinance).
+
+        When the primary source is known to be unhealthy (auto-recovery has
+        flagged it), a health probe is attempted first to see if the source
+        has recovered. If the probe succeeds, circuit breakers are reset
+        and the primary source is used normally.
+        """
+        if not self._primary_healthy:
+            self._logger.warning(
+                "Primary source (yfinance) was flagged unhealthy — probing health"
+            )
+            healthy = await self._probe_primary_health()
+            if healthy:
+                self._logger.info(
+                    "Primary source health probe PASSED — resetting circuit breakers "
+                    "and resuming normal operation"
+                )
+                self.yfinance.reset_circuit_breakers()
+                self._primary_healthy = True
+                self._consecutive_fallback_days = 0
+            else:
+                self._logger.warning(
+                    "Primary source health probe FAILED — continuing in fallback mode"
+                )
+
+        try:
+            ohlcv_df = await self.yfinance.download_ohlcv(tickers, start, end)
+            report.ohlcv_rows = ohlcv_df.height
+            report.tickers_succeeded = (
+                len(ohlcv_df["ticker"].unique()) if ohlcv_df.height > 0 else 0
+            )
+            return ohlcv_df
+        except Exception as e:
+            self._logger.error("yfinance OHLCV download failed: %s", e)
+            report.errors.append(f"yfinance download: {e}")
+            return _empty_ohlcv_df()
+
+    async def _download_fallback(
+        self,
+        tickers: list[str],
+        start: date,
+        end: date,
+    ) -> pl.DataFrame:
+        """Download OHLCV from the fallback source (Stooq) for failed tickers.
+
+        This is invoked when yfinance fails to return data for some tickers.
+        Stooq is queried ticker-by-ticker and the results are returned in
+        the standard OHLCV schema for merging into the main DataFrame.
+        """
+        if self.stooq is None or not tickers:
+            return _empty_ohlcv_df()
+
+        self._logger.info(
+            "Fallback: downloading OHLCV from Stooq for %d tickers",
+            len(tickers),
+        )
+        try:
+            return await self.stooq.download_ohlcv(tickers, start, end)
+        except Exception as e:
+            self._logger.error("Stooq fallback download failed: %s", e)
+            return _empty_ohlcv_df()
 
     # ------------------------------------------------------------------
     # Cross-validation (PRD 7.2)
@@ -567,6 +677,98 @@ class SyncOrchestrator:
     def reset_continuity(self) -> None:
         """Reset the continuity tracker (for testing)."""
         self._daily_failure_rates.clear()
+
+    # ------------------------------------------------------------------
+    # Auto-recovery (Issue #224)
+    # ------------------------------------------------------------------
+
+    def _update_auto_recovery(self, failure_rate: float) -> None:
+        """Track fallback days and trigger health probe when threshold reached.
+
+        When the yfinance failure rate exceeds the continuity threshold,
+        the primary source is flagged as unhealthy. The system then:
+          1. Increments the consecutive fallback days counter
+          2. After MAX_FALLBACK_DAYS days, probes yfinance health
+          3. If the probe succeeds, resets circuit breakers and resumes
+          4. If the probe fails, stays in fallback mode and retries next cycle
+
+        Args:
+            failure_rate: Fraction of tickers that yfinance failed to cover
+                (0.0 = all succeeded, 1.0 = all failed).
+        """
+        if failure_rate > CONTINUITY_FAILURE_RATE_THRESHOLD:
+            if self._primary_healthy:
+                self._logger.warning(
+                    "Primary source (yfinance) failure rate %.1f%% > threshold %.0f%% "
+                    "— flagging as unhealthy",
+                    failure_rate * 100,
+                    CONTINUITY_FAILURE_RATE_THRESHOLD * 100,
+                )
+                self._primary_healthy = False
+            self._consecutive_fallback_days += 1
+            self._logger.warning(
+                "Fallback mode: day %d/%d (failure rate %.1f%%)",
+                self._consecutive_fallback_days,
+                MAX_FALLBACK_DAYS,
+                failure_rate * 100,
+            )
+        else:
+            # Failure rate is acceptable — if we were in fallback mode,
+            # consider this a recovery signal.
+            if not self._primary_healthy:
+                self._logger.info(
+                    "Primary source failure rate dropped to %.1f%% — "
+                    "marking as healthy",
+                    failure_rate * 100,
+                )
+                self._primary_healthy = True
+                self._consecutive_fallback_days = 0
+
+    async def _probe_primary_health(self) -> bool:
+        """Probe whether the primary source (yfinance) is healthy.
+
+        Downloads a small set of well-known liquid tickers and checks that
+        at least HEALTH_PROBE_SUCCESS_THRESHOLD fraction succeed.
+
+        Returns:
+            True if the primary source appears healthy.
+        """
+        today = date.today()
+        start = today - timedelta(days=2)  # 2-day lookback for probe
+
+        self._logger.info(
+            "Health probe: testing yfinance with %d tickers",
+            len(self.health_probe_tickers),
+        )
+        try:
+            df = await self.yfinance.download_ohlcv(
+                self.health_probe_tickers, start, today
+            )
+        except Exception as e:
+            self._logger.warning("Health probe failed with exception: %s", e)
+            return False
+
+        if df.height == 0:
+            self._logger.warning("Health probe returned no data")
+            return False
+
+        succeeded = len(df["ticker"].unique())
+        success_rate = succeeded / len(self.health_probe_tickers)
+        healthy = success_rate >= HEALTH_PROBE_SUCCESS_THRESHOLD
+
+        self._logger.info(
+            "Health probe: %d/%d tickers succeeded (%.0f%%) — %s",
+            succeeded,
+            len(self.health_probe_tickers),
+            success_rate * 100,
+            "HEALTHY" if healthy else "UNHEALTHY",
+        )
+        return healthy
+
+    def reset_primary_health(self) -> None:
+        """Reset auto-recovery state (for testing)."""
+        self._primary_healthy = True
+        self._consecutive_fallback_days = 0
 
 
 # ---------------------------------------------------------------------------
