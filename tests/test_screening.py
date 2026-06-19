@@ -22,6 +22,22 @@ import pytest
 
 def _factor_df(rows: List[Dict]) -> pl.DataFrame:
     """Minimal factor DataFrame with the columns Phase 1 needs."""
+    if not rows:
+        # Empty: build zero-row DF with correct schema
+        return pl.DataFrame({
+            "ticker": pl.Series([], dtype=pl.Utf8),
+            "dt": pl.Series([], dtype=pl.Date),
+            "MOM_5D": pl.Series([], dtype=pl.Float64),
+            "VOL_ANOMALY": pl.Series([], dtype=pl.Int32),
+            "MFI_14": pl.Series([], dtype=pl.Float64),
+            "ATR_RATIO": pl.Series([], dtype=pl.Float64),
+            "RSI_14": pl.Series([], dtype=pl.Float64),
+            "BB_SQUEEZE": pl.Series([], dtype=pl.Int32),
+            "PTH": pl.Series([], dtype=pl.Float64),
+            "CMF_21": pl.Series([], dtype=pl.Float64),
+            "PEAD_FLAG": pl.Series([], dtype=pl.Int32),
+            "INSIDER_BUY": pl.Series([], dtype=pl.Int32),
+        })
     # Polars 0.12.5: convert date objects to strings, then cast
     for r in rows:
         if "dt" in r and isinstance(r["dt"], date):
