@@ -21,7 +21,3 @@
 - 分支命名 `feature/issue-<N>`，从 `origin/master` 创建
 - 流程: feature 分支 → MR → squash merge
 - CI 通过后 auto-merge
-
-## Triage Labels
-
-`needs-triage` | `needs-info` | `ready-for-agent` | `ready-for-human` | `wontfix`
