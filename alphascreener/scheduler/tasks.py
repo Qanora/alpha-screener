@@ -205,29 +205,24 @@ def daily_cusum_check() -> None:
             from alphascreener.alpha_acceptance import compute_ic
 
             for score_col in factor_score_cols:
-                factor_name = score_col[len("score_"):]  # strip "score_" prefix
+                factor_name = score_col[len("score_") :]  # strip "score_" prefix
                 try:
                     ic_val = compute_ic(factors_df[score_col], factors_df[return_col])
                     daily_ics[factor_name] = ic_val
                 except Exception:
-                    _logger.debug(
-                        "Failed to compute IC for %s", factor_name, exc_info=True
-                    )
+                    _logger.debug("Failed to compute IC for %s", factor_name, exc_info=True)
                     daily_ics[factor_name] = None
         else:
             _logger.warning(
-                "No t7_return column found, computing per-factor IC using "
-                "breakout_score as proxy"
+                "No t7_return column found, computing per-factor IC using breakout_score as proxy"
             )
             # Fallback: use breakout_score correlation per factor
             from alphascreener.alpha_acceptance import compute_ic
 
             for score_col in factor_score_cols:
-                factor_name = score_col[len("score_"):]
+                factor_name = score_col[len("score_") :]
                 try:
-                    ic_val = compute_ic(
-                        factors_df[score_col], factors_df[score_col]
-                    )
+                    ic_val = compute_ic(factors_df[score_col], factors_df[score_col])
                     daily_ics[factor_name] = ic_val
                 except Exception:
                     daily_ics[factor_name] = None
@@ -297,8 +292,7 @@ def daily_feishu_push() -> None:
             day_alerts = session.execute(alerts_stmt).scalars().all()
             if day_alerts:
                 alert_lines = [
-                    f"[{a.severity or '?'}] {a.rule_name}: {a.notes or '-'}"
-                    for a in day_alerts
+                    f"[{a.severity or '?'}] {a.rule_name}: {a.notes or '-'}" for a in day_alerts
                 ]
                 alerts_summary = "\n".join(alert_lines)
             else:
@@ -323,9 +317,7 @@ def daily_feishu_push() -> None:
             lift_llm=round(alpha.lift_at_20_llm, 2)
             if alpha and alpha.lift_at_20_llm is not None
             else None,
-            base_rate=round(alpha.base_rate, 1)
-            if alpha and alpha.base_rate is not None
-            else None,
+            base_rate=round(alpha.base_rate, 1) if alpha and alpha.base_rate is not None else None,
             win_rate=None,
             sharpe=None,
             avg_return=None,
@@ -359,9 +351,21 @@ def daily_scan() -> None:
     settings = Settings()
     engine = create_db_engine(settings.get_db_url())
     try:
+        # -- Ensure schema exists before writing any monitoring data (Issue #192)
+        from alphascreener.db.ensure_schema import _ensure_schema
+
+        _ensure_schema(engine)
 
         def _sf() -> Session:
             return Session(engine)
+
+        # -- Resource monitoring (Issue #107 / #192)
+        from alphascreener.monitoring import ResourceMonitor, write_stage_metric
+
+        cfg = ResourceMonitor(
+            task_id="daily_scan",
+            session_factory=_sf,
+        )
 
         tracker = CostTracker(
             _sf,
@@ -391,214 +395,225 @@ def daily_scan() -> None:
         if not status.fine_screening_allowed():
             _logger.warning("L2+ DEGRADE: fine screening paused, running coarse only")
 
-        # ---- Phase 1: hard filter + Phase 2: weighted scoring (coarse) ----
+        # ---- Start resource monitoring context (Issue #192) ----
+        with cfg:
+            # ---- Phase 1: hard filter + Phase 2: weighted scoring (coarse) ----
 
-        import polars as pl
+            import polars as pl
 
-        from alphascreener.cost.tracker import CircuitLevel
-        from alphascreener.data.io import scan_parquet
-        from alphascreener.screening.phase1 import hard_filter
-        from alphascreener.screening.phase2 import phase2_pipeline
-        from alphascreener.tradingagents.bull_bear_pipeline import (
-            BatchConfig,
-            run_pipeline_batch,
-        )
-        from alphascreener.tradingagents.orchestrator import build_llm_invoker
+            from alphascreener.cost.tracker import CircuitLevel
+            from alphascreener.data.io import scan_parquet
+            from alphascreener.screening.phase1 import hard_filter
+            from alphascreener.screening.phase2 import phase2_pipeline
+            from alphascreener.tradingagents.bull_bear_pipeline import (
+                BatchConfig,
+                run_pipeline_batch,
+            )
+            from alphascreener.tradingagents.orchestrator import build_llm_invoker
 
-        # Load latest factor data
-        try:
-            factors_lf = scan_parquet("factors")
-            factors_df = factors_lf.collect()
-        except FileNotFoundError:
-            _logger.warning("No factor data found, skipping daily_scan")
-            return
+            # Load latest factor data
+            try:
+                factors_lf = scan_parquet("factors")
+                factors_df = factors_lf.collect()
+            except FileNotFoundError:
+                _logger.warning("No factor data found, skipping daily_scan")
+                return
 
-        if factors_df.height == 0:
-            _logger.warning("Empty factor data, skipping daily_scan")
-            return
+            if factors_df.height == 0:
+                _logger.warning("Empty factor data, skipping daily_scan")
+                return
 
-        latest_date = factors_df["dt"].max()
-        _logger.info("Using factor data from %s", latest_date)
-        factors_df = factors_df.filter(pl.col("dt") == latest_date)
+            latest_date = factors_df["dt"].max()
+            _logger.info("Using factor data from %s", latest_date)
+            factors_df = factors_df.filter(pl.col("dt") == latest_date)
 
-        n_total = factors_df.height
-        _logger.info("Loaded %d tickers for screening", n_total)
+            n_total = factors_df.height
+            _logger.info("Loaded %d tickers for screening", n_total)
 
-        # Join sector/industry from universe meta (for Phase 2 dedup)
-        try:
-            from alphascreener.universe.meta import read_meta_cache
+            # Join sector/industry from universe meta (for Phase 2 dedup)
+            try:
+                from alphascreener.universe.meta import read_meta_cache
 
-            meta = read_meta_cache().collect()
-            if meta.height > 0:
-                meta_subset = meta.select(["ticker", "sector", "industry"])
-                factors_df = factors_df.join(meta_subset, on="ticker", how="left")
-        except (FileNotFoundError, KeyError):
+                meta = read_meta_cache().collect()
+                if meta.height > 0:
+                    meta_subset = meta.select(["ticker", "sector", "industry"])
+                    factors_df = factors_df.join(meta_subset, on="ticker", how="left")
+            except (FileNotFoundError, KeyError):
+                _logger.info("Universe meta cache not available, skipping sector join")
+            except Exception:
+                _logger.error(
+                    "Unexpected error loading universe meta cache",
+                    exc_info=True,
+                )
+                raise
+
+            # Phase 1: hard filter
+            filtered = hard_filter(factors_df)
+            passers = filtered.filter(pl.col("pass_phase1"))
+            n_pass = passers.height
+            pct_p1 = (n_pass / n_total * 100) if n_total > 0 else 0.0
+            _logger.info("Phase 1: %d/%d tickers passed hard filter", n_pass, n_total)
+            write_stage_metric(
+                _sf,
+                "daily_scan",
+                "phase1",
+                f"{n_total} tickers, {n_pass} passed ({pct_p1:.1f}%)",
+            )
+
+            if n_pass == 0:
+                _logger.info("No tickers passed Phase 1, daily_scan: done")
+                return
+
+            # Phase 2: weighted scoring + industry dedup
+            phase2_result = phase2_pipeline(
+                passers,
+                sector_cap=settings.sector_cap,
+                industry_cap=settings.industry_cap,
+            )
             _logger.info(
-                "Universe meta cache not available, skipping sector join"
+                "Phase 2: %d candidates after scoring + dedup",
+                phase2_result.height,
             )
-        except Exception:
-            _logger.error(
-                "Unexpected error loading universe meta cache",
-                exc_info=True,
-            )
-            raise
-
-        # Phase 1: hard filter
-        filtered = hard_filter(factors_df)
-        passers = filtered.filter(pl.col("pass_phase1"))
-        n_pass = passers.height
-        _logger.info("Phase 1: %d/%d tickers passed hard filter", n_pass, n_total)
-
-        if n_pass == 0:
-            _logger.info("No tickers passed Phase 1, daily_scan: done")
-            return
-
-        # Phase 2: weighted scoring + industry dedup
-        phase2_result = phase2_pipeline(
-            passers,
-            sector_cap=settings.sector_cap,
-            industry_cap=settings.industry_cap,
-        )
-        _logger.info(
-            "Phase 2: %d candidates after scoring + dedup", phase2_result.height,
-        )
-
-        if phase2_result.height == 0:
-            _logger.info("No candidates after Phase 2 dedup, daily_scan: done")
-            return
-
-        # Log top candidates from coarse screening for observability
-        top_preview = (
-            phase2_result.select(["ticker", "breakout_score"])
-            .head(5)
-            .to_dicts()
-        )
-        _logger.info("Coarse Top 5: %s", top_preview)
-
-        # ---- Fine screening (Bull/Bear/PM pipeline) ----
-
-        if not status.fine_screening_allowed():
-            _logger.warning("L2+ DEGRADE: fine screening paused, coarse only — done")
-            return
-
-        # L3 savings mode: reduce to Top 10
-        if (
-            status.level >= CircuitLevel.L3_SAVINGS
-            and status.level < CircuitLevel.L4_BREAKER
-        ):
-            n_fine = min(phase2_result.height, 10)
-            _logger.info("L3 SAVINGS: fine screening reduced to Top %d", n_fine)
-        else:
-            n_fine = phase2_result.height
-
-        # Build BullBearContext list
-        contexts = _build_contexts(phase2_result.head(n_fine))
-
-        # Build invoker adapter: orchestrator invoker (str -> str)
-        # wrapped for the pipeline's (str, int) -> (str, int, int) signature.
-        from alphascreener.tradingagents.orchestrator import LLMInvocationTracker
-
-        inv_tracker = LLMInvocationTracker()
-        base_invoker = build_llm_invoker(
-            settings,
-            max_retries=settings.llm_max_retries,
-            retry_base_delay=settings.llm_retry_base_delay,
-            invocation_tracker=inv_tracker,
-        )
-        pipeline_invoker = _PipelineInvoker(base_invoker)
-
-        cfg = BatchConfig(
-            batch_size=settings.llm_batch_size,
-            cost_tracker=tracker,
-        )
-        _logger.info(
-            "Starting Bull/Bear/PM pipeline on %d symbols (batch_size=%d)",
-            len(contexts),
-            cfg.batch_size,
-        )
-
-        assessments = []
-        try:
-            assessments = run_pipeline_batch(contexts, pipeline_invoker, cfg)
-        except RuntimeError as exc:
-            _logger.error("Pipeline stopped by circuit breaker: %s", exc)
-        finally:
-            # Emit invocation stats summary (Issue #188)
-            inv_tracker.log_summary()
-
-        _logger.info(
-            "Pipeline complete: %d assessments for %d symbols",
-            len(assessments),
-            len(contexts),
-        )
-
-        # Log pipeline result summary
-        if assessments:
-            strong_buys = [a for a in assessments if a.final_rating.value == "Strong Buy"]
-            buys = [a for a in assessments if a.final_rating.value == "Buy"]
-            holds = [a for a in assessments if a.final_rating.value == "Hold"]
-            avoids = [a for a in assessments if a.final_rating.value == "Avoid"]
-            _logger.info(
-                "Pipeline results: Strong Buy=%d Buy=%d Hold=%d Avoid=%d",
-                len(strong_buys),
-                len(buys),
-                len(holds),
-                len(avoids),
+            write_stage_metric(
+                _sf,
+                "daily_scan",
+                "phase2",
+                f"{phase2_result.height} candidates",
             )
 
-            # Log Strong Buy tickers explicitly
-            if strong_buys:
-                sb_tickers = [a.ticker for a in strong_buys]
-                _logger.info("Strong Buy tickers: %s", sb_tickers)
+            if phase2_result.height == 0:
+                _logger.info("No candidates after Phase 2 dedup, daily_scan: done")
+                return
 
-            # ---- Ablation: persist signals for backtest feed ----
+            # Log top candidates from coarse screening for observability
+            top_preview = phase2_result.select(["ticker", "breakout_score"]).head(5).to_dicts()
+            _logger.info("Coarse Top 5: %s", top_preview)
 
-            # Build ticker -> coarse_final_score map from Phase 2 results
-            # (the same rows used to build contexts for the pipeline)
-            score_map: dict[str, float] = {}
-            _fine_rows = phase2_result.head(n_fine).select(
-                ["ticker", "breakout_score"]
-            )
-            for row in _fine_rows.iter_rows(named=True):
-                score_map[str(row["ticker"])] = float(row["breakout_score"])
+            # ---- Fine screening (Bull/Bear/PM pipeline) ----
 
-            from datetime import date as _date
-            from datetime import datetime as _datetime
+            if not status.fine_screening_allowed():
+                _logger.warning("L2+ DEGRADE: fine screening paused, coarse only — done")
+                return
 
-            from alphascreener.tradingagents.ablation import (
-                AblationEntry,
-                create_ablation_tracker,
-            )
-
-            # Ensure latest_date is a native Python date
-            if isinstance(latest_date, _datetime):
-                _scan_dt: _date = latest_date.date()
-            elif isinstance(latest_date, _date):
-                _scan_dt = latest_date
+            # L3 savings mode: reduce to Top 10
+            if status.level >= CircuitLevel.L3_SAVINGS and status.level < CircuitLevel.L4_BREAKER:
+                n_fine = min(phase2_result.height, 10)
+                _logger.info("L3 SAVINGS: fine screening reduced to Top %d", n_fine)
             else:
-                _scan_dt = _date.fromisoformat(str(latest_date)[:10])
+                n_fine = phase2_result.height
 
-            tracker = create_ablation_tracker()
-            entries: list[AblationEntry] = []
-            for a in assessments:
-                coarse = score_map.get(a.ticker, 50.0)
-                entry = AblationEntry.from_assessment(
-                    ticker=str(a.ticker),
-                    dt=_scan_dt,
-                    coarse_final_score=coarse,
-                    score_correction=a.score_correction,
-                    risk_tags=list(a.risk_tags),
-                    data_conflict_detected=a.data_conflict_detected,
-                    phase1_pass=True,
-                )
-                entries.append(entry)
+            # Build BullBearContext list
+            contexts = _build_contexts(phase2_result.head(n_fine))
 
-            if entries:
-                tracker.record_batch(entries)
-                tracker.flush()
+            # Build invoker adapter: orchestrator invoker (str -> str)
+            # wrapped for the pipeline's (str, int) -> (str, int, int) signature.
+            from alphascreener.tradingagents.orchestrator import LLMInvocationTracker
+
+            inv_tracker = LLMInvocationTracker()
+            base_invoker = build_llm_invoker(
+                settings,
+                max_retries=settings.llm_max_retries,
+                retry_base_delay=settings.llm_retry_base_delay,
+                invocation_tracker=inv_tracker,
+            )
+            pipeline_invoker = _PipelineInvoker(base_invoker)
+
+            cfg_batch = BatchConfig(
+                batch_size=settings.llm_batch_size,
+                cost_tracker=tracker,
+            )
+            _logger.info(
+                "Starting Bull/Bear/PM pipeline on %d symbols (batch_size=%d)",
+                len(contexts),
+                cfg_batch.batch_size,
+            )
+
+            assessments = []
+            try:
+                assessments = run_pipeline_batch(contexts, pipeline_invoker, cfg_batch)
+            except RuntimeError as exc:
+                _logger.error("Pipeline stopped by circuit breaker: %s", exc)
+            finally:
+                # Emit invocation stats summary (Issue #188)
+                inv_tracker.log_summary()
+
+            _logger.info(
+                "Pipeline complete: %d assessments for %d symbols",
+                len(assessments),
+                len(contexts),
+            )
+
+            # Log pipeline result summary
+            if assessments:
+                strong_buys = [a for a in assessments if a.final_rating.value == "Strong Buy"]
+                buys = [a for a in assessments if a.final_rating.value == "Buy"]
+                holds = [a for a in assessments if a.final_rating.value == "Hold"]
+                avoids = [a for a in assessments if a.final_rating.value == "Avoid"]
                 _logger.info(
-                    "Ablation: attempted to persist %d signal records", len(entries)
+                    "Pipeline results: Strong Buy=%d Buy=%d Hold=%d Avoid=%d",
+                    len(strong_buys),
+                    len(buys),
+                    len(holds),
+                    len(avoids),
                 )
+                write_stage_metric(
+                    _sf,
+                    "daily_scan",
+                    "fine",
+                    f"{len(assessments)} assessments "
+                    f"(SB={len(strong_buys)} B={len(buys)} "
+                    f"H={len(holds)} A={len(avoids)})",
+                )
+
+                # Log Strong Buy tickers explicitly
+                if strong_buys:
+                    sb_tickers = [a.ticker for a in strong_buys]
+                    _logger.info("Strong Buy tickers: %s", sb_tickers)
+
+                # ---- Ablation: persist signals for backtest feed ----
+
+                # Build ticker -> coarse_final_score map from Phase 2 results
+                # (the same rows used to build contexts for the pipeline)
+                score_map: dict[str, float] = {}
+                _fine_rows = phase2_result.head(n_fine).select(["ticker", "breakout_score"])
+                for row in _fine_rows.iter_rows(named=True):
+                    score_map[str(row["ticker"])] = float(row["breakout_score"])
+
+                from datetime import date as _date
+                from datetime import datetime as _datetime
+
+                from alphascreener.tradingagents.ablation import (
+                    AblationEntry,
+                    create_ablation_tracker,
+                )
+
+                # Ensure latest_date is a native Python date
+                if isinstance(latest_date, _datetime):
+                    _scan_dt: _date = latest_date.date()
+                elif isinstance(latest_date, _date):
+                    _scan_dt = latest_date
+                else:
+                    _scan_dt = _date.fromisoformat(str(latest_date)[:10])
+
+                tracker_ab = create_ablation_tracker()
+                entries: list[AblationEntry] = []
+                for a in assessments:
+                    coarse = score_map.get(a.ticker, 50.0)
+                    entry = AblationEntry.from_assessment(
+                        ticker=str(a.ticker),
+                        dt=_scan_dt,
+                        coarse_final_score=coarse,
+                        score_correction=a.score_correction,
+                        risk_tags=list(a.risk_tags),
+                        data_conflict_detected=a.data_conflict_detected,
+                        phase1_pass=True,
+                    )
+                    entries.append(entry)
+
+                if entries:
+                    tracker_ab.record_batch(entries)
+                    tracker_ab.flush()
+                    _logger.info("Ablation: attempted to persist %d signal records", len(entries))
     finally:
         engine.dispose()
     _logger.info("daily_scan: done")
@@ -734,14 +749,15 @@ class _PipelineInvoker:
     """
 
     def __init__(self, base_invoker) -> None:
-        self._base = base_invoker
-
-    def __call__(self, prompt: str, max_output_tokens: int) -> tuple[str, int, int]:
         from alphascreener.tradingagents.prompts import estimate_tokens
 
-        input_tokens = estimate_tokens(prompt)
+        self._base = base_invoker
+        self._estimate_tokens = estimate_tokens
+
+    def __call__(self, prompt: str, max_output_tokens: int) -> tuple[str, int, int]:
+        input_tokens = self._estimate_tokens(prompt)
         response = self._base(prompt, max_output_tokens)
-        output_tokens = estimate_tokens(response)
+        output_tokens = self._estimate_tokens(response)
         return response, input_tokens, output_tokens
 
 

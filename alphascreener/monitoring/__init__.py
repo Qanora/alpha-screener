@@ -21,6 +21,7 @@ from alphascreener.monitoring.sampler import (
     _check_oom,
     _check_rss_sustained,
     _cleanup_old_samples,
+    write_stage_metric,
 )
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "_check_oom",
     "_check_rss_sustained",
     "_cleanup_old_samples",
+    "write_stage_metric",
     # CUSUM
     "CUSUMConfig",
     "CUSUMMonitor",
