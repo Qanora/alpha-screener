@@ -7,6 +7,8 @@ Covers:
   - Edge cases: empty DataFrame, null metadata, missing columns, fallback
 """
 
+from __future__ import annotations
+
 from datetime import date
 
 import polars as pl
@@ -113,9 +115,7 @@ class TestComputeBreakoutScore:
 
         result = compute_breakout_score(df)
         expected = (
-            MVP_WEIGHTS["MACD_CROSS"]
-            + MVP_WEIGHTS["GOLDEN_CROSS"]
-            + MVP_WEIGHTS["INSIDER_BUY"]
+            MVP_WEIGHTS["MACD_CROSS"] + MVP_WEIGHTS["GOLDEN_CROSS"] + MVP_WEIGHTS["INSIDER_BUY"]
         )
         assert result["breakout_score"][0] == pytest.approx(expected)
 
@@ -605,3 +605,65 @@ class TestPhase2EdgeCases:
         assert result.height == 5
         # Top ticker should be T0
         assert result["ticker"][0] == "T0"
+
+
+# ============================================================================
+# Signal direction tests (Issue #191)
+# ============================================================================
+
+
+class TestSignalDirection:
+    """Verify factor signal directions align with Phase 1 constraints."""
+
+    def test_atr_ratio_inverted_in_breakout_score(self):
+        """Higher ATR_RATIO -> lower breakout_score (vol contraction is bullish).
+
+        Phase 1 requires ATR_RATIO < 0.8 (low is good).  Phase 2 must align:
+        higher raw ATR_RATIO should contribute negatively to breakout_score.
+        """
+        from alphascreener.screening.phase2 import compute_breakout_score
+
+        # Two identical tickers except ATR_RATIO z-score
+        df = _scored_df(
+            [
+                _make_row("LOW_ATR", mom_z=1.0),  # ATR_RATIO z = 0 (default)
+                _make_row("HIGH_ATR", mom_z=1.0),  # ATR_RATIO z = +2.0
+            ]
+        )
+        # Set z_capped_ATR_RATIO: LOW=neutral, HIGH=high (expansion)
+        df = df.with_columns(
+            pl.when(pl.col("ticker") == "LOW_ATR")
+            .then(0.0)
+            .when(pl.col("ticker") == "HIGH_ATR")
+            .then(2.0)
+            .otherwise(pl.col("z_capped_ATR_RATIO"))
+            .alias("z_capped_ATR_RATIO")
+        )
+
+        result = compute_breakout_score(df).sort("ticker")
+        low_score = result.filter(pl.col("ticker") == "LOW_ATR")["breakout_score"][0]
+        high_score = result.filter(pl.col("ticker") == "HIGH_ATR")["breakout_score"][0]
+
+        # LOW_ATR (vol contraction, bullish) should score HIGHER than HIGH_ATR
+        assert low_score > high_score, (
+            f"Expected LOW_ATR (vol contraction) to score higher than HIGH_ATR, "
+            f"got LOW={low_score}, HIGH={high_score}"
+        )
+
+    def test_atr_ratio_direction_metadata(self):
+        """Signal direction metadata exists and marks ATR_RATIO as inverted."""
+        from alphascreener.screening.phase2 import _SIGNAL_DIRECTION
+
+        assert "ATR_RATIO" in _SIGNAL_DIRECTION, "ATR_RATIO must have an entry in _SIGNAL_DIRECTION"
+        assert _SIGNAL_DIRECTION["ATR_RATIO"] == -1, (
+            f"Expected ATR_RATIO direction = -1 (inverted), got {_SIGNAL_DIRECTION['ATR_RATIO']}"
+        )
+
+    def test_momentum_factors_positive_direction(self):
+        """Momentum factors (MOM_5D, PTH, MOM_SLOPE) have positive direction."""
+        from alphascreener.screening.phase2 import _SIGNAL_DIRECTION
+
+        for fname in ("MOM_5D", "PTH", "MOM_SLOPE"):
+            assert _SIGNAL_DIRECTION.get(fname, 1) == 1, (
+                f"Expected {fname} direction = +1, got {_SIGNAL_DIRECTION.get(fname)}"
+            )

@@ -39,6 +39,29 @@ MVP_WEIGHTS: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
+# Factor signal direction metadata (Issue #191)
+# ---------------------------------------------------------------------------
+# +1: higher raw factor value -> stronger alpha signal (positive contribution)
+# -1: higher raw factor value -> weaker alpha signal (invert in composite)
+#
+# Directions are aligned with Phase 1 filter constraints:
+#   - ATR_RATIO < threshold: low vol contraction is bullish -> invert (-1)
+#   - All momentum/money-flow/technical factors: higher is better (+1)
+
+_SIGNAL_DIRECTION: dict[str, int] = {
+    "MOM_5D": 1,
+    "PTH": 1,
+    "MOM_SLOPE": 1,
+    "BB_SQUEEZE": 1,
+    "ATR_RATIO": -1,  # Phase 1: ATR_RATIO < 0.8 -> low is good
+    "MFI_14": 1,
+    "CMF_21": 1,
+    "VOL_ANOMALY": 1,
+    "RSI_OVERSOLD": 1,
+    "REV_ACCEL": 1,
+}
+
+# ---------------------------------------------------------------------------
 # Factor classification for scoring
 # ---------------------------------------------------------------------------
 
@@ -98,9 +121,10 @@ def compute_breakout_score(df: pl.DataFrame) -> pl.DataFrame:
         z_col = f"z_capped_{fname}"
         if z_col in df.columns:
             w = MVP_WEIGHTS[fname]
+            direction = _SIGNAL_DIRECTION.get(fname, 1)
             # Missing z_capped is neutral (0)
             score = score + pl.when(pl.col(z_col).is_null()).then(0.0).otherwise(
-                pl.col(z_col) * w
+                pl.col(z_col) * w * direction
             )
 
     for fname in _BINARY_FACTORS:
@@ -232,9 +256,7 @@ def phase2_pipeline(
     cand = df.head(n_top)
 
     # 4. Apply industry dedup to top N
-    deduped = apply_industry_dedup(
-        cand, sector_cap=sector_cap, industry_cap=industry_cap
-    )
+    deduped = apply_industry_dedup(cand, sector_cap=sector_cap, industry_cap=industry_cap)
 
     # 5. Fallback: if dedup result < n_final, fill from remaining pool
     if deduped.height < n_final:
@@ -260,8 +282,11 @@ def phase2_pipeline(
 
         if remainder.height > 0:
             fill = apply_industry_dedup(
-                remainder, sector_cap=sector_cap, industry_cap=industry_cap,
-                sector_count=sc, industry_count=ic,
+                remainder,
+                sector_cap=sector_cap,
+                industry_cap=industry_cap,
+                sector_count=sc,
+                industry_count=ic,
             ).head(shortage)
 
             if fill.height > 0:
