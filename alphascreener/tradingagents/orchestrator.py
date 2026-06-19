@@ -282,6 +282,31 @@ _OPENAI_COMPATIBLE_PROVIDERS: frozenset[str] = frozenset(
      "minimax", "minimax-cn", "ollama", "openrouter"}
 )
 
+# Third-party backends that do NOT support the OpenAI Responses API
+# (Issue #218).  Used by _detect_llm_provider() and build_llm_invoker().
+_DOMAIN_MAP: dict[str, str] = {
+    "deepseek.com": "deepseek",
+    "openrouter.ai": "openrouter",
+    "x.ai": "xai",
+    "api.openai.com": "openai",
+    "dashscope.aliyuncs.com": "qwen",
+    "dashscope-intl.aliyuncs.com": "qwen",
+    "open.bigmodel.cn": "glm",
+    "bigmodel.cn": "glm-cn",
+    "api.minimax.chat": "minimax",
+    "api.minimaxi.com": "minimax-cn",
+    "ollama": "ollama",
+}
+
+_MODEL_MAP: dict[str, str] = {
+    "deepseek": "deepseek",
+    "qwen": "qwen",
+    "glm": "glm",
+    "minimax": "minimax",
+    "grok": "xai",
+    "openrouter": "openrouter",
+}
+
 
 # ---------------------------------------------------------------------------
 # Context builder
@@ -467,6 +492,46 @@ def run_analyst(
 # ---------------------------------------------------------------------------
 
 
+def _detect_llm_provider(
+    base_url: str = "",
+    model: str = "",
+) -> str:
+    """Auto-detect the LLM provider from the base URL or model name.
+
+    Used by :func:`build_llm_invoker` to determine whether the configured
+    backend is a third-party OpenAI-compatible service (DeepSeek,
+    OpenRouter, X.AI, etc.) that does **not** support the OpenAI Responses
+    API — only Chat Completions (Issue #218).
+
+    Priority:
+      1. Domain match in *base_url* (most reliable).
+      2. Keyword match in *model* name.
+
+    Args:
+        base_url: The configured OpenAI-compatible base URL (may be empty).
+        model: The configured model name.
+
+    Returns:
+        Provider identifier (e.g. ``"deepseek"``, ``"openrouter"``,
+        ``"openai"``).
+    """
+    base_url_l = base_url.lower()
+    model_l = model.lower()
+
+    # -- domain-based detection (most reliable) -------------------------
+    for domain, provider in _DOMAIN_MAP.items():
+        if domain in base_url_l:
+            return provider
+
+    # -- model-based detection ------------------------------------------
+    for keyword, provider in _MODEL_MAP.items():
+        if keyword in model_l:
+            return provider
+
+    # Default: OpenAI (the original adapter path)
+    return "openai"
+
+
 def build_llm_invoker(
     settings: Settings | None = None,
     provider: str = "openai",
@@ -485,8 +550,14 @@ def build_llm_invoker(
     Args:
         settings: Optional application settings.  When ``None``, a default
             ``Settings()`` instance is created.
-        provider: LLM provider name forwarded to
-            :func:`~alphascreener.tradingagents.llm_adapter.create_llm_client_safe`.
+        provider: Controls behaviour for third-party OpenAI-compatible
+            backends (Issue #218).  When ``"openai"`` (the default), the
+            provider is auto-detected from *settings* base URL / model name
+            and the Responses API is conditionally disabled.  Pass an explicit
+            value (e.g. ``"anthropic"``, ``"deepseek"``) to bypass
+            auto-detection and always disable the Responses API.  Note: the
+            LLM client is always created with the ``"openai"`` adapter path
+            regardless of this parameter.
         max_retries: Maximum retry attempts for transient failures (default 3).
         retry_base_delay: Base delay in seconds for exponential backoff (default 1.0).
         invocation_tracker: Optional tracker for recording per-call stats.
@@ -506,18 +577,47 @@ def build_llm_invoker(
             f"retry_base_delay must be >= 0, got {retry_base_delay}"
         )
 
+    # -- Provider auto-detection (Issue #218) ---------------------------
+    # Sniff the actual backend from the configured base URL and model
+    # name.  Third-party OpenAI-compatible backends (DeepSeek, OpenRouter,
+    # X.AI, etc.) only support Chat Completions — NOT the OpenAI
+    # Responses API — so we must disable ``use_responses_api`` on the
+    # LangChain client after creation.
+    _detected_provider = provider
+    if provider == "openai":
+        detected = _detect_llm_provider(
+            base_url=settings.openai_base_url,
+            model=settings.llm_model,
+        )
+        if detected != "openai":
+            _detected_provider = detected
+            _logger.info(
+                "Auto-detected LLM provider=%r from base_url/model",
+                detected,
+            )
+
     from alphascreener.tradingagents.llm_adapter import create_llm_client_safe
 
-    # Only forward base_url and api_key for OpenAI-compatible providers.
-    # Non-OpenAI providers (anthropic, google, azure) use their own auth
-    # mechanisms and should not receive OpenAI-specific configuration.
-    is_compat = provider.lower() in _OPENAI_COMPATIBLE_PROVIDERS
+    # Always register with TradingAgents as "openai" so the existing
+    # ``openai_api_key`` / ``openai_base_url`` config fields are consumed
+    # via the standard OpenAI client path.  Provider-specific env-var
+    # requirements (e.g. ``DEEPSEEK_API_KEY``) are avoided entirely.
     llm = create_llm_client_safe(
-        provider,
+        "openai",
         settings.llm_model,
-        base_url=settings.openai_base_url if is_compat and settings.openai_base_url else None,
-        api_key=settings.openai_api_key if is_compat and settings.openai_api_key else None,
+        base_url=settings.openai_base_url or None,
+        api_key=settings.openai_api_key or None,
     ).get_llm()
+
+    # For non-OpenAI backends, force Chat Completions API because the
+    # Responses API (enabled by TradingAgents for provider="openai") is
+    # not supported by third-party endpoints (Issue #218).
+    if _detected_provider != "openai":
+        llm.use_responses_api = False
+        _logger.info(
+            "Disabled Responses API for provider=%r — using Chat Completions",
+            _detected_provider,
+        )
 
     def invoker(prompt: str, max_out_tok: int) -> str:
         from langchain_core.messages import SystemMessage

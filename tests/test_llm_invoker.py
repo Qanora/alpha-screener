@@ -1,14 +1,16 @@
-"""Tests for LLM invoker retry logic and invocation monitoring (Issue #188)."""
+"""Tests for LLM invoker retry logic, provider detection, and
+invocation monitoring (Issues #188, #218)."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from alphascreener.tradingagents.orchestrator import (
     InvocationStats,
     LLMInvocationTracker,
+    _detect_llm_provider,
     _is_retryable_error,
 )
 
@@ -310,3 +312,99 @@ class TestLLMInvocationTracker:
         snap = t.snapshot()
         assert snap["bull"].total_retries == 4
         assert snap["bull"].retry_count == 2
+
+
+# ============================================================================
+# Provider detection tests (Issue #218)
+# ============================================================================
+
+
+class TestDetectLlmProvider:
+    """Provider auto-detection from base URL and model name."""
+
+    def test_deepseek_from_base_url(self):
+        """Detect 'deepseek' when base URL contains api.deepseek.com."""
+        assert _detect_llm_provider(
+            base_url="https://api.deepseek.com",
+            model="gpt-4o-mini",
+        ) == "deepseek"
+
+    def test_deepseek_from_model_name(self):
+        """Detect 'deepseek' when model contains 'deepseek'."""
+        assert _detect_llm_provider(
+            base_url="",
+            model="deepseek-chat",
+        ) == "deepseek"
+
+    def test_openai_from_base_url(self):
+        """Detect 'openai' when base URL contains api.openai.com."""
+        assert _detect_llm_provider(
+            base_url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+        ) == "openai"
+
+    def test_default_openai_for_unrecognized(self):
+        """Return 'openai' when nothing matches."""
+        assert _detect_llm_provider(
+            base_url="https://custom.llm.api",
+            model="unknown-model",
+        ) == "openai"
+
+    def test_deepseek_second_level_domain(self):
+        """DeepSeek subdomain like api.deepseek.com matches."""
+        assert _detect_llm_provider(
+            base_url="https://api.deepseek.com",
+            model="",
+        ) == "deepseek"
+
+    def test_openrouter_from_base_url(self):
+        """Detect 'openrouter' from base URL."""
+        assert _detect_llm_provider(
+            base_url="https://openrouter.ai/api/v1",
+            model="any-model",
+        ) == "openrouter"
+
+
+class TestBuildLlmInvokerProvider:
+    """build_llm_invoker uses detected provider to disable Responses API on
+    third-party OpenAI-compatible backends (Issue #218)."""
+
+    @patch(
+        "alphascreener.tradingagents.llm_adapter.create_llm_client_safe"
+    )
+    def test_always_registers_as_openai(self, mock_create):
+        """Even when the backend is DeepSeek, the TradingAgents adapter is
+        always called with provider='openai' (not 'deepseek') to avoid the
+        DEEPSEEK_API_KEY env-var requirement.  Responses API is disabled
+        post-hoc on the returned LLM object."""
+        # Arrange: mock get_llm() chain
+        mock_llm = MagicMock()
+        mock_llm.use_responses_api = True
+        mock_client = MagicMock()
+        mock_client.get_llm.return_value = mock_llm
+        mock_create.return_value = mock_client
+
+        from alphascreener.config import Settings
+        from alphascreener.tradingagents.orchestrator import (
+            build_llm_invoker,
+        )
+
+        settings = Settings(
+            openai_api_key="sk-test",
+            openai_base_url="https://api.deepseek.com",
+            llm_model="deepseek-chat",
+        )
+        build_llm_invoker(settings, max_retries=1)
+
+        # Provider passed to TradingAgents is always "openai"
+        mock_create.assert_called_once()
+        _, args, _kwargs = mock_create.mock_calls[0]
+        adapter_provider = args[0]
+        assert adapter_provider == "openai", (
+            f"Adapter should always get 'openai', got {adapter_provider!r}"
+        )
+
+        # After creation, use_responses_api is disabled for non-OpenAI
+        assert mock_llm.use_responses_api is False, (
+            "Responses API must be disabled for third-party backends"
+        )

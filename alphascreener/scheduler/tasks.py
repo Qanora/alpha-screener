@@ -512,6 +512,7 @@ def daily_scan() -> None:
             inv_tracker = LLMInvocationTracker()
             base_invoker = build_llm_invoker(
                 settings,
+                provider=settings.llm_provider,
                 max_retries=settings.llm_max_retries,
                 retry_base_delay=settings.llm_retry_base_delay,
                 invocation_tracker=inv_tracker,

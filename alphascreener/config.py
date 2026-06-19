@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = ""
     llm_model: str = "gpt-4o-mini"
+    llm_provider: str = "openai"
     llm_rps: int = 5
     llm_batch_size: int = 3
     llm_max_concurrent_stage1: int = 6
