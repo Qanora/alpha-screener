@@ -186,9 +186,10 @@ def compute_filter_rate(df: pl.DataFrame, *, thresholds: dict | None = None) -> 
 _RELAX_PASS_RATE_THRESHOLD: float = 0.05
 # Also trigger when fewer than this many tickers pass (for small/medium universes).
 _RELAX_MIN_PASSERS: int = 5
+# Maximum number of consecutive relaxation steps before giving up.
+_RELAX_MAX_STEPS: int = 3
 # Maximum cumulative threshold relaxation as a fraction of reference magnitude.
-# Matches ``threshold.MAX_RELAXATION_PCT``.  Kept here for test visibility;
-# single-step fallback does not accumulate across calls.
+# Matches ``threshold.MAX_RELAXATION_PCT``.  Enforced across all relaxation steps.
 _RELAX_MAX_CUMULATIVE: float = 0.30
 
 # Per-threshold relaxation delta magnitudes (one-step).  These match the
@@ -202,17 +203,35 @@ _RELAX_DELTA: dict[str, float] = {
     "RSI_HIGH": +7.5,  # raise RSI high bound
 }
 
+# Reference magnitudes for each threshold key (used for cumulative cap).
+# These match DynamicThreshold._reference_magnitude values.
+_RELAX_REFERENCE_MAGNITUDE: dict[str, float] = {
+    "MOM_5D": 0.05,
+    "MFI_14": 40.0,
+    "ATR_RATIO": 0.80,
+    "RSI_LOW": 25.0,
+    "RSI_HIGH": 75.0,
+}
 
-def _build_relaxed_thresholds(thresholds: dict) -> dict:
-    """Return a copy of *thresholds* with one relaxation step applied.
 
-    The per-key deltas are defined in ``_RELAX_DELTA``.  Each delta magnitude
-    matches ``DynamicThreshold._step_delta(key, direction=+1)``
-    (10 % of reference magnitude with the correct widen sign).
+def _build_relaxed_thresholds(
+    thresholds: dict,
+    *,
+    step: int = 1,
+    original: dict | None = None,
+) -> dict:
+    """Return a copy of *thresholds* with relaxation applied.
+
+    When *original* is provided, the cumulative relaxation from *original* to
+    the new thresholds is capped at ``_RELAX_MAX_CUMULATIVE`` of the reference
+    magnitude per key to prevent unbounded threshold drift.
 
     Args:
         thresholds: Current threshold dict (keys: MOM_5D, MFI_14, ATR_RATIO,
             RSI_LOW, RSI_HIGH).
+        step: Number of relaxation steps to apply (default 1).
+        original: Original (pre-relaxation) thresholds dict for cap enforcement.
+            When None, no cumulative cap is enforced.
 
     Returns:
         Relaxed thresholds dict.
@@ -220,10 +239,28 @@ def _build_relaxed_thresholds(thresholds: dict) -> dict:
     relaxed = dict(thresholds)
 
     for key, delta in _RELAX_DELTA.items():
-        new_val = thresholds[key] + delta
+        # Apply step-worth of deltas
+        new_val = thresholds[key] + delta * step
 
-        # Defensive bounds — unreachable from defaults in one step,
-        # but guard against extreme user-supplied thresholds.
+        # Enforce cumulative relaxation cap relative to original defaults
+        if original is not None and key in _RELAX_REFERENCE_MAGNITUDE:
+            ref = _RELAX_REFERENCE_MAGNITUDE[key]
+            max_abs_delta = ref * _RELAX_MAX_CUMULATIVE
+            # Determine widen direction sign
+            if key in ("MOM_5D", "MFI_14", "RSI_LOW"):
+                # These use > comparison → widen = lower threshold
+                cap_val = original[key] - max_abs_delta
+                new_val = max(cap_val, new_val)
+            elif key in ("ATR_RATIO",):
+                # Uses < comparison → widen = raise threshold
+                cap_val = original[key] + max_abs_delta
+                new_val = min(cap_val, new_val)
+            elif key == "RSI_HIGH":
+                # RSI upper bound: widen = raise
+                cap_val = original[key] + max_abs_delta
+                new_val = min(cap_val, new_val)
+
+        # Defensive absolute bounds (hard floor/ceiling)
         if key == "RSI_LOW":
             new_val = max(0.0, new_val)
         elif key == "RSI_HIGH":
@@ -243,12 +280,13 @@ def hard_filter_with_fallback(
     *,
     thresholds: dict | None = None,
 ) -> tuple[pl.DataFrame, bool]:
-    """Apply Phase 1 hard filtering with automatic threshold relaxation.
+    """Apply Phase 1 hard filtering with iterative threshold relaxation.
 
     When the pass rate falls below ``_RELAX_PASS_RATE_THRESHOLD`` (5 %) or
     fewer than ``_RELAX_MIN_PASSERS`` tickers pass, thresholds are
-    automatically relaxed in one step and Phase 1 is re-run to prevent the
-    pipeline from stalling on a single ticker.
+    progressively relaxed up to ``_RELAX_MAX_STEPS`` times (cumulative cap
+    ``_RELAX_MAX_CUMULATIVE``) to prevent the pipeline from stalling on a
+    single ticker.
 
     Args:
         df: Factor DataFrame (see :func:`hard_filter` for schema).
@@ -261,29 +299,41 @@ def hard_filter_with_fallback(
         applied.
     """
     th = _resolve_thresholds(thresholds)
+    original_th = dict(th)  # snapshot for cumulative cap
 
     result = hard_filter(df, thresholds=th)
     n_pass = result["pass_phase1"].sum()
     n_total = result.height
 
-    pass_rate = n_pass / n_total if n_total > 0 else 1.0
+    if n_total == 0:
+        return result, False
+
+    pass_rate = n_pass / n_total
     should_relax = pass_rate < _RELAX_PASS_RATE_THRESHOLD or (
         n_total >= _RELAX_MIN_PASSERS and n_pass < _RELAX_MIN_PASSERS
     )
 
-    if should_relax:
-        _logger.warning(
-            "Phase 1 pass_rate too low (%.1f%%, %d/%d). "
-            "Relaxing thresholds and retrying to prevent pipeline stall.",
-            pass_rate * 100,
-            n_pass,
-            n_total,
-        )
+    if not should_relax:
+        return result, False
 
-        relaxed_th = _build_relaxed_thresholds(th)
+    _logger.warning(
+        "Phase 1 pass_rate too low (%.1f%%, %d/%d). "
+        "Starting iterative threshold relaxation to prevent pipeline stall.",
+        pass_rate * 100,
+        n_pass,
+        n_total,
+    )
+
+    # Iterative relaxation: try up to _RELAX_MAX_STEPS
+    n_pass_relaxed = n_pass  # track best result across steps
+    for step in range(1, _RELAX_MAX_STEPS + 1):
+        relaxed_th = _build_relaxed_thresholds(original_th, step=step, original=original_th)
+
         _logger.info(
-            "Relaxed thresholds: MOM_5D > %.4f, MFI_14 > %.1f, "
+            "Phase 1 relaxation step %d/%d: MOM_5D > %.4f, MFI_14 > %.1f, "
             "ATR_RATIO < %.2f, RSI in [%.1f, %.1f]",
+            step,
+            _RELAX_MAX_STEPS,
             relaxed_th["MOM_5D"],
             relaxed_th["MFI_14"],
             relaxed_th["ATR_RATIO"],
@@ -291,13 +341,43 @@ def hard_filter_with_fallback(
             relaxed_th["RSI_HIGH"],
         )
 
-        result = hard_filter(df, thresholds=relaxed_th)
-        n_pass_relaxed = result["pass_phase1"].sum()
+        step_result = hard_filter(df, thresholds=relaxed_th)
+        step_n_pass = step_result["pass_phase1"].sum()
+        step_pass_rate = step_n_pass / n_total
+
         _logger.info(
-            "Phase 1 (relaxed): %d/%d tickers passed (was %d)",
-            n_pass_relaxed,
+            "Phase 1 relaxation step %d result: %d/%d tickers passed (%.1f%%)",
+            step,
+            step_n_pass,
             n_total,
-            n_pass,
+            step_pass_rate * 100,
         )
 
-    return result, should_relax
+        # Keep the best result
+        if step_n_pass > n_pass_relaxed:
+            n_pass_relaxed = step_n_pass
+            result = step_result
+
+        # Stop if enough tickers pass
+        if step_pass_rate >= _RELAX_PASS_RATE_THRESHOLD and step_n_pass >= _RELAX_MIN_PASSERS:
+            _logger.info(
+                "Phase 1 relaxation succeeded at step %d: %d/%d tickers passed (%.1f%%)",
+                step,
+                step_n_pass,
+                n_total,
+                step_pass_rate * 100,
+            )
+            break
+    else:
+        # All steps exhausted — log the best result we got
+        _logger.warning(
+            "Phase 1 iterative relaxation exhausted (%d steps): "
+            "best result %d/%d tickers passed (%.1f%%). "
+            "Cumulative cap reached or data quality too poor.",
+            _RELAX_MAX_STEPS,
+            n_pass_relaxed,
+            n_total,
+            n_pass_relaxed / n_total * 100,
+        )
+
+    return result, True
