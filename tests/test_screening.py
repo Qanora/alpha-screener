@@ -28,7 +28,7 @@ def _factor_df(rows: List[Dict]) -> pl.DataFrame:
             r["dt"] = r["dt"].isoformat()
     df = pl.DataFrame(rows)
     if "dt" in df.columns:
-        df = df.with_column(pl.col("dt").str.strptime(pl.Date, "%Y-%m-%d"))
+        df = df.with_columns([pl.col("dt").str.strptime(pl.Date, "%Y-%m-%d")])
     return df
 
 
