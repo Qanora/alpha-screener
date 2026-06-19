@@ -1,11 +1,11 @@
 """Tier 1 & Tier 2 graduation condition checks for paper trading system.
 
 Issue #102: Paper Trading tracker.
-Reference: PRD 7.6.2.1.
+Reference: PRD 7.6.2.1 (simplified for CLI-only mode).
 
 Provides:
   - EngineeringGraduationResult: dataclass for Tier 1 engineering checks.
-  - check_engineering_graduation: evaluates 5 Tier 1 conditions.
+  - check_engineering_graduation: evaluates 3 Tier 1 conditions.
   - StrategyGraduationResult: dataclass for Tier 2 strategy checks (reserved).
   - check_strategy_graduation: reserved interface, returns NOT_IMPLEMENTED.
 """
@@ -22,14 +22,12 @@ from alphascreener.logging import get_logger
 _logger = get_logger("screening")
 
 # ============================================================================
-# Tier 1 thresholds (PRD 7.6.2.1)
+# Tier 1 thresholds (PRD 7.6.2.1, CLI-adapted)
 # ============================================================================
 
 _MIN_DAYS_IN_OPERATION: int = 60
 _MAX_L3_L4_EVENTS_30D: int = 0
 _NAN_RATE_MAX: float = 0.05  # strict < 5%
-_SCHEDULER_SUCCESS_MIN: float = 0.95  # >= 95%
-_ALT_SOURCE_ALERTS_MAX: int = 5  # <= 5 per month
 
 
 # ============================================================================
@@ -42,12 +40,10 @@ class EngineeringGraduationResult:
     """Result of Tier 1 engineering graduation condition check.
 
     Attributes:
-        passed: True if all 5 conditions are met.
+        passed: True if all conditions are met.
         days_in_operation: Number of days the system has been running.
-        l3_l4_event_count: Count of L3/L4 circuit breaker events in last 30 days.
+        l3_l4_event_count: Count of circuit breaker events in last 30 days.
         nan_rate: Fraction of NaN values in metrics (0.0-1.0).
-        scheduler_success_rate: Fraction of scheduler runs that succeeded.
-        alt_source_alerts_monthly: Count of alt source diff alerts in last month.
         failed_checks: List of check names that did NOT pass.
     """
 
@@ -55,8 +51,6 @@ class EngineeringGraduationResult:
     days_in_operation: int
     l3_l4_event_count: int
     nan_rate: float
-    scheduler_success_rate: float
-    alt_source_alerts_monthly: int
     failed_checks: list[str] = field(default_factory=list)
 
     @property
@@ -66,14 +60,12 @@ class EngineeringGraduationResult:
             return (
                 f"Tier 1 Engineering Graduation: PASS "
                 f"(days={self.days_in_operation}, l3l4={self.l3_l4_event_count}, "
-                f"nan={self.nan_rate:.1%}, sched={self.scheduler_success_rate:.1%}, "
-                f"alt_alerts={self.alt_source_alerts_monthly})"
+                f"nan={self.nan_rate:.1%})"
             )
         return (
             f"Tier 1 Engineering Graduation: FAIL "
             f"(days={self.days_in_operation}, l3l4={self.l3_l4_event_count}, "
-            f"nan={self.nan_rate:.1%}, sched={self.scheduler_success_rate:.1%}, "
-            f"alt_alerts={self.alt_source_alerts_monthly}) "
+            f"nan={self.nan_rate:.1%}) "
             f"failed={self.failed_checks}"
         )
 
@@ -90,31 +82,21 @@ def check_engineering_graduation(
     days_in_operation: int,
     l3_l4_events_last_30d: int,
     nan_rate: float,
-    scheduler_success_rate: float,
-    alt_source_alerts_monthly: int,
 ) -> EngineeringGraduationResult:
-    """Evaluate all 5 Tier 1 engineering graduation conditions.
+    """Evaluate engineering graduation conditions (CLI-adapted).
 
-    Tier 1 conditions (PRD 7.6.2.1):
+    Conditions (PRD 7.6.2.1, simplified for CLI-only mode):
 
     1. **>= 60 days** of continuous operation.
-    2. **No L3/L4 circuit breaker** events in the last 30 days.
+    2. **No circuit breaker** events in the last 30 days.
     3. **NaN rate < 5%** across all metrics.
-    4. **Scheduler success rate >= 95%** (successful runs / total runs).
-    5. **Alt source diff alerts <= 5 per month**.
-
-    All 5 conditions must pass for graduation.
 
     Args:
         session_factory: Zero-arg callable returning a SQLAlchemy Session.
-            Reserved for future use (e.g. querying historical data).
         db_engine: SQLAlchemy Engine. Reserved for future use.
         days_in_operation: Number of days since first production run.
-        l3_l4_events_last_30d: Count of L3/L4 circuit breaker trips in last 30d.
+        l3_l4_events_last_30d: Count of circuit breaker trips in last 30d.
         nan_rate: Fraction of NaN values in core metrics (0.0-1.0).
-        scheduler_success_rate: Fraction of scheduler runs that succeeded.
-        alt_source_alerts_monthly: Count of alternative data source diff alerts
-            in the current calendar month.
 
     Returns:
         :class:`EngineeringGraduationResult` with pass/fail status and details.
@@ -130,12 +112,6 @@ def check_engineering_graduation(
     if nan_rate >= _NAN_RATE_MAX:
         failed.append("nan_rate")
 
-    if scheduler_success_rate < _SCHEDULER_SUCCESS_MIN:
-        failed.append("scheduler_success_rate")
-
-    if alt_source_alerts_monthly > _ALT_SOURCE_ALERTS_MAX:
-        failed.append("alt_source_alerts")
-
     passed = len(failed) == 0
 
     result = EngineeringGraduationResult(
@@ -143,8 +119,6 @@ def check_engineering_graduation(
         days_in_operation=days_in_operation,
         l3_l4_event_count=l3_l4_events_last_30d,
         nan_rate=nan_rate,
-        scheduler_success_rate=scheduler_success_rate,
-        alt_source_alerts_monthly=alt_source_alerts_monthly,
         failed_checks=failed,
     )
 

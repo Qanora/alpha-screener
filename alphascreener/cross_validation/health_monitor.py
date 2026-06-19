@@ -64,23 +64,14 @@ class DailyHealthRecord:
 
 
 # ---------------------------------------------------------------------------
-# Alert interface (reserved for Lark integration)
+# Alert (log-only in CLI mode)
 # ---------------------------------------------------------------------------
 
 
 def _send_lark_alert(message: str, severity: str = "critical") -> None:
-    """Send an alert via Lark (Feishu).
-
-    This is a reserved interface for Lark/Feishu integration. Currently logs
-    the alert; actual Lark API integration will be wired in a future issue.
-
-    Args:
-        message: Alert message text.
-        severity: Alert severity level (warning/critical).
-    """
+    """Log an alert message (CLI-only mode — no external push)."""
     logger = get_logger("screening")
-    logger.warning("Lark alert (%s): %s", severity, message)
-    # Future: call feishu webhook API here
+    logger.warning("Health alert (%s): %s", severity, message)
 
 
 # ---------------------------------------------------------------------------
