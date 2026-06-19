@@ -121,9 +121,16 @@ def _is_retryable_error(exc: BaseException) -> bool:
     # ── LangGraph / LangChain retryable wrappers ───────────────────────
     exc_name = type(exc).__name__
     exc_msg = str(exc).lower()
-    for keyword in ("rate limit", "too many requests", "server error",
-                     "service unavailable", "internal server error",
-                     "connection", "timeout", "timed out"):
+    for keyword in (
+        "rate limit",
+        "too many requests",
+        "server error",
+        "service unavailable",
+        "internal server error",
+        "connection",
+        "timeout",
+        "timed out",
+    ):
         if keyword in exc_msg or keyword in exc_name.lower():
             return True
 
@@ -196,8 +203,9 @@ class LLMInvocationTracker:
                 stats.retry_count += 1
                 stats.total_retries += retries
 
-    def record_failure(self, call_type: str, error: str,
-                       error_type: str = "", *, retries: int = 0) -> None:
+    def record_failure(
+        self, call_type: str, error: str, error_type: str = "", *, retries: int = 0
+    ) -> None:
         """Record a failed LLM invocation (after all retries exhausted)."""
         stats = self._get_or_create(call_type)
         with self._lock:
@@ -228,14 +236,11 @@ class LLMInvocationTracker:
         per_type: list[str] = []
         for s in sorted(stats_list, key=lambda x: x.call_type):
             pct = int(s.success_rate * 100)
-            per_type.append(
-                f"{s.call_type}={s.success_count}/{s.call_count}({pct}pct)"
-            )
+            per_type.append(f"{s.call_type}={s.success_count}/{s.call_count}({pct}pct)")
 
         overall_pct = int(overall_rate * 100)
         _log.info(
-            "LLM invocation stats (%.0fs): "
-            "overall=%d/%d (%dpct) retries=%d | %s",
+            "LLM invocation stats (%.0fs): overall=%d/%d (%dpct) retries=%d | %s",
             elapsed,
             total_success,
             total_calls,
@@ -278,8 +283,19 @@ Invoker = Callable[[str, int], str]
 # non-OpenAI providers (anthropic, google, azure) have their own auth
 # mechanisms and should not receive OpenAI-specific configuration.
 _OPENAI_COMPATIBLE_PROVIDERS: frozenset[str] = frozenset(
-    {"openai", "xai", "deepseek", "qwen", "qwen-cn", "glm", "glm-cn",
-     "minimax", "minimax-cn", "ollama", "openrouter"}
+    {
+        "openai",
+        "xai",
+        "deepseek",
+        "qwen",
+        "qwen-cn",
+        "glm",
+        "glm-cn",
+        "minimax",
+        "minimax-cn",
+        "ollama",
+        "openrouter",
+    }
 )
 
 # Third-party backends that do NOT support the OpenAI Responses API
@@ -356,10 +372,9 @@ def check_token_budget(prompt: str) -> tuple[bool, int]:
     return tokens <= MAX_INPUT_TOKENS, tokens
 
 
-
-
 def clamp_context_for_budget(
-    context: AnalystContext, max_extra_tokens: int = 500,
+    context: AnalystContext,
+    max_extra_tokens: int = 500,
 ) -> AnalystContext:
     """Truncate long text fields in a *copy* of *context* to stay under token budget.
 
@@ -428,9 +443,7 @@ def run_analyst(
     try:
         response = invoker(prompt, MAX_OUTPUT_TOKENS)
     except TimeoutError as exc:
-        _logger.error(
-            "%s analyst timed out for %s: %s", analyst_type, ctx.ticker, exc
-        )
+        _logger.error("%s analyst timed out for %s: %s", analyst_type, ctx.ticker, exc)
         return {
             "analyst_type": analyst_type,
             "prompt": prompt,
@@ -573,9 +586,7 @@ def build_llm_invoker(
     if max_retries < 0:
         raise ValueError(f"max_retries must be >= 0, got {max_retries}")
     if retry_base_delay < 0:
-        raise ValueError(
-            f"retry_base_delay must be >= 0, got {retry_base_delay}"
-        )
+        raise ValueError(f"retry_base_delay must be >= 0, got {retry_base_delay}")
 
     # -- Provider auto-detection (Issue #218) ---------------------------
     # Sniff the actual backend from the configured base URL and model
@@ -635,11 +646,13 @@ def build_llm_invoker(
                 # Success — record and return
                 if invocation_tracker is not None:
                     invocation_tracker.record_success(
-                        "invoke", retries=retries_used,
+                        "invoke",
+                        retries=retries_used,
                     )
                 if retries_used > 0:
                     _logger.info(
-                        "LLM invocation succeeded after %d retries", retries_used,
+                        "LLM invocation succeeded after %d retries",
+                        retries_used,
                     )
                 return result
             except Exception as exc:
@@ -649,20 +662,22 @@ def build_llm_invoker(
                     # Non-retryable — fail immediately
                     _logger.error(
                         "LLM invocation failed with non-retryable error: %s: %s",
-                        type(exc).__name__, exc,
+                        type(exc).__name__,
+                        exc,
                     )
                     if invocation_tracker is not None:
                         invocation_tracker.record_failure(
-                            "invoke", str(exc), type(exc).__name__,
+                            "invoke",
+                            str(exc),
+                            type(exc).__name__,
                             retries=retries_used,
                         )
                     raise
 
                 if attempt_num < max_retries:
-                    delay = retry_base_delay * (2 ** attempt_num)
+                    delay = retry_base_delay * (2**attempt_num)
                     _logger.warning(
-                        "LLM invocation attempt %d/%d failed: %s: %s — "
-                        "retrying in %.1fs",
+                        "LLM invocation attempt %d/%d failed: %s: %s — retrying in %.1fs",
                         attempt_num + 1,
                         max_retries + 1,
                         type(exc).__name__,
@@ -681,7 +696,9 @@ def build_llm_invoker(
                     )
                     if invocation_tracker is not None:
                         invocation_tracker.record_failure(
-                            "invoke", str(exc), type(exc).__name__,
+                            "invoke",
+                            str(exc),
+                            type(exc).__name__,
                             retries=retries_used,
                         )
                     raise
@@ -752,12 +769,9 @@ class AnalystOrchestrator:
                 if similar:
                     # Append similar cases hint to factor_scores_summary
                     cases_hint = "相似案例: " + ", ".join(
-                        f"{c['ticker']}({c['date']}, sim={c['similarity']})"
-                        for c in similar[:5]
+                        f"{c['ticker']}({c['date']}, sim={c['similarity']})" for c in similar[:5]
                     )
-                    ctx.factor_scores_summary = (
-                        f"{ctx.factor_scores_summary}\n{cases_hint}".strip()
-                    )
+                    ctx.factor_scores_summary = f"{ctx.factor_scores_summary}\n{cases_hint}".strip()
 
             result = run_analyst(analyst_type, ctx, self._invoker)
             results[analyst_type] = result
@@ -767,18 +781,20 @@ class AnalystOrchestrator:
 
         # Token budget summary
         overs = [
-            a for a, r in results.items()
-            if isinstance(r, dict) and not r.get("budget_ok", True)
+            a for a, r in results.items() if isinstance(r, dict) and not r.get("budget_ok", True)
         ]
         if overs:
             _logger.warning(
-                "Token budget exceeded for analysts: %s", overs,
+                "Token budget exceeded for analysts: %s",
+                overs,
             )
 
         return results
 
     def run_selected(
-        self, context: AnalystContext, analysts: list[str],
+        self,
+        context: AnalystContext,
+        analysts: list[str],
     ) -> dict[str, Any]:
         """Run a subset of analysts.
 
@@ -799,12 +815,9 @@ class AnalystOrchestrator:
                 results["similar_cases"] = similar
                 if similar:
                     cases_hint = "相似案例: " + ", ".join(
-                        f"{c['ticker']}({c['date']}, sim={c['similarity']})"
-                        for c in similar[:5]
+                        f"{c['ticker']}({c['date']}, sim={c['similarity']})" for c in similar[:5]
                     )
-                    ctx.factor_scores_summary = (
-                        f"{ctx.factor_scores_summary}\n{cases_hint}".strip()
-                    )
+                    ctx.factor_scores_summary = f"{ctx.factor_scores_summary}\n{cases_hint}".strip()
             result = run_analyst(at, ctx, self._invoker)
             results[at] = result
             results["input_tokens_total"] += result.get("input_tokens", 0)

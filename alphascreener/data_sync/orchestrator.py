@@ -295,14 +295,8 @@ class SyncOrchestrator:
             return 0, 0
 
         # Select top-N tickers by number of rows (most active first)
-        ticker_counts = (
-            yf_df.group_by("ticker")
-            .agg(pl.len().alias("n"))
-            .sort("n", descending=True)
-        )
-        top_tickers: list[str] = (
-            ticker_counts.head(self.stooq_validate_n)["ticker"].to_list()
-        )
+        ticker_counts = yf_df.group_by("ticker").agg(pl.len().alias("n")).sort("n", descending=True)
+        top_tickers: list[str] = ticker_counts.head(self.stooq_validate_n)["ticker"].to_list()
 
         # Map standard tickers to Stooq format
         stooq_tickers = [t.lower() for t in top_tickers]
@@ -324,7 +318,10 @@ class SyncOrchestrator:
             return t.rsplit(".", 1)[0] if "." in t else t
 
         stooq_df = stooq_df.with_columns(
-            pl.col("ticker").map_elements(_strip_suffix, return_dtype=pl.Utf8).str.to_uppercase().alias("ticker")
+            pl.col("ticker")
+            .map_elements(_strip_suffix, return_dtype=pl.Utf8)
+            .str.to_uppercase()
+            .alias("ticker")
         )
 
         # Compare field-by-field for each (ticker, dt) pair
@@ -347,7 +344,10 @@ class SyncOrchestrator:
 
             diffs = joined.filter(
                 (pl.col(yf_col).abs() > 0)
-                & ((pl.col(yf_col) - pl.col(sq_col)).abs() / pl.col(yf_col).abs() > DIFF_THRESHOLD_PCT)
+                & (
+                    (pl.col(yf_col) - pl.col(sq_col)).abs() / pl.col(yf_col).abs()
+                    > DIFF_THRESHOLD_PCT
+                )
             )
 
             for row in diffs.iter_rows(named=True):
@@ -511,9 +511,9 @@ class SyncOrchestrator:
         if all(r > CONTINUITY_FAILURE_RATE_THRESHOLD for r in recent):
             msg = (
                 f"CONTINUITY ALERT: yfinance failure rate exceeded "
-                f"{CONTINUITY_FAILURE_RATE_THRESHOLD*100:.0f}% for "
+                f"{CONTINUITY_FAILURE_RATE_THRESHOLD * 100:.0f}% for "
                 f"{CONTINUITY_WINDOW_DAYS} consecutive days: "
-                f"{[f'{r*100:.1f}%' for r in recent]}"
+                f"{[f'{r * 100:.1f}%' for r in recent]}"
             )
             self._logger.warning(msg)
             report.errors.append(msg)

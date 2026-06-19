@@ -363,8 +363,7 @@ def get_analyst_prompt(analyst_type: str) -> AnalystPromptTemplate:
     template = ANALYST_PROMPTS.get(analyst_type)
     if template is None:
         raise ValueError(
-            f"Unknown analyst type: {analyst_type!r}. "
-            f"Valid: {sorted(ANALYST_PROMPTS)}"
+            f"Unknown analyst type: {analyst_type!r}. Valid: {sorted(ANALYST_PROMPTS)}"
         )
     return template
 

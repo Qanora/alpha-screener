@@ -230,8 +230,7 @@ class TestParseStooqCsv:
     def test_csv_with_crlf_line_endings(self):
         """Stooq can return CRLF or LF line endings."""
         csv_text = (
-            "Date,Open,High,Low,Close,Volume\r\n"
-            "2025-01-02,150.0,152.0,149.0,151.5,100000\r\n"
+            "Date,Open,High,Low,Close,Volume\r\n2025-01-02,150.0,152.0,149.0,151.5,100000\r\n"
         )
         result = _parse_stooq_csv(csv_text, "AAPL")
         assert result.height == 1
@@ -460,9 +459,7 @@ class TestDownloadOhlcvAsync:
 
         monkeypatch.setattr(StooqAdapter, "_fetch_csv", mock_fetch)
 
-        result = await adapter_fast.download_ohlcv(
-            ["AAPL", "GOOGL"], "2025-01-01", "2025-01-05"
-        )
+        result = await adapter_fast.download_ohlcv(["AAPL", "GOOGL"], "2025-01-01", "2025-01-05")
         assert result.height == 2
         tickers = set(result["ticker"].to_list())
         assert tickers == {"AAPL", "GOOGL"}
@@ -518,8 +515,7 @@ class TestDownloadOhlcvAsync:
         async def capture_url(_self, url):
             captured_urls.append(url)
             return (
-                "Date,Open,High,Low,Close,Volume\r\n"
-                "2025-01-02,150.0,152.0,149.0,151.5,100000\r\n"
+                "Date,Open,High,Low,Close,Volume\r\n2025-01-02,150.0,152.0,149.0,151.5,100000\r\n"
             )
 
         monkeypatch.setattr(StooqAdapter, "_fetch_csv", capture_url)

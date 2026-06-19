@@ -152,9 +152,7 @@ class BreakoutCaseRetriever:
             _logger.warning("cases.parquet has no factor columns — skipping index build")
             return
 
-        vectors = np.ascontiguousarray(
-            df.select(factor_cols).to_numpy().astype(np.float32)
-        )
+        vectors = np.ascontiguousarray(df.select(factor_cols).to_numpy().astype(np.float32))
         n_vectors, dim = vectors.shape
         _logger.debug("Building faiss index: %d vectors, %d dims", n_vectors, dim)
 

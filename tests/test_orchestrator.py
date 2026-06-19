@@ -118,17 +118,29 @@ def mock_fmp() -> MagicMock:
     fmp.is_budget_exhausted = False
     fmp.fetch_analyst_estimates = AsyncMock(
         return_value=pl.DataFrame(
-            {"ticker": ["AAPL"], "date": ["2025-01-15"], "estimated_revenue_avg": [100e9],
-             "estimated_eps_avg": [2.0], "estimated_eps_high": [2.2], "estimated_eps_low": [1.8],
-             "estimated_ebitda_avg": [30e9]}
+            {
+                "ticker": ["AAPL"],
+                "date": ["2025-01-15"],
+                "estimated_revenue_avg": [100e9],
+                "estimated_eps_avg": [2.0],
+                "estimated_eps_high": [2.2],
+                "estimated_eps_low": [1.8],
+                "estimated_ebitda_avg": [30e9],
+            }
         )
     )
     fmp.fetch_insider_trading = AsyncMock(
         return_value=pl.DataFrame(
-            {"ticker": ["AAPL"], "transaction_date": ["2025-01-10"],
-             "reporting_name": ["Test"], "relationship": ["CEO"],
-             "transaction_type": ["Buy"], "securities_transacted": [1000.0],
-             "price": [150.0], "security_name": ["Common Stock"]}
+            {
+                "ticker": ["AAPL"],
+                "transaction_date": ["2025-01-10"],
+                "reporting_name": ["Test"],
+                "relationship": ["CEO"],
+                "transaction_type": ["Buy"],
+                "securities_transacted": [1000.0],
+                "price": [150.0],
+                "security_name": ["Common Stock"],
+            }
         )
     )
     return fmp
@@ -167,9 +179,7 @@ class TestSyncOrchestratorInit:
         assert orch.max_nan_fraction == MAX_NAN_FRACTION
 
     def test_with_all_sources(self, mock_yfinance, mock_stooq, mock_fmp):
-        orch = SyncOrchestrator(
-            yfinance=mock_yfinance, stooq=mock_stooq, fmp=mock_fmp
-        )
+        orch = SyncOrchestrator(yfinance=mock_yfinance, stooq=mock_stooq, fmp=mock_fmp)
         assert orch.stooq is mock_stooq
         assert orch.fmp is mock_fmp
 
@@ -198,8 +208,9 @@ class TestSync:
         self, mock_yfinance, sample_tickers, tmp_path, monkeypatch
     ):
         """Sync with only yfinance — should download OHLCV and write Parquet."""
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
+        )
 
         orch = SyncOrchestrator(yfinance=mock_yfinance)
         report = await orch.sync(sample_tickers)
@@ -219,8 +230,9 @@ class TestSync:
         self, mock_yfinance, sample_tickers, tmp_path, monkeypatch
     ):
         """OHLCV data is written to dt=YYYY-MM-DD partitions."""
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
+        )
 
         orch = SyncOrchestrator(yfinance=mock_yfinance)
         report = await orch.sync(sample_tickers)
@@ -266,8 +278,9 @@ class TestSync:
         self, sample_tickers, tmp_path, monkeypatch
     ):
         """When yfinance download raises, the sync continues and reports the error."""
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
+        )
 
         yf = MagicMock(spec=YFinanceAdapter)
         yf.download_ohlcv = AsyncMock(side_effect=RuntimeError("yfinance down"))
@@ -296,12 +309,11 @@ class TestSyncWithStooq:
     async def test_sync_runs_stooq_validation(
         self, mock_yfinance, mock_stooq, sample_tickers, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
-
-        orch = SyncOrchestrator(
-            yfinance=mock_yfinance, stooq=mock_stooq
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
         )
+
+        orch = SyncOrchestrator(yfinance=mock_yfinance, stooq=mock_stooq)
         report = await orch.sync(sample_tickers)
 
         assert report.stooq_validated > 0
@@ -310,15 +322,13 @@ class TestSyncWithStooq:
 
     @pytest.mark.asyncio
     async def test_sync_detects_stooq_diffs(
-        self, mock_yfinance, mock_stooq_divergent,
-        sample_tickers, tmp_path, monkeypatch
+        self, mock_yfinance, mock_stooq_divergent, sample_tickers, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
-
-        orch = SyncOrchestrator(
-            yfinance=mock_yfinance, stooq=mock_stooq_divergent
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
         )
+
+        orch = SyncOrchestrator(yfinance=mock_yfinance, stooq=mock_stooq_divergent)
         report = await orch.sync(sample_tickers)
 
         assert report.stooq_validated > 0
@@ -327,15 +337,13 @@ class TestSyncWithStooq:
 
     @pytest.mark.asyncio
     async def test_sync_stooq_empty_handled(
-        self, mock_yfinance, mock_stooq_empty,
-        sample_tickers, tmp_path, monkeypatch
+        self, mock_yfinance, mock_stooq_empty, sample_tickers, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
-
-        orch = SyncOrchestrator(
-            yfinance=mock_yfinance, stooq=mock_stooq_empty
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
         )
+
+        orch = SyncOrchestrator(yfinance=mock_yfinance, stooq=mock_stooq_empty)
         report = await orch.sync(sample_tickers)
 
         assert report.stooq_validated == 0
@@ -349,12 +357,11 @@ class TestSyncWithFmp:
     async def test_sync_runs_fmp_enrichment(
         self, mock_yfinance, mock_fmp, sample_tickers, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
-
-        orch = SyncOrchestrator(
-            yfinance=mock_yfinance, fmp=mock_fmp
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
         )
+
+        orch = SyncOrchestrator(yfinance=mock_yfinance, fmp=mock_fmp)
         report = await orch.sync(sample_tickers)
 
         assert report.fmp_enriched > 0
@@ -365,17 +372,14 @@ class TestSyncWithFmp:
     async def test_sync_fmp_budget_exhausted(
         self, mock_yfinance, sample_tickers, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
+        )
 
         fmp = MagicMock()
         fmp.is_budget_exhausted = False
-        fmp.fetch_analyst_estimates = AsyncMock(
-            side_effect=FmpBudgetExhaustedError("budget gone")
-        )
-        fmp.fetch_insider_trading = AsyncMock(
-            side_effect=FmpBudgetExhaustedError("budget gone")
-        )
+        fmp.fetch_analyst_estimates = AsyncMock(side_effect=FmpBudgetExhaustedError("budget gone"))
+        fmp.fetch_insider_trading = AsyncMock(side_effect=FmpBudgetExhaustedError("budget gone"))
 
         orch = SyncOrchestrator(yfinance=mock_yfinance, fmp=fmp)
         report = await orch.sync(sample_tickers)
@@ -425,15 +429,17 @@ class TestIntegrityCheck:
         """Inject enough NaNs to exceed the threshold."""
         # Create data where 20% of values are NaN (threshold is 5%)
         n = 100
-        data = pl.DataFrame({
-            "ticker": [f"T{i}" for i in range(n)],
-            "dt": [date.today()] * n,
-            "open": [float(i) for i in range(n)],
-            "high": [float(i) for i in range(n)],
-            "low": [float(i) for i in range(n)],
-            "close": [float("nan") if i < 20 else float(i) for i in range(n)],
-            "volume": [i * 1000 for i in range(n)],
-        })
+        data = pl.DataFrame(
+            {
+                "ticker": [f"T{i}" for i in range(n)],
+                "dt": [date.today()] * n,
+                "open": [float(i) for i in range(n)],
+                "high": [float(i) for i in range(n)],
+                "low": [float(i) for i in range(n)],
+                "close": [float("nan") if i < 20 else float(i) for i in range(n)],
+                "volume": [i * 1000 for i in range(n)],
+            }
+        )
 
         orch = SyncOrchestrator(yfinance=MagicMock())
         report = orch._check_integrity(data, total_tickers=100)
@@ -503,8 +509,9 @@ class TestContinuityTracker:
         self, mock_yfinance, sample_tickers, tmp_path, monkeypatch
     ):
         """The full sync pipeline feeds failure rate into continuity tracker."""
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
+        )
 
         orch = SyncOrchestrator(yfinance=mock_yfinance)
         assert len(orch._daily_failure_rates) == 0
@@ -522,11 +529,10 @@ class TestEdgeCases:
     """Edge case and error handling."""
 
     @pytest.mark.asyncio
-    async def test_sync_empty_ticker_list(
-        self, mock_yfinance, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
+    async def test_sync_empty_ticker_list(self, mock_yfinance, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
+        )
 
         orch = SyncOrchestrator(yfinance=mock_yfinance)
         report = await orch.sync([])
@@ -541,8 +547,9 @@ class TestEdgeCases:
         self, mock_yfinance_empty, sample_tickers, tmp_path, monkeypatch
     ):
         """When yfinance returns no data, sync still completes cleanly."""
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
+        )
 
         orch = SyncOrchestrator(yfinance=mock_yfinance_empty)
         report = await orch.sync(sample_tickers)
@@ -553,12 +560,12 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_sync_full_pipeline(
-        self, mock_yfinance, mock_stooq, mock_fmp,
-        sample_tickers, tmp_path, monkeypatch
+        self, mock_yfinance, mock_stooq, mock_fmp, sample_tickers, tmp_path, monkeypatch
     ):
         """End-to-end: yfinance + Stooq + FMP + Parquet write."""
-        monkeypatch.setattr("alphascreener.data.paths.get_data_home",
-                           lambda: tmp_path / ".alphascreener")
+        monkeypatch.setattr(
+            "alphascreener.data.paths.get_data_home", lambda: tmp_path / ".alphascreener"
+        )
 
         orch = SyncOrchestrator(
             yfinance=mock_yfinance,

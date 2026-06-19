@@ -52,10 +52,10 @@ _logger: logging.Logger = get_logger("screening")
 # ============================================================================
 
 _MODEL_PRICING: dict[str, dict[str, float]] = {
-    "gpt-4o-mini":  {"input": 0.150 / 1_000_000, "output": 0.600 / 1_000_000},
-    "gpt-4o":       {"input": 2.500 / 1_000_000, "output": 10.000 / 1_000_000},
-    "gpt-4.1":      {"input": 2.000 / 1_000_000, "output":  8.000 / 1_000_000},
-    "gpt-4.1-mini": {"input": 0.400 / 1_000_000, "output":  1.600 / 1_000_000},
+    "gpt-4o-mini": {"input": 0.150 / 1_000_000, "output": 0.600 / 1_000_000},
+    "gpt-4o": {"input": 2.500 / 1_000_000, "output": 10.000 / 1_000_000},
+    "gpt-4.1": {"input": 2.000 / 1_000_000, "output": 8.000 / 1_000_000},
+    "gpt-4.1-mini": {"input": 0.400 / 1_000_000, "output": 1.600 / 1_000_000},
 }
 
 MODEL_PRICING: dict[str, dict[str, float]] = _MODEL_PRICING
@@ -69,10 +69,10 @@ class CircuitLevel(IntEnum):
     """Escalation levels for cost circuit breaker (PRD 4.6.3)."""
 
     NORMAL = 0
-    L1_WARNING = 1   # daily >= $0.80 -> batch size 3→2
-    L2_DEGRADE = 2   # daily >= $1.00 -> pause fine screening, only coarse
-    L3_SAVINGS = 3   # monthly >= $80  -> fine screening reduced to Top 10
-    L4_BREAKER = 4   # monthly >= $95  -> completely stop LLM calls
+    L1_WARNING = 1  # daily >= $0.80 -> batch size 3→2
+    L2_DEGRADE = 2  # daily >= $1.00 -> pause fine screening, only coarse
+    L3_SAVINGS = 3  # monthly >= $80  -> fine screening reduced to Top 10
+    L4_BREAKER = 4  # monthly >= $95  -> completely stop LLM calls
 
 
 _LEVEL_LABELS: dict[CircuitLevel, str] = {
@@ -108,10 +108,7 @@ class CircuitStatus:
         L2 (daily degrade) and L4 (breaker) block fine screening entirely.
         L3 (monthly savings mode) still allows it, just reduced to Top 10.
         """
-        return (
-            self.level < CircuitLevel.L2_DEGRADE
-            or self.level == CircuitLevel.L3_SAVINGS
-        )
+        return self.level < CircuitLevel.L2_DEGRADE or self.level == CircuitLevel.L3_SAVINGS
 
     @property
     def label(self) -> str:
@@ -123,10 +120,10 @@ class CircuitStatus:
 # ============================================================================
 
 _DEFAULT_THRESHOLDS: dict[str, float] = {
-    "l1_warning_daily":    0.80,
-    "l2_degrade_daily":    1.00,
-    "l3_savings_monthly":  80.0,
-    "l4_circuit_monthly":  95.0,
+    "l1_warning_daily": 0.80,
+    "l2_degrade_daily": 1.00,
+    "l3_savings_monthly": 80.0,
+    "l4_circuit_monthly": 95.0,
 }
 
 
@@ -228,16 +225,12 @@ class CostTracker:
         month_start = ref_date.replace(day=1)
         # Compute start of next month for upper bound
         if month_start.month == 12:
-            next_month_start = month_start.replace(
-                year=month_start.year + 1, month=1
-            )
+            next_month_start = month_start.replace(year=month_start.year + 1, month=1)
         else:
             next_month_start = month_start.replace(month=month_start.month + 1)
 
         with self._sf() as session:
-            stmt = select(
-                func.coalesce(func.sum(LlmCostDaily.total_usd), 0.0)
-            ).where(
+            stmt = select(func.coalesce(func.sum(LlmCostDaily.total_usd), 0.0)).where(
                 LlmCostDaily.cost_date >= month_start,
                 LlmCostDaily.cost_date < next_month_start,
             )

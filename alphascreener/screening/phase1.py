@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import polars as pl
 
+from alphascreener.logging import get_logger
 from alphascreener.screening.threshold import DEFAULT_THRESHOLDS
+
+_logger = get_logger("screening")
 
 # ---------------------------------------------------------------------------
 # Required factor columns (must be present in input DataFrame)
@@ -173,3 +176,128 @@ def compute_filter_rate(df: pl.DataFrame, *, thresholds: dict | None = None) -> 
     result = hard_filter(df, thresholds=thresholds)
     passed = result["pass_phase1"].sum()
     return 1.0 - (passed / df.height)
+
+
+# ---------------------------------------------------------------------------
+# Auto-relaxation: hard_filter with fallback for over-strict filtering (Issue #219)
+# ---------------------------------------------------------------------------
+
+# Trigger relaxation when pass_rate falls below this fraction.
+_RELAX_PASS_RATE_THRESHOLD: float = 0.05
+# Also trigger when fewer than this many tickers pass (for small/medium universes).
+_RELAX_MIN_PASSERS: int = 5
+# Maximum cumulative threshold relaxation as a fraction of reference magnitude.
+# Matches ``threshold.MAX_RELAXATION_PCT``.  Kept here for test visibility;
+# single-step fallback does not accumulate across calls.
+_RELAX_MAX_CUMULATIVE: float = 0.30
+
+# Per-threshold relaxation delta magnitudes (one-step).  These match the
+# 10% step defined in DynamicThreshold._step_delta for the "over_tight" band.
+# Sign convention: positive = widen (let more tickers pass).
+_RELAX_DELTA: dict[str, float] = {
+    "MOM_5D": -0.005,  # lower MOM_5D threshold (MOM_5D > X → relax by -Δ)
+    "MFI_14": -4.0,  # lower MFI_14 threshold
+    "ATR_RATIO": +0.08,  # raise ATR_RATIO threshold (ATR_RATIO < X → relax by +Δ)
+    "RSI_LOW": -2.5,  # lower RSI low bound
+    "RSI_HIGH": +7.5,  # raise RSI high bound
+}
+
+
+def _build_relaxed_thresholds(thresholds: dict) -> dict:
+    """Return a copy of *thresholds* with one relaxation step applied.
+
+    The per-key deltas are defined in ``_RELAX_DELTA``.  Each delta magnitude
+    matches ``DynamicThreshold._step_delta(key, direction=+1)``
+    (10 % of reference magnitude with the correct widen sign).
+
+    Args:
+        thresholds: Current threshold dict (keys: MOM_5D, MFI_14, ATR_RATIO,
+            RSI_LOW, RSI_HIGH).
+
+    Returns:
+        Relaxed thresholds dict.
+    """
+    relaxed = dict(thresholds)
+
+    for key, delta in _RELAX_DELTA.items():
+        new_val = thresholds[key] + delta
+
+        # Defensive bounds — unreachable from defaults in one step,
+        # but guard against extreme user-supplied thresholds.
+        if key == "RSI_LOW":
+            new_val = max(0.0, new_val)
+        elif key == "RSI_HIGH":
+            new_val = min(100.0, new_val)
+        elif key == "MFI_14":
+            new_val = max(10.0, new_val)
+        elif key == "ATR_RATIO":
+            new_val = min(1.5, new_val)
+
+        relaxed[key] = new_val
+
+    return relaxed
+
+
+def hard_filter_with_fallback(
+    df: pl.DataFrame,
+    *,
+    thresholds: dict | None = None,
+) -> tuple[pl.DataFrame, bool]:
+    """Apply Phase 1 hard filtering with automatic threshold relaxation.
+
+    When the pass rate falls below ``_RELAX_PASS_RATE_THRESHOLD`` (5 %) or
+    fewer than ``_RELAX_MIN_PASSERS`` tickers pass, thresholds are
+    automatically relaxed in one step and Phase 1 is re-run to prevent the
+    pipeline from stalling on a single ticker.
+
+    Args:
+        df: Factor DataFrame (see :func:`hard_filter` for schema).
+        thresholds: Optional base threshold overrides.
+
+    Returns:
+        ``(dataframe, was_relaxed)`` tuple.  The dataframe has
+        ``pass_phase1`` and ``bonus_count`` columns appended (same shape as
+        :func:`hard_filter`).  ``was_relaxed`` is True when relaxation was
+        applied.
+    """
+    th = _resolve_thresholds(thresholds)
+
+    result = hard_filter(df, thresholds=th)
+    n_pass = result["pass_phase1"].sum()
+    n_total = result.height
+
+    pass_rate = n_pass / n_total if n_total > 0 else 1.0
+    should_relax = pass_rate < _RELAX_PASS_RATE_THRESHOLD or (
+        n_total >= _RELAX_MIN_PASSERS and n_pass < _RELAX_MIN_PASSERS
+    )
+
+    if should_relax:
+        _logger.warning(
+            "Phase 1 pass_rate too low (%.1f%%, %d/%d). "
+            "Relaxing thresholds and retrying to prevent pipeline stall.",
+            pass_rate * 100,
+            n_pass,
+            n_total,
+        )
+
+        relaxed_th = _build_relaxed_thresholds(th)
+        _logger.info(
+            "Relaxed thresholds: MOM_5D > %.4f, MFI_14 > %.1f, "
+            "ATR_RATIO < %.2f, RSI in [%.1f, %.1f]",
+            relaxed_th["MOM_5D"],
+            relaxed_th["MFI_14"],
+            relaxed_th["ATR_RATIO"],
+            relaxed_th["RSI_LOW"],
+            relaxed_th["RSI_HIGH"],
+        )
+
+        result = hard_filter(df, thresholds=relaxed_th)
+        n_pass_relaxed = result["pass_phase1"].sum()
+        _logger.info(
+            "Phase 1 (relaxed): %d/%d tickers passed (was %d)",
+            n_pass_relaxed,
+            n_total,
+            n_pass,
+        )
+
+    return result, should_relax

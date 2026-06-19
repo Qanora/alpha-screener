@@ -10,6 +10,7 @@ Covers:
 """
 
 from datetime import date
+from typing import Dict, List
 
 import polars as pl
 import pytest
@@ -19,23 +20,16 @@ import pytest
 # ============================================================================
 
 
-def _factor_df(rows: list[dict]) -> pl.DataFrame:
+def _factor_df(rows: List[Dict]) -> pl.DataFrame:
     """Minimal factor DataFrame with the columns Phase 1 needs."""
-    schema = {
-        "ticker": pl.Utf8,
-        "dt": pl.Date,
-        "MOM_5D": pl.Float64,
-        "VOL_ANOMALY": pl.Int32,
-        "MFI_14": pl.Float64,
-        "ATR_RATIO": pl.Float64,
-        "RSI_14": pl.Float64,
-        "BB_SQUEEZE": pl.Int32,
-        "PTH": pl.Float64,
-        "CMF_21": pl.Float64,
-        "PEAD_FLAG": pl.Int32,
-        "INSIDER_BUY": pl.Int32,
-    }
-    return pl.DataFrame(rows, schema=schema)
+    # Polars 0.12.5: convert date objects to strings, then cast
+    for r in rows:
+        if "dt" in r and isinstance(r["dt"], date):
+            r["dt"] = r["dt"].isoformat()
+    df = pl.DataFrame(rows)
+    if "dt" in df.columns:
+        df = df.with_column(pl.col("dt").str.strptime(pl.Date, "%Y-%m-%d"))
+    return df
 
 
 @pytest.fixture
@@ -1047,3 +1041,181 @@ class TestPhase1WithDynamicThreshold:
         # FAIL_ATR: ATR_RATIO=0.9, threshold=0.9, 0.9 < 0.9 is False
         # FAIL_RSI_LOW: RSI=15.0, threshold 15.0, 15.0 >= 15.0 passes
         assert rate < 1.0
+
+
+# ============================================================================
+# Phase 1 auto-relaxation: hard_filter_with_fallback (Issue #219)
+# ============================================================================
+
+
+class TestHardFilterWithFallback:
+    """When Phase 1 filters too aggressively, auto-relax thresholds and retry."""
+
+    def test_normal_pass_rate_no_relax_needed(self):
+        """When >5% of tickers pass, no relaxation occurs."""
+        from alphascreener.screening.phase1 import hard_filter_with_fallback
+
+        df = _factor_df(
+            [
+                {
+                    "ticker": f"T{i}",
+                    "dt": date(2025, 3, 15),
+                    "MOM_5D": 0.03,
+                    "VOL_ANOMALY": 0,
+                    "MFI_14": 60.0,
+                    "ATR_RATIO": 0.5,
+                    "RSI_14": 55.0,
+                    "BB_SQUEEZE": 0,
+                    "PTH": 0.0,
+                    "CMF_21": 0.0,
+                    "PEAD_FLAG": 0,
+                    "INSIDER_BUY": 0,
+                }
+                for i in range(10)
+            ]
+        )
+        result, was_relaxed = hard_filter_with_fallback(df)
+        assert result["pass_phase1"].sum() == 10
+        assert not was_relaxed
+
+    def test_strict_filter_triggers_relaxation(self):
+        """When < 5% pass_rate, thresholds are relaxed and retry succeeds."""
+        from alphascreener.screening.phase1 import hard_filter, hard_filter_with_fallback
+
+        # Build 100 tickers: 1 clearly passing, 99 barely failing on MOM_5D + ATR_RATIO
+        rows = []
+        # 1 ticker that clearly passes all 4 conditions
+        rows.append(
+            {
+                "ticker": "AAPL",
+                "dt": date(2025, 3, 15),
+                "MOM_5D": 0.05,
+                "VOL_ANOMALY": 1,
+                "MFI_14": 55.0,
+                "ATR_RATIO": 0.5,
+                "RSI_14": 55.0,
+                "BB_SQUEEZE": 0,
+                "PTH": 0.0,
+                "CMF_21": 0.0,
+                "PEAD_FLAG": 0,
+                "INSIDER_BUY": 0,
+            }
+        )
+        # 99 tickers that fail MOM_5D and ATR_RATIO by small margins,
+        # but pass VOL_MFI and RSI even under default thresholds
+        for i in range(99):
+            rows.append(
+                {
+                    "ticker": f"T{i:03d}",
+                    "dt": date(2025, 3, 15),
+                    "MOM_5D": -0.002,  # barely negative → fails MOM > 0
+                    "VOL_ANOMALY": 0,
+                    "MFI_14": 41.0,  # above 40 → passes volmfi
+                    "ATR_RATIO": 0.82,  # > 0.80 → fails ATR
+                    "RSI_14": 55.0,  # in [25, 75] → passes RSI
+                    "BB_SQUEEZE": 0,
+                    "PTH": 0.0,
+                    "CMF_21": 0.0,
+                    "PEAD_FLAG": 0,
+                    "INSIDER_BUY": 0,
+                }
+            )
+
+        df = _factor_df(rows)
+
+        # Verify: default hard_filter only passes 1 (AAPL)
+        default_result = hard_filter(df)
+        assert default_result["pass_phase1"].sum() == 1
+
+        # With fallback: relaxation kicks in and more tickers pass
+        result, was_relaxed = hard_filter_with_fallback(df)
+        n_pass = result["pass_phase1"].sum()
+        assert n_pass > 1, f"Expected >1 tickers after relaxation, got {n_pass}"
+        # Relaxation was applied
+        assert was_relaxed
+
+    def test_all_pass_no_relax(self):
+        """When all tickers pass, no relaxation is triggered."""
+        from alphascreener.screening.phase1 import hard_filter_with_fallback
+
+        df = _factor_df(
+            [
+                {
+                    "ticker": f"T{i}",
+                    "dt": date(2025, 3, 15),
+                    "MOM_5D": 0.05 + i * 0.01,
+                    "VOL_ANOMALY": 0,
+                    "MFI_14": 60.0 + i,
+                    "ATR_RATIO": 0.3 + i * 0.01,
+                    "RSI_14": 50.0,
+                    "BB_SQUEEZE": 0,
+                    "PTH": 0.0,
+                    "CMF_21": 0.0,
+                    "PEAD_FLAG": 0,
+                    "INSIDER_BUY": 0,
+                }
+                for i in range(20)
+            ]
+        )
+        result, was_relaxed = hard_filter_with_fallback(df)
+        # All 20 tickers have valid values — all should pass
+        assert result["pass_phase1"].sum() == 20
+        assert not was_relaxed
+
+    def test_zero_pass_rate_relaxes_to_at_least_one(self):
+        """Even with 0 passers, relaxation ensures some tickers get through."""
+        from alphascreener.screening.phase1 import hard_filter_with_fallback
+
+        # 50 tickers all failing at multiple conditions, but a few
+        # barely failing ATR_RATIO and MOM_5D (salvageable by relaxation).
+        rows = []
+        for i in range(50):
+            # First 3 tickers: just barely outside default thresholds,
+            # should pass after relaxation
+            if i < 3:
+                rows.append(
+                    {
+                        "ticker": f"T{i:02d}",
+                        "dt": date(2025, 3, 15),
+                        "MOM_5D": -0.002,  # barely negative, passes relaxed (-0.005)
+                        "VOL_ANOMALY": 0,
+                        "MFI_14": 45.0,  # passes both
+                        "ATR_RATIO": 0.82,  # barely above 0.80, passes relaxed (0.88)
+                        "RSI_14": 50.0,
+                        "BB_SQUEEZE": 0,
+                        "PTH": 0.0,
+                        "CMF_21": 0.0,
+                        "PEAD_FLAG": 0,
+                        "INSIDER_BUY": 0,
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "ticker": f"T{i:02d}",
+                        "dt": date(2025, 3, 15),
+                        "MOM_5D": -2.0 - i * 0.1,
+                        "VOL_ANOMALY": 0,
+                        "MFI_14": 5.0,
+                        "ATR_RATIO": 2.0 + i * 0.1,
+                        "RSI_14": 95.0,
+                        "BB_SQUEEZE": 0,
+                        "PTH": 0.0,
+                        "CMF_21": 0.0,
+                        "PEAD_FLAG": 0,
+                        "INSIDER_BUY": 0,
+                    }
+                )
+
+        df = _factor_df(rows)
+        result, _was_relaxed = hard_filter_with_fallback(df)
+        n_pass = result["pass_phase1"].sum()
+        # After relaxation, the first 3 tickers should pass
+        assert n_pass >= 3, f"Expected >=3 after relaxation, got {n_pass}"
+
+    def test_threshold_relaxation_is_bounded(self):
+        """Relaxation doesn't exceed 30% cumulative cap."""
+        from alphascreener.screening.phase1 import _RELAX_MAX_CUMULATIVE
+
+        # Verify the cumulative relaxation cap constant exists and is bounded
+        assert 0.10 <= _RELAX_MAX_CUMULATIVE <= 0.50

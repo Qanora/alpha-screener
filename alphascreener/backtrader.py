@@ -160,8 +160,12 @@ class SevenDayBreakoutStrategy(bt.Strategy):
         # Apply slippage: sell at slightly worse price
         slip_close = close_price * (1.0 - self.p.slippage_pct)
         self.sell(data=data, size=ctx["size"], price=slip_close)
-        _logger.debug("Closed position: reason=%s entry=%0.2f exit=%0.2f",
-                       reason, ctx["entry_price"], close_price)
+        _logger.debug(
+            "Closed position: reason=%s entry=%0.2f exit=%0.2f",
+            reason,
+            ctx["entry_price"],
+            close_price,
+        )
 
     def _calculate_size(self, price: float) -> int:
         """Calculate position size for equal allocation.

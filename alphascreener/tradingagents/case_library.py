@@ -383,7 +383,9 @@ class CaseLibraryBuilder:
             result = result.drop("_fwd_close")
 
         n_with_return = result["t7_return"].drop_nulls().len()
-        _logger.debug("Computed forward returns: %d / %d rows have t7_return", n_with_return, result.height)
+        _logger.debug(
+            "Computed forward returns: %d / %d rows have t7_return", n_with_return, result.height
+        )
         return result
 
     def _select_positive_cases(self, df: pl.DataFrame) -> pl.DataFrame:

@@ -41,10 +41,12 @@ def _make_scores_df(
     hits: list[int],
 ) -> pl.DataFrame:
     """Build a DataFrame with *scores* and *hits* columns."""
-    return pl.DataFrame({
-        "score": scores,
-        "hit": hits,
-    })
+    return pl.DataFrame(
+        {
+            "score": scores,
+            "hit": hits,
+        }
+    )
 
 
 def _make_aligned_df(
@@ -53,13 +55,15 @@ def _make_aligned_df(
     hits: list[int],
 ) -> pl.DataFrame:
     """Build a pre-joined ablation DataFrame."""
-    return pl.DataFrame({
-        "ticker": [f"T{i}" for i in range(len(pure_scores))],
-        "dt": date(2025, 6, 1),
-        "refined_score_pure": pure_scores,
-        "refined_score": llm_scores,
-        "hit": hits,
-    })
+    return pl.DataFrame(
+        {
+            "ticker": [f"T{i}" for i in range(len(pure_scores))],
+            "dt": date(2025, 6, 1),
+            "refined_score_pure": pure_scores,
+            "refined_score": llm_scores,
+            "hit": hits,
+        }
+    )
 
 
 def _make_ohlcv_df(
@@ -68,11 +72,13 @@ def _make_ohlcv_df(
     closes: list[float],
 ) -> pl.DataFrame:
     """Build a minimal OHLCV DataFrame."""
-    return pl.DataFrame({
-        "ticker": tickers,
-        "dt": dates,
-        "close": closes,
-    })
+    return pl.DataFrame(
+        {
+            "ticker": tickers,
+            "dt": dates,
+            "close": closes,
+        }
+    )
 
 
 # ============================================================================
@@ -89,9 +95,13 @@ class TestComputeRiskFilter:
 
     def test_delisting_risk_returns_zero(self):
         assert compute_risk_filter(["delisting_risk"], data_conflict_detected=False) == 0.0
-        assert compute_risk_filter(
-            ["momentum_breakdown", "delisting_risk"], data_conflict_detected=False,
-        ) == 0.0
+        assert (
+            compute_risk_filter(
+                ["momentum_breakdown", "delisting_risk"],
+                data_conflict_detected=False,
+            )
+            == 0.0
+        )
 
     def test_data_conflict_returns_zero(self):
         assert compute_risk_filter([], data_conflict_detected=True) == 0.0
@@ -102,9 +112,13 @@ class TestComputeRiskFilter:
         assert compute_risk_filter(None, data_conflict_detected=True) == 0.0
 
     def test_both_triggers_returns_zero(self):
-        assert compute_risk_filter(
-            ["delisting_risk"], data_conflict_detected=True,
-        ) == 0.0
+        assert (
+            compute_risk_filter(
+                ["delisting_risk"],
+                data_conflict_detected=True,
+            )
+            == 0.0
+        )
 
 
 # ============================================================================
@@ -153,9 +167,12 @@ class TestAblationEntry:
 
     def test_entry_with_correction_and_risk(self):
         entry = AblationEntry(
-            ticker="AAPL", dt=date(2025, 6, 1),
-            coarse_final_score=2.0, score_correction=1.05,
-            risk_filter=0.0, risk_tags=["delisting_risk"],
+            ticker="AAPL",
+            dt=date(2025, 6, 1),
+            coarse_final_score=2.0,
+            score_correction=1.05,
+            risk_filter=0.0,
+            risk_tags=["delisting_risk"],
             data_conflict_detected=False,
         )
         assert entry.refined_score_pure == 2.0
@@ -163,8 +180,10 @@ class TestAblationEntry:
 
     def test_to_dict_pure(self):
         entry = AblationEntry(
-            ticker="MSFT", dt=date(2025, 7, 1),
-            coarse_final_score=1.5, phase1_pass=True,
+            ticker="MSFT",
+            dt=date(2025, 7, 1),
+            coarse_final_score=1.5,
+            phase1_pass=True,
         )
         d = entry.to_dict_pure()
         assert d["ticker"] == "MSFT"
@@ -174,10 +193,14 @@ class TestAblationEntry:
 
     def test_to_dict_llm(self):
         entry = AblationEntry(
-            ticker="MSFT", dt=date(2025, 7, 1),
-            coarse_final_score=1.5, score_correction=0.95,
-            risk_filter=1.0, risk_tags=["overbought"],
-            data_conflict_detected=False, phase1_pass=True,
+            ticker="MSFT",
+            dt=date(2025, 7, 1),
+            coarse_final_score=1.5,
+            score_correction=0.95,
+            risk_filter=1.0,
+            risk_tags=["overbought"],
+            data_conflict_detected=False,
+            phase1_pass=True,
         )
         d = entry.to_dict_llm()
         assert d["refined_score"] == 1.5 * 0.95
@@ -186,36 +209,48 @@ class TestAblationEntry:
 
     def test_from_assessment_normal(self):
         entry = AblationEntry.from_assessment(
-            ticker="GOOG", dt=date(2025, 8, 1),
-            coarse_final_score=3.0, score_correction=1.02,
-            risk_tags=["momentum_breakdown"], data_conflict_detected=False,
+            ticker="GOOG",
+            dt=date(2025, 8, 1),
+            coarse_final_score=3.0,
+            score_correction=1.02,
+            risk_tags=["momentum_breakdown"],
+            data_conflict_detected=False,
         )
         assert entry.risk_filter == 1.0
         assert entry.refined_score_llm == 3.0 * 1.02
 
     def test_from_assessment_data_conflict(self):
         entry = AblationEntry.from_assessment(
-            ticker="GOOG", dt=date(2025, 8, 1),
-            coarse_final_score=3.0, score_correction=1.02,
-            risk_tags=[], data_conflict_detected=True,
+            ticker="GOOG",
+            dt=date(2025, 8, 1),
+            coarse_final_score=3.0,
+            score_correction=1.02,
+            risk_tags=[],
+            data_conflict_detected=True,
         )
         assert entry.risk_filter == 0.0
         assert entry.refined_score_llm == 0.0
 
     def test_from_assessment_delisting(self):
         entry = AblationEntry.from_assessment(
-            ticker="GOOG", dt=date(2025, 8, 1),
-            coarse_final_score=3.0, score_correction=1.02,
-            risk_tags=["delisting_risk"], data_conflict_detected=False,
+            ticker="GOOG",
+            dt=date(2025, 8, 1),
+            coarse_final_score=3.0,
+            score_correction=1.02,
+            risk_tags=["delisting_risk"],
+            data_conflict_detected=False,
         )
         assert entry.risk_filter == 0.0
         assert entry.refined_score_llm == 0.0
 
     def test_from_assessment_none_tags(self):
         entry = AblationEntry.from_assessment(
-            ticker="GOOG", dt=date(2025, 8, 1),
-            coarse_final_score=3.0, score_correction=1.0,
-            risk_tags=None, data_conflict_detected=False,
+            ticker="GOOG",
+            dt=date(2025, 8, 1),
+            coarse_final_score=3.0,
+            score_correction=1.0,
+            risk_tags=None,
+            data_conflict_detected=False,
         )
         assert entry.risk_filter == 1.0
 
@@ -255,10 +290,12 @@ class TestComputePrecisionAtK:
         assert math.isnan(result)
 
     def test_null_scores_excluded(self):
-        df = pl.DataFrame({
-            "score": [10, 9, 8, None, 7, 6, 5, 4, 3, 2],
-            "hit": [1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-        })
+        df = pl.DataFrame(
+            {
+                "score": [10, 9, 8, None, 7, 6, 5, 4, 3, 2],
+                "hit": [1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+            }
+        )
         # 3 valid scores >= k=3, top 3: 10(hit=1), 9(hit=1), 8(hit=0) -> 2/3
         result = compute_precision_at_k(df, 3, score_col="score", outcome_col="hit")
         assert result == pytest.approx(2.0 / 3.0)
@@ -340,7 +377,9 @@ class TestComputeDeltaLift:
             hits=[1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
         )
         result = compute_delta_lift(
-            df, df, 5,
+            df,
+            df,
+            5,
             score_col_pure="refined_score_pure",
             score_col_llm="refined_score",
             outcome_col="hit",
@@ -353,20 +392,26 @@ class TestComputeDeltaLift:
         #   hits [1,1,0,0,0] -> prec=0.4 -> lift=1.333
         # B-track top-5: sorted by higher scores
         #   hits [1,1,1,0,0] -> prec=0.6 -> lift=2.0 -> delta=0.667
-        pure_df = pl.DataFrame({
-            "ticker": [f"T{i}" for i in range(10)],
-            "dt": date(2025, 6, 1),
-            "refined_score_pure": [5.0, 5.0, 5.0, 5.0, 5.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-            "hit": [1, 1, 0, 0, 0, 1, 0, 0, 0, 0],
-        })
-        llm_df = pl.DataFrame({
-            "ticker": [f"T{i}" for i in range(10)],
-            "dt": date(2025, 6, 1),
-            "refined_score": [10.0, 9.0, 8.0, 7.0, 6.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-            "hit": [1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-        })
+        pure_df = pl.DataFrame(
+            {
+                "ticker": [f"T{i}" for i in range(10)],
+                "dt": date(2025, 6, 1),
+                "refined_score_pure": [5.0, 5.0, 5.0, 5.0, 5.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                "hit": [1, 1, 0, 0, 0, 1, 0, 0, 0, 0],
+            }
+        )
+        llm_df = pl.DataFrame(
+            {
+                "ticker": [f"T{i}" for i in range(10)],
+                "dt": date(2025, 6, 1),
+                "refined_score": [10.0, 9.0, 8.0, 7.0, 6.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                "hit": [1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+            }
+        )
         result = compute_delta_lift(
-            pure_df, llm_df, 5,
+            pure_df,
+            llm_df,
+            5,
             score_col_pure="refined_score_pure",
             score_col_llm="refined_score",
             outcome_col="hit",
@@ -375,17 +420,27 @@ class TestComputeDeltaLift:
         assert result == pytest.approx(2.0 / 3.0, rel=1e-6)
 
     def test_nan_when_one_track_fails(self):
-        pure_df = pl.DataFrame({
-            "ticker": ["T0"], "dt": date(2025, 6, 1),
-            "refined_score_pure": [5.0], "hit": [1],
-        })
-        llm_df = pl.DataFrame({
-            "ticker": ["T0"], "dt": date(2025, 6, 1),
-            "refined_score": [6.0], "hit": [1],
-        })
+        pure_df = pl.DataFrame(
+            {
+                "ticker": ["T0"],
+                "dt": date(2025, 6, 1),
+                "refined_score_pure": [5.0],
+                "hit": [1],
+            }
+        )
+        llm_df = pl.DataFrame(
+            {
+                "ticker": ["T0"],
+                "dt": date(2025, 6, 1),
+                "refined_score": [6.0],
+                "hit": [1],
+            }
+        )
         # k=5 but only 1 row -> NaN
         result = compute_delta_lift(
-            pure_df, llm_df, 5,
+            pure_df,
+            llm_df,
+            5,
             score_col_pure="refined_score_pure",
             score_col_llm="refined_score",
             outcome_col="hit",
@@ -483,15 +538,16 @@ class TestAblationTrackerDf:
         entry = AblationEntry(ticker="AAPL", dt=date(2025, 6, 1), coarse_final_score=2.0)
         tracker.record(entry)
         df = tracker.pure_df()
-        expected = {"ticker", "dt", "coarse_final_score",
-                    "refined_score_pure", "phase1_pass"}
+        expected = {"ticker", "dt", "coarse_final_score", "refined_score_pure", "phase1_pass"}
         assert set(df.columns) == expected
 
     def test_llm_df_columns(self):
         tracker = AblationTracker()
         entry = AblationEntry(
-            ticker="AAPL", dt=date(2025, 6, 1),
-            coarse_final_score=2.0, score_correction=0.95,
+            ticker="AAPL",
+            dt=date(2025, 6, 1),
+            coarse_final_score=2.0,
+            score_correction=0.95,
             risk_tags=["overbought"],
         )
         tracker.record(entry)
@@ -517,8 +573,10 @@ class TestAblationTrackerDf:
     def test_pure_df_values_correct(self):
         tracker = AblationTracker()
         entry = AblationEntry(
-            ticker="AAPL", dt=date(2025, 6, 1),
-            coarse_final_score=3.0, score_correction=1.05,
+            ticker="AAPL",
+            dt=date(2025, 6, 1),
+            coarse_final_score=3.0,
+            score_correction=1.05,
             risk_filter=1.0,
         )
         tracker.record(entry)
@@ -528,8 +586,10 @@ class TestAblationTrackerDf:
     def test_llm_df_values_correct(self):
         tracker = AblationTracker()
         entry = AblationEntry(
-            ticker="AAPL", dt=date(2025, 6, 1),
-            coarse_final_score=3.0, score_correction=1.05,
+            ticker="AAPL",
+            dt=date(2025, 6, 1),
+            coarse_final_score=3.0,
+            score_correction=1.05,
             risk_filter=1.0,
         )
         tracker.record(entry)
@@ -558,22 +618,33 @@ class TestAblationTrackerDeltaLift:
     def test_delta_lift_with_outcomes(self):
         tracker = AblationTracker()
         entry = AblationEntry(
-            ticker="AAPL", dt=date(2025, 6, 1), coarse_final_score=5.0,
-            score_correction=1.05, risk_filter=1.0,
+            ticker="AAPL",
+            dt=date(2025, 6, 1),
+            coarse_final_score=5.0,
+            score_correction=1.05,
+            risk_filter=1.0,
         )
         tracker.record(entry)
-        outcomes = pl.DataFrame({
-            "ticker": ["AAPL"], "dt": [date(2025, 6, 1)], "hit": [1],
-        })
+        outcomes = pl.DataFrame(
+            {
+                "ticker": ["AAPL"],
+                "dt": [date(2025, 6, 1)],
+                "hit": [1],
+            }
+        )
         # Only 1 row, k=20 -> NaN
         dl = tracker.delta_lift(outcomes, k=20)
         assert math.isnan(dl)
 
     def test_delta_lift_no_records_returns_nan(self):
         tracker = AblationTracker()
-        outcomes = pl.DataFrame({
-            "ticker": ["AAPL"], "dt": [date(2025, 6, 1)], "hit": [1],
-        })
+        outcomes = pl.DataFrame(
+            {
+                "ticker": ["AAPL"],
+                "dt": [date(2025, 6, 1)],
+                "hit": [1],
+            }
+        )
         dl = tracker.delta_lift(outcomes)
         assert math.isnan(dl)
 
@@ -599,7 +670,8 @@ class TestAblationTrackerDeltaLift:
         # Record 10 entries with aligned scores and outcomes
         for i in range(10):
             entry = AblationEntry(
-                ticker=f"T{i}", dt=date(2025, 6, 1),
+                ticker=f"T{i}",
+                dt=date(2025, 6, 1),
                 coarse_final_score=float(10 - i),
                 score_correction=1.05 if i < 5 else 0.95,
             )
@@ -607,10 +679,14 @@ class TestAblationTrackerDeltaLift:
 
         # Build aligned df with hits
         hits = [1 if i < 3 else 0 for i in range(10)]
-        df = tracker.pure_df().join(
-            tracker.llm_df().select("ticker", "dt", "refined_score"),
-            on=["ticker", "dt"],
-        ).with_columns(pl.Series("hit", hits))
+        df = (
+            tracker.pure_df()
+            .join(
+                tracker.llm_df().select("ticker", "dt", "refined_score"),
+                on=["ticker", "dt"],
+            )
+            .with_columns(pl.Series("hit", hits))
+        )
 
         dl = tracker.delta_lift_from_aligned(df, k=5)
         decision = tracker.decide(dl)
@@ -642,8 +718,10 @@ class TestAblationTrackerFlush:
         """Flushing one entry creates the partition dir with both files."""
         tracker = AblationTracker()
         entry = AblationEntry(
-            ticker="AAPL", dt=date(2025, 6, 1),
-            coarse_final_score=2.0, risk_tags=["momentum_breakdown"],
+            ticker="AAPL",
+            dt=date(2025, 6, 1),
+            coarse_final_score=2.0,
+            risk_tags=["momentum_breakdown"],
         )
         tracker.record(entry)
 
@@ -720,8 +798,7 @@ class TestBuildOutcomesFromOhlcv:
         df = _make_ohlcv_df(
             tickers=["AAPL"] * 10,
             dates=[date(2025, 6, d) for d in range(1, 11)],
-            closes=[100.0, 101.0, 102.0, 103.0, 104.0,
-                     105.0, 106.0, 107.0, 108.0, 109.0],
+            closes=[100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0],
         )
         outcomes = build_outcomes_from_ohlcv(df, return_threshold=0.10, holding_days=7)
         # fwd_return for day 1: (108-100)/100 = 0.08 < 0.10 -> hit=0
@@ -731,8 +808,7 @@ class TestBuildOutcomesFromOhlcv:
         df = _make_ohlcv_df(
             tickers=["AAPL"] * 10,
             dates=[date(2025, 6, d) for d in range(1, 11)],
-            closes=[100.0, 105.0, 110.0, 115.0, 120.0,
-                     125.0, 130.0, 135.0, 140.0, 145.0],
+            closes=[100.0, 105.0, 110.0, 115.0, 120.0, 125.0, 130.0, 135.0, 140.0, 145.0],
         )
         # day 1: close=100, close_fwd (day 8) = 135 -> (135-100)/100 = 0.35 > 0.10
         outcomes = build_outcomes_from_ohlcv(df, return_threshold=0.10, holding_days=7)
@@ -763,12 +839,13 @@ class TestBuildOutcomesFromOhlcv:
 
     def test_multiple_tickers_independent(self):
         """Each ticker's forward return is computed independently."""
-        df = pl.DataFrame({
-            "ticker": ["AAPL"] * 5 + ["MSFT"] * 5,
-            "dt": [date(2025, 6, d) for d in range(1, 6)] * 2,
-            "close": [100.0, 101.0, 102.0, 103.0, 104.0,
-                      200.0, 210.0, 215.0, 220.0, 225.0],
-        })
+        df = pl.DataFrame(
+            {
+                "ticker": ["AAPL"] * 5 + ["MSFT"] * 5,
+                "dt": [date(2025, 6, d) for d in range(1, 6)] * 2,
+                "close": [100.0, 101.0, 102.0, 103.0, 104.0, 200.0, 210.0, 215.0, 220.0, 225.0],
+            }
+        )
         outcomes = build_outcomes_from_ohlcv(df, holding_days=2)
         # Each ticker: 5 - 2 = 3 valid rows -> 6 total
         assert outcomes.height == 6

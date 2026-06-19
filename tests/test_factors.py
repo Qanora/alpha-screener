@@ -511,10 +511,23 @@ class TestAllTechnicalFactors:
         result = compute_all_technical_factors(df)
 
         tech_factors = [
-            "MOM_5D", "PTH", "MOM_SLOPE", "BB_SQUEEZE", "ATR_RATIO",
-            "MFI_14", "CMF_21", "VOL_ANOMALY", "RSI_14", "RSI_OVERSOLD",
-            "MACD", "SIGNAL", "HISTOGRAM", "MACD_CROSS",
-            "SMA_50", "SMA_200", "GOLDEN_CROSS",
+            "MOM_5D",
+            "PTH",
+            "MOM_SLOPE",
+            "BB_SQUEEZE",
+            "ATR_RATIO",
+            "MFI_14",
+            "CMF_21",
+            "VOL_ANOMALY",
+            "RSI_14",
+            "RSI_OVERSOLD",
+            "MACD",
+            "SIGNAL",
+            "HISTOGRAM",
+            "MACD_CROSS",
+            "SMA_50",
+            "SMA_200",
+            "GOLDEN_CROSS",
         ]
         for col in tech_factors:
             assert col in result.columns, f"Missing column: {col}"
@@ -625,10 +638,22 @@ class TestProcessChunk:
         )
         # Check key output columns (raw factors only; normalisation done by caller)
         expected = [
-            "MOM_5D", "PTH", "MOM_SLOPE", "BB_SQUEEZE", "ATR_RATIO",
-            "MFI_14", "CMF_21", "VOL_ANOMALY", "RSI_OVERSOLD",
-            "MACD_CROSS", "GOLDEN_CROSS", "PEAD_FLAG", "INSIDER_BUY",
-            "REV_ACCEL", "data_sufficient", "missing_rate",
+            "MOM_5D",
+            "PTH",
+            "MOM_SLOPE",
+            "BB_SQUEEZE",
+            "ATR_RATIO",
+            "MFI_14",
+            "CMF_21",
+            "VOL_ANOMALY",
+            "RSI_OVERSOLD",
+            "MACD_CROSS",
+            "GOLDEN_CROSS",
+            "PEAD_FLAG",
+            "INSIDER_BUY",
+            "REV_ACCEL",
+            "data_sufficient",
+            "missing_rate",
         ]
         for col in expected:
             assert col in result.columns, f"Missing: {col}"
@@ -669,15 +694,17 @@ class TestComputeFactors:
             base_price = 100.0 + ticker_idx * 20.0
             prices = base_price + rng.randn(n_dates).cumsum()
             for day_idx in range(n_dates):
-                rows.append({
-                    "ticker": ticker,
-                    "dt": date(2025, 1, 1) + timedelta(days=day_idx),
-                    "open": float(prices[day_idx] * 0.99),
-                    "high": float(prices[day_idx] * 1.02),
-                    "low": float(prices[day_idx] * 0.98),
-                    "close": float(prices[day_idx]),
-                    "volume": float(1_000_000 + rng.randn() * 100_000),
-                })
+                rows.append(
+                    {
+                        "ticker": ticker,
+                        "dt": date(2025, 1, 1) + timedelta(days=day_idx),
+                        "open": float(prices[day_idx] * 0.99),
+                        "high": float(prices[day_idx] * 1.02),
+                        "low": float(prices[day_idx] * 0.98),
+                        "close": float(prices[day_idx]),
+                        "volume": float(1_000_000 + rng.randn() * 100_000),
+                    }
+                )
 
         base = pl.DataFrame(rows)
         n_orig = base.height  # 3 * 250 = 750
@@ -688,10 +715,13 @@ class TestComputeFactors:
         dup_row = base.filter(dup_mask)
         assert dup_row.height == 1  # exactly one match
 
-        dup_extra = pl.concat([
-            dup_row.with_columns(close=pl.lit(50.0)),
-            dup_row.with_columns(close=pl.lit(999.0)),
-        ], how="diagonal_relaxed")
+        dup_extra = pl.concat(
+            [
+                dup_row.with_columns(close=pl.lit(50.0)),
+                dup_row.with_columns(close=pl.lit(999.0)),
+            ],
+            how="diagonal_relaxed",
+        )
         df_with_dupes = pl.concat([base, dup_extra], how="diagonal_relaxed")
         assert df_with_dupes.height == n_orig + 2  # 750 + 2 = 752
 
@@ -700,9 +730,7 @@ class TestComputeFactors:
         assert result.height == n_orig
         assert result["ticker"].n_unique() == n_tickers
         # The kept row should have close=999.0 (last duplicate wins)
-        dup_result = result.filter(
-            (pl.col("ticker") == "DUP_A") & (pl.col("dt") == target_dt)
-        )
+        dup_result = result.filter((pl.col("ticker") == "DUP_A") & (pl.col("dt") == target_dt))
         assert dup_result.height == 1
         assert dup_result.get_column("close")[0] == pytest.approx(999.0)
 
@@ -711,7 +739,9 @@ class TestComputeFactors:
         tickers = [f"T{i:03d}" for i in range(10)]
         df = _multi_ticker_df(tickers, n_rows=100)
         result = compute_factors(
-            df, dt=date(2025, 1, 15), batch_size=3,
+            df,
+            dt=date(2025, 1, 15),
+            batch_size=3,
         )
         assert result.height == df.height
         assert "final_score" in result.columns
@@ -812,9 +842,17 @@ class TestMissingData:
         # Build a df with nulls in most factor columns
         result = compute_all_technical_factors(df)
         factor_cols = [
-            "MOM_5D", "PTH", "MOM_SLOPE", "BB_SQUEEZE", "ATR_RATIO",
-            "MFI_14", "CMF_21", "VOL_ANOMALY", "RSI_OVERSOLD",
-            "MACD_CROSS", "GOLDEN_CROSS",
+            "MOM_5D",
+            "PTH",
+            "MOM_SLOPE",
+            "BB_SQUEEZE",
+            "ATR_RATIO",
+            "MFI_14",
+            "CMF_21",
+            "VOL_ANOMALY",
+            "RSI_OVERSOLD",
+            "MACD_CROSS",
+            "GOLDEN_CROSS",
         ]
         # Row 0: set most factors to null
         result = result.with_columns(
@@ -900,7 +938,16 @@ class TestIntegration:
         result = normalize_factors(result)
 
         # Normalisation columns
-        cont_factors = ["MOM_5D", "PTH", "MOM_SLOPE", "ATR_RATIO", "MFI_14", "CMF_21", "RSI_OVERSOLD", "REV_ACCEL"]
+        cont_factors = [
+            "MOM_5D",
+            "PTH",
+            "MOM_SLOPE",
+            "ATR_RATIO",
+            "MFI_14",
+            "CMF_21",
+            "RSI_OVERSOLD",
+            "REV_ACCEL",
+        ]
         for fname in cont_factors:
             if fname in result.columns:
                 assert f"z_{fname}" in result.columns, f"Missing z_{fname}"
@@ -915,7 +962,9 @@ class TestIntegration:
         tickers = [f"T{i:02d}" for i in range(5)]
         df = _multi_ticker_df(tickers, n_rows=250)
         result = compute_factors(
-            df, dt=date(2025, 1, 15), batch_size=2,
+            df,
+            dt=date(2025, 1, 15),
+            batch_size=2,
         )
         assert result.height == df.height
         assert result["ticker"].n_unique() == len(tickers)

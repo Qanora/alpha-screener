@@ -426,9 +426,7 @@ class FmpAdapter:
         return pl.DataFrame(records)
 
     @staticmethod
-    def _yfinance_earnings_to_analyst_estimates(
-        yf_df: pl.DataFrame, ticker: str
-    ) -> pl.DataFrame:
+    def _yfinance_earnings_to_analyst_estimates(yf_df: pl.DataFrame, ticker: str) -> pl.DataFrame:
         """Convert yfinance earnings_dates DataFrame to FMP analyst_estimates schema.
 
         yfinance earnings_dates columns:

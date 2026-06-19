@@ -23,35 +23,178 @@ def fetch_sp500_tickers() -> list[str]:
     """
     return [
         # Technology
-        "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AVGO", "ORCL", "CRM", "ADBE",
-        "AMD", "INTC", "QCOM", "TXN", "AMAT", "INTU", "IBM", "CSCO", "NOW", "LRCX",
-        "ADI", "KLAC", "APH", "SNPS", "CDNS", "MSI", "ROP", "ADSK", "FTNT", "PANW",
-        "CRWD", "PLTR", "MU", "ANET", "DELL", "HPQ",
+        "AAPL",
+        "MSFT",
+        "NVDA",
+        "GOOGL",
+        "META",
+        "AVGO",
+        "ORCL",
+        "CRM",
+        "ADBE",
+        "AMD",
+        "INTC",
+        "QCOM",
+        "TXN",
+        "AMAT",
+        "INTU",
+        "IBM",
+        "CSCO",
+        "NOW",
+        "LRCX",
+        "ADI",
+        "KLAC",
+        "APH",
+        "SNPS",
+        "CDNS",
+        "MSI",
+        "ROP",
+        "ADSK",
+        "FTNT",
+        "PANW",
+        "CRWD",
+        "PLTR",
+        "MU",
+        "ANET",
+        "DELL",
+        "HPQ",
         # Communication Services
-        "GOOG", "NFLX", "DIS", "CMCSA", "VZ", "T", "TMUS", "CHTR",
+        "GOOG",
+        "NFLX",
+        "DIS",
+        "CMCSA",
+        "VZ",
+        "T",
+        "TMUS",
+        "CHTR",
         # Consumer Cyclical
-        "AMZN", "TSLA", "HD", "MCD", "NKE", "LOW", "SBUX", "BKNG", "TJX", "CMG",
-        "ORLY", "AZO", "MAR", "ABNB", "ROST", "TGT", "YUM",
+        "AMZN",
+        "TSLA",
+        "HD",
+        "MCD",
+        "NKE",
+        "LOW",
+        "SBUX",
+        "BKNG",
+        "TJX",
+        "CMG",
+        "ORLY",
+        "AZO",
+        "MAR",
+        "ABNB",
+        "ROST",
+        "TGT",
+        "YUM",
         # Consumer Defensive
-        "WMT", "PG", "KO", "PEP", "COST", "PM", "MDLZ", "MO", "CL", "KMB", "EL",
-        "SYY", "GIS", "KHC",
+        "WMT",
+        "PG",
+        "KO",
+        "PEP",
+        "COST",
+        "PM",
+        "MDLZ",
+        "MO",
+        "CL",
+        "KMB",
+        "EL",
+        "SYY",
+        "GIS",
+        "KHC",
         # Healthcare
-        "JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO", "ABT", "DHR", "BMY", "LLY",
-        "AMGN", "GILD", "REGN", "ISRG", "VRTX", "CI", "CVS", "ZTS",
+        "JNJ",
+        "UNH",
+        "PFE",
+        "ABBV",
+        "MRK",
+        "TMO",
+        "ABT",
+        "DHR",
+        "BMY",
+        "LLY",
+        "AMGN",
+        "GILD",
+        "REGN",
+        "ISRG",
+        "VRTX",
+        "CI",
+        "CVS",
+        "ZTS",
         # Financials
-        "BRK-B", "JPM", "V", "MA", "BAC", "WFC", "MS", "GS", "BLK", "C", "SCHW",
-        "AXP", "SPGI", "MMC", "CB", "PYPL", "USB", "PNC", "TFC",
+        "BRK-B",
+        "JPM",
+        "V",
+        "MA",
+        "BAC",
+        "WFC",
+        "MS",
+        "GS",
+        "BLK",
+        "C",
+        "SCHW",
+        "AXP",
+        "SPGI",
+        "MMC",
+        "CB",
+        "PYPL",
+        "USB",
+        "PNC",
+        "TFC",
         # Industrials
-        "GE", "CAT", "UNP", "RTX", "HON", "LMT", "UPS", "BA", "DE", "ETN", "WM",
-        "GD", "ITW", "FDX", "NSC", "PH", "NOC", "CSX", "EMR",
+        "GE",
+        "CAT",
+        "UNP",
+        "RTX",
+        "HON",
+        "LMT",
+        "UPS",
+        "BA",
+        "DE",
+        "ETN",
+        "WM",
+        "GD",
+        "ITW",
+        "FDX",
+        "NSC",
+        "PH",
+        "NOC",
+        "CSX",
+        "EMR",
         # Energy
-        "XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "OXY", "WMB", "KMI",
+        "XOM",
+        "CVX",
+        "COP",
+        "EOG",
+        "SLB",
+        "MPC",
+        "PSX",
+        "OXY",
+        "WMB",
+        "KMI",
         # Utilities
-        "NEE", "SO", "DUK", "D", "AEP", "EXC", "SRE", "ED",
+        "NEE",
+        "SO",
+        "DUK",
+        "D",
+        "AEP",
+        "EXC",
+        "SRE",
+        "ED",
         # Real Estate
-        "PLD", "AMT", "CCI", "SPG", "EQIX", "O", "PSA",
+        "PLD",
+        "AMT",
+        "CCI",
+        "SPG",
+        "EQIX",
+        "O",
+        "PSA",
         # Materials
-        "LIN", "FCX", "APD", "NEM", "SHW", "ECL", "CTVA",
+        "LIN",
+        "FCX",
+        "APD",
+        "NEM",
+        "SHW",
+        "ECL",
+        "CTVA",
     ]
 
 
@@ -71,7 +214,7 @@ def download_data(tickers: list[str], end_date: date) -> pl.DataFrame:
     all_frames = []
     batch_size = 50
     for i in range(0, len(tickers), batch_size):
-        batch = tickers[i: i + batch_size]
+        batch = tickers[i : i + batch_size]
         ticker_str = " ".join(batch)
         print(f"      Batch {i // batch_size + 1}: {len(batch)} tickers ...", end=" ", flush=True)
         try:
@@ -93,8 +236,33 @@ def download_data(tickers: list[str], end_date: date) -> pl.DataFrame:
                         except KeyError:
                             continue
                         for idx, row in sub.iterrows():
-                            dt_val = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-                            records.append({
+                            dt_val = (
+                                idx.date()
+                                if hasattr(idx, "date")
+                                else date.fromisoformat(str(idx)[:10])
+                            )
+                            records.append(
+                                {
+                                    "ticker": t,
+                                    "dt": dt_val,
+                                    "open": float(row.get("Open", 0) or 0),
+                                    "high": float(row.get("High", 0) or 0),
+                                    "low": float(row.get("Low", 0) or 0),
+                                    "close": float(row.get("Close", 0) or 0),
+                                    "volume": int(row.get("Volume", 0) or 0),
+                                }
+                            )
+                else:
+                    # Single ticker
+                    t = batch[0]
+                    for idx, row in pd_df.dropna(how="all").iterrows():
+                        dt_val = (
+                            idx.date()
+                            if hasattr(idx, "date")
+                            else date.fromisoformat(str(idx)[:10])
+                        )
+                        records.append(
+                            {
                                 "ticker": t,
                                 "dt": dt_val,
                                 "open": float(row.get("Open", 0) or 0),
@@ -102,23 +270,12 @@ def download_data(tickers: list[str], end_date: date) -> pl.DataFrame:
                                 "low": float(row.get("Low", 0) or 0),
                                 "close": float(row.get("Close", 0) or 0),
                                 "volume": int(row.get("Volume", 0) or 0),
-                            })
-                else:
-                    # Single ticker
-                    t = batch[0]
-                    for idx, row in pd_df.dropna(how="all").iterrows():
-                        dt_val = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-                        records.append({
-                            "ticker": t,
-                            "dt": dt_val,
-                            "open": float(row.get("Open", 0) or 0),
-                            "high": float(row.get("High", 0) or 0),
-                            "low": float(row.get("Low", 0) or 0),
-                            "close": float(row.get("Close", 0) or 0),
-                            "volume": int(row.get("Volume", 0) or 0),
-                        })
+                            }
+                        )
                 if records:
-                    all_frames.append(pl.DataFrame(records).with_columns(pl.col("dt").cast(pl.Date)))
+                    all_frames.append(
+                        pl.DataFrame(records).with_columns(pl.col("dt").cast(pl.Date))
+                    )
                 print(f"{len(records)} rows")
             else:
                 print("empty")
@@ -150,14 +307,16 @@ def fetch_meta(tickers: list[str]) -> pl.DataFrame:
             t = yf.Ticker(ticker)
             info = t.info
             if info:
-                records.append({
-                    "ticker": ticker,
-                    "sector": info.get("sector", ""),
-                    "industry": info.get("industry", ""),
-                    "market_cap": info.get("marketCap") or 0.0,
-                    "index_source": "SP500",
-                    "refreshed_at": datetime.now(UTC).isoformat(),
-                })
+                records.append(
+                    {
+                        "ticker": ticker,
+                        "sector": info.get("sector", ""),
+                        "industry": info.get("industry", ""),
+                        "market_cap": info.get("marketCap") or 0.0,
+                        "index_source": "SP500",
+                        "refreshed_at": datetime.now(UTC).isoformat(),
+                    }
+                )
         except Exception:
             pass
         if (i + 1) % 20 == 0:
@@ -168,8 +327,12 @@ def fetch_meta(tickers: list[str]) -> pl.DataFrame:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tickers", type=int, default=100, help="Number of top SP500 tickers to download")
-    parser.add_argument("--skip-download", action="store_true", help="Skip download, use cached data")
+    parser.add_argument(
+        "--tickers", type=int, default=100, help="Number of top SP500 tickers to download"
+    )
+    parser.add_argument(
+        "--skip-download", action="store_true", help="Skip download, use cached data"
+    )
     parser.add_argument("--top", type=int, default=20, help="Number of top candidates to output")
     args = parser.parse_args()
 
@@ -204,7 +367,7 @@ def main():
     print("\n[4/5] Running screening pipeline ...")
     from alphascreener.data.io import scan_parquet
     from alphascreener.factors.engine import compute_factors
-    from alphascreener.screening.phase1 import hard_filter
+    from alphascreener.screening.phase1 import hard_filter_with_fallback
     from alphascreener.screening.phase2 import phase2_pipeline
 
     ohlcv_lf = scan_parquet("ohlcv")
@@ -215,8 +378,9 @@ def main():
     # Dedup: keep the row with the most complete OHLCV for each ticker
     df = (
         df.with_columns(
-            (pl.col("open").is_not_null().cast(int) + pl.col("close").is_not_null().cast(int))
-            .alias("_completeness")
+            (
+                pl.col("open").is_not_null().cast(int) + pl.col("close").is_not_null().cast(int)
+            ).alias("_completeness")
         )
         .sort("_completeness", descending=True)
         .unique(subset=["ticker"], keep="first")
@@ -240,19 +404,14 @@ def main():
     if meta is not None and meta.height > 0:
         factors = factors.join(meta, on="ticker", how="left")
 
-    filtered = hard_filter(factors)
+    filtered, relaxed_used = hard_filter_with_fallback(factors)
     passed = filtered.filter(pl.col("pass_phase1"))
-    print(f"      Phase 1 pass : {passed.height} / {filtered.height}")
+    relax_note = " (relaxed)" if relaxed_used else ""
+    print(f"      Phase 1 pass : {passed.height} / {filtered.height}{relax_note}")
 
     if passed.height == 0:
-        print("      No tickers passed Phase 1 — trying with relaxed thresholds ...")
-        # Relax thresholds for demonstration
-        from alphascreener.config import Settings
-
-        old_mom = None
-        # Just report what passed with what scores
-        top_scores = filtered.select(["ticker", "breakout_score"]).sort("breakout_score", descending=True).head(args.top)
-        results = top_scores
+        print("      No tickers passed Phase 1 (even after relaxation) — aborting.")
+        return
     else:
         results = phase2_pipeline(passed, n_final=args.top)
         print(f"      Phase 2 output: {results.height} candidates")
@@ -272,18 +431,26 @@ def main():
 
     settings = Settings()
 
-    if not settings.feishu_app_id or not settings.feishu_app_secret or not settings.feishu_target_openid:
+    if (
+        not settings.feishu_app_id
+        or not settings.feishu_app_secret
+        or not settings.feishu_target_openid
+    ):
         print("      WARNING: Feishu credentials not configured, skipping push")
         return
 
     # Build top_five list for the card
     top_five = []
-    for i, row in enumerate(results.select(["ticker", "breakout_score"]).head(5).iter_rows(named=True)):
-        top_five.append({
-            "rank": i + 1,
-            "ticker": row["ticker"],
-            "score": round(row["breakout_score"], 4),
-        })
+    for i, row in enumerate(
+        results.select(["ticker", "breakout_score"]).head(5).iter_rows(named=True)
+    ):
+        top_five.append(
+            {
+                "rank": i + 1,
+                "ticker": row["ticker"],
+                "score": round(row["breakout_score"], 4),
+            }
+        )
 
     # Determine alerts summary
     n_total = df["ticker"].n_unique()

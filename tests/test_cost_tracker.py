@@ -113,10 +113,9 @@ class TestRecordCall:
         daily, count = tracker.get_daily_cost()
         assert count == 3
         # Verify sum
-        expected = (
-            CostTracker.calc_call_cost(1000, 0, "gpt-4o-mini") * 2
-            + CostTracker.calc_call_cost(500, 100, "gpt-4o-mini")
-        )
+        expected = CostTracker.calc_call_cost(
+            1000, 0, "gpt-4o-mini"
+        ) * 2 + CostTracker.calc_call_cost(500, 100, "gpt-4o-mini")
         assert daily == pytest.approx(expected, rel=1e-6)
 
     def test_by_module_breakdown(self, tracker, session_factory):
@@ -138,9 +137,7 @@ class TestRecordCall:
         yesterday = date.today() - timedelta(days=1)
 
         tracker.record_call("refining", 100, 50, model="gpt-4o-mini")  # today
-        tracker.record_call(
-            "refining", 200, 60, model="gpt-4o-mini", cost_date=yesterday
-        )
+        tracker.record_call("refining", 200, 60, model="gpt-4o-mini", cost_date=yesterday)
 
         with session_factory() as s:
             today_row = s.get(LlmCostDaily, date.today())
@@ -183,14 +180,13 @@ class TestMonthlyCost:
         # land in the previous month and break the two-day assertion.
         if today.day == 1:
             today = today.replace(day=2)
-        tracker.record_call("refining", 1_000_000, 0, model="gpt-4o-mini",
-                            cost_date=today)
-        tracker.record_call("refining", 1_000_000, 0, model="gpt-4o-mini",
-                            cost_date=today - timedelta(days=1))
+        tracker.record_call("refining", 1_000_000, 0, model="gpt-4o-mini", cost_date=today)
+        tracker.record_call(
+            "refining", 1_000_000, 0, model="gpt-4o-mini", cost_date=today - timedelta(days=1)
+        )
         # Day from previous month (should NOT be included)
         prev_month = today.replace(day=1) - timedelta(days=1)
-        tracker.record_call("refining", 1_000_000, 0, model="gpt-4o-mini",
-                            cost_date=prev_month)
+        tracker.record_call("refining", 1_000_000, 0, model="gpt-4o-mini", cost_date=prev_month)
 
         monthly = tracker.get_monthly_cost(ref_date=today)
         assert monthly == pytest.approx(0.30, rel=1e-6)  # only 2 days in current month
@@ -200,8 +196,9 @@ class TestMonthlyCost:
         today = date.today()
         # Record in previous month
         prev_month_day = today.replace(day=1) - timedelta(days=1)
-        tracker.record_call("refining", 10_000_000, 0, model="gpt-4o-mini",
-                            cost_date=prev_month_day)
+        tracker.record_call(
+            "refining", 10_000_000, 0, model="gpt-4o-mini", cost_date=prev_month_day
+        )
 
         monthly = tracker.get_monthly_cost(ref_date=today)
         assert monthly == 0.0
@@ -226,12 +223,19 @@ class TestCircuitBreaker:
         """L1 triggered when daily cost >= $0.80."""
         tracker_low = CostTracker(
             session_factory,
-            thresholds={"l1_warning_daily": 0.10, "l2_degrade_daily": 999.0,
-                         "l3_savings_monthly": 999.0, "l4_circuit_monthly": 999.0},
+            thresholds={
+                "l1_warning_daily": 0.10,
+                "l2_degrade_daily": 999.0,
+                "l3_savings_monthly": 999.0,
+                "l4_circuit_monthly": 999.0,
+            },
         )
         # Record a call that pushes daily cost above L1
         tracker_low.record_call(
-            "refining", 1_000_000, 1_000_000, model="gpt-4o-mini",
+            "refining",
+            1_000_000,
+            1_000_000,
+            model="gpt-4o-mini",
         )  # ~$0.75 — above 0.10 L1
         status = tracker_low.check_circuit()
         assert status.level == CircuitLevel.L1_WARNING
@@ -240,8 +244,12 @@ class TestCircuitBreaker:
         """L2 triggered when daily cost >= $1.00."""
         tracker_l2 = CostTracker(
             session_factory,
-            thresholds={"l1_warning_daily": 0.05, "l2_degrade_daily": 0.10,
-                         "l3_savings_monthly": 999.0, "l4_circuit_monthly": 999.0},
+            thresholds={
+                "l1_warning_daily": 0.05,
+                "l2_degrade_daily": 0.10,
+                "l3_savings_monthly": 999.0,
+                "l4_circuit_monthly": 999.0,
+            },
         )
         tracker_l2.record_call("refining", 1_000_000, 1_000_000, model="gpt-4o-mini")  # ~$0.75
         status = tracker_l2.check_circuit()
@@ -253,8 +261,12 @@ class TestCircuitBreaker:
         """L3 triggered when monthly cost >= threshold."""
         tracker_l3 = CostTracker(
             session_factory,
-            thresholds={"l1_warning_daily": 999.0, "l2_degrade_daily": 999.0,
-                         "l3_savings_monthly": 0.10, "l4_circuit_monthly": 999.0},
+            thresholds={
+                "l1_warning_daily": 999.0,
+                "l2_degrade_daily": 999.0,
+                "l3_savings_monthly": 0.10,
+                "l4_circuit_monthly": 999.0,
+            },
         )
         tracker_l3.record_call("refining", 1_000_000, 1_000_000, model="gpt-4o-mini")  # ~$0.75
         status = tracker_l3.check_circuit()
@@ -264,8 +276,12 @@ class TestCircuitBreaker:
         """L4 triggered when monthly cost >= circuit threshold."""
         tracker_l4 = CostTracker(
             session_factory,
-            thresholds={"l1_warning_daily": 999.0, "l2_degrade_daily": 999.0,
-                         "l3_savings_monthly": 0.10, "l4_circuit_monthly": 0.50},
+            thresholds={
+                "l1_warning_daily": 999.0,
+                "l2_degrade_daily": 999.0,
+                "l3_savings_monthly": 0.10,
+                "l4_circuit_monthly": 0.50,
+            },
         )
         tracker_l4.record_call("refining", 1_000_000, 1_000_000, model="gpt-4o-mini")  # ~$0.75
         status = tracker_l4.check_circuit()
@@ -277,8 +293,12 @@ class TestCircuitBreaker:
         """L4 always wins, even when all lower levels also fire."""
         tracker = CostTracker(
             session_factory,
-            thresholds={"l1_warning_daily": 0.01, "l2_degrade_daily": 0.02,
-                         "l3_savings_monthly": 0.03, "l4_circuit_monthly": 0.04},
+            thresholds={
+                "l1_warning_daily": 0.01,
+                "l2_degrade_daily": 0.02,
+                "l3_savings_monthly": 0.03,
+                "l4_circuit_monthly": 0.04,
+            },
         )
         tracker.record_call("refining", 1_000_000, 1_000_000, model="gpt-4o-mini")
         status = tracker.check_circuit()
@@ -294,8 +314,12 @@ class TestCircuitBreaker:
         """CircuitStatus.message is non-empty when any level trips."""
         tracker = CostTracker(
             session_factory,
-            thresholds={"l1_warning_daily": 0.01, "l2_degrade_daily": 999.0,
-                         "l3_savings_monthly": 999.0, "l4_circuit_monthly": 999.0},
+            thresholds={
+                "l1_warning_daily": 0.01,
+                "l2_degrade_daily": 999.0,
+                "l3_savings_monthly": 999.0,
+                "l4_circuit_monthly": 999.0,
+            },
         )
         tracker.record_call("refining", 1_000_000, 0, model="gpt-4o-mini")
         status = tracker.check_circuit()

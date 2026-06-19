@@ -206,11 +206,7 @@ def build_fallback_text(
         for i, t in enumerate(top_five[:5], start=1):
             ticker = t.get("ticker", "-")
             rating = t.get("rating") or (f"{t['score']:.4f}" if t.get("score") is not None else "-")
-            lines.append(
-                f"  {i}. {ticker} "
-                f"({rating}, "
-                f"{_safe_pct(t.get('confidence', 0))})"
-            )
+            lines.append(f"  {i}. {ticker} ({rating}, {_safe_pct(t.get('confidence', 0))})")
     else:
         lines.append("Top 5: --")
 

@@ -46,13 +46,9 @@ class DailyHealthRecord:
     def __post_init__(self) -> None:
         """Validate field values."""
         if self.total_tickers < 0:
-            raise ValueError(
-                f"total_tickers must be >= 0, got {self.total_tickers}"
-            )
+            raise ValueError(f"total_tickers must be >= 0, got {self.total_tickers}")
         if self.failed_tickers < 0:
-            raise ValueError(
-                f"failed_tickers must be >= 0, got {self.failed_tickers}"
-            )
+            raise ValueError(f"failed_tickers must be >= 0, got {self.failed_tickers}")
         if self.failed_tickers > self.total_tickers:
             raise ValueError(
                 f"failed_tickers ({self.failed_tickers}) must be <= "
@@ -118,20 +114,15 @@ class YFinanceHealthMonitor:
     _daily_history: list[DailyHealthRecord] = field(default_factory=list, repr=False)
     _fallback_activated: bool = field(default=False, repr=False)
     _consecutive_exceeded: int = field(default=0, repr=False)
-    _logger: logging.Logger = field(
-        default_factory=lambda: get_logger("screening"), repr=False
-    )
+    _logger: logging.Logger = field(default_factory=lambda: get_logger("screening"), repr=False)
 
     def __post_init__(self) -> None:
         """Validate constructor parameters."""
         if self.consecutive_days <= 0:
-            raise ValueError(
-                f"consecutive_days must be > 0, got {self.consecutive_days}"
-            )
+            raise ValueError(f"consecutive_days must be > 0, got {self.consecutive_days}")
         if not (0.0 <= self.failure_threshold_pct <= 100.0):
             raise ValueError(
-                f"failure_threshold_pct must be in [0, 100], "
-                f"got {self.failure_threshold_pct}"
+                f"failure_threshold_pct must be in [0, 100], got {self.failure_threshold_pct}"
             )
 
     # -- Properties --------------------------------------------------------------
@@ -180,8 +171,7 @@ class YFinanceHealthMonitor:
                 # Gap > 1 day — reset and start a new streak
                 self._consecutive_exceeded = 1
             self._logger.warning(
-                "yfinance failure rate %.1f%% (≥ %.1f%%) for %s — "
-                "consecutive days exceeded: %d/%d",
+                "yfinance failure rate %.1f%% (≥ %.1f%%) for %s — consecutive days exceeded: %d/%d",
                 record.failure_rate_pct,
                 self.failure_threshold_pct,
                 record.date.isoformat(),
