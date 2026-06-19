@@ -19,7 +19,6 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -119,6 +118,17 @@ class SyncOrchestrator:
                                 stooq=StooqAdapter(),
                                 fmp=FmpAdapter(api_key="..."))
         report = await orch.sync(tickers=["AAPL", "GOOGL", ...])
+
+    To persist cross-validation diffs to the monitoring database, pass a
+    :class:`~alphascreener.cross_validation.diff_store.DiffStore` via
+    *diff_store*::
+
+        from alphascreener.cross_validation import DiffStore
+        from alphascreener.config import Settings
+
+        settings = Settings()
+        store = DiffStore(settings.get_db_url())
+        orch = SyncOrchestrator(..., diff_store=store)
     """
 
     yfinance: YFinanceAdapter
@@ -127,6 +137,7 @@ class SyncOrchestrator:
     lookback_days: int = DEFAULT_LOOKBACK_DAYS
     stooq_validate_n: int = STOOQ_VALIDATE_TOP_N
     max_nan_fraction: float = MAX_NAN_FRACTION
+    diff_store: Any | None = None  # DiffStore for persisting data_source_diff records
 
     _logger: logging.Logger = field(
         default_factory=lambda: get_logger("screening"), repr=False, init=False
@@ -327,6 +338,7 @@ class SyncOrchestrator:
         # Compare field-by-field for each (ticker, dt) pair
         fields = ["open", "high", "low", "close"]
         diff_count = 0
+        diff_records: list[dict[str, Any]] = []
 
         joined = yf_df.filter(pl.col("ticker").is_in(top_tickers)).join(
             stooq_df,
@@ -335,6 +347,8 @@ class SyncOrchestrator:
             suffix="_stooq",
         )
         validated_count = joined["ticker"].n_unique() if joined.height > 0 else 0
+
+        from alphascreener.cross_validation.comparator import compute_diff_pct
 
         for col_name in fields:
             yf_col = col_name
@@ -351,14 +365,27 @@ class SyncOrchestrator:
             )
 
             for row in diffs.iter_rows(named=True):
+                yf_val = float(row.get(yf_col, 0.0))
+                sq_val = float(row.get(sq_col, 0.0))
+                diff_pct = compute_diff_pct(yf_val, sq_val)
+
                 self._logger.debug(
                     "Stooq diff: %s %s %s: yf=%s stooq=%s",
                     row.get("ticker"),
                     row.get("dt"),
                     col_name,
-                    row.get(yf_col),
-                    row.get(sq_col),
+                    yf_val,
+                    sq_val,
                 )
+                diff_records.append({
+                    "ticker": str(row.get("ticker", "")),
+                    "dt": row.get("dt"),
+                    "field": col_name,
+                    "primary_value": yf_val,
+                    "fallback_value": sq_val,
+                    "fallback_source": "stooq",
+                    "diff_pct": diff_pct,
+                })
                 diff_count += 1
 
         if diff_count > 0:
@@ -367,6 +394,25 @@ class SyncOrchestrator:
                 diff_count,
                 DIFF_THRESHOLD_PCT * 100,
             )
+
+        # -- Persist diffs to data_source_diff (Issue #216) ------------------
+        if diff_records and self.diff_store is not None:
+            try:
+                from alphascreener.cross_validation.comparator import OHLCVFieldDiffs
+
+                diffs_container = OHLCVFieldDiffs(records=diff_records)
+                inserted = self.diff_store.insert_diffs(diffs_container)
+                self._logger.info(
+                    "Persisted %d data_source_diff records (of %d detected)",
+                    inserted,
+                    diff_count,
+                )
+            except Exception:
+                self._logger.error(
+                    "Failed to persist data_source_diff records (%d records)",
+                    len(diff_records),
+                    exc_info=True,
+                )
 
         self._logger.info(
             "Stooq cross-validation: %d tickers checked, %d diffs found",

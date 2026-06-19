@@ -414,12 +414,12 @@ class TestPidLockCustomName:
 class TestTaskDefinitionsStorage:
     """TASK_CRON map and TASK_IDS set exist and are correctly populated."""
 
-    def test_task_cron_map_has_eleven_entries(self):
-        """TASK_CRON has 11 tasks (includes weekly_case_library_rebuild from #190)."""
+    def test_task_cron_map_has_twelve_entries(self):
+        """TASK_CRON has 12 tasks (includes daily_data_sync from #216)."""
         from alphascreener.scheduler.tasks import TASK_CRON
 
         assert isinstance(TASK_CRON, dict)
-        assert len(TASK_CRON) == 11
+        assert len(TASK_CRON) == 12
 
     def test_task_ids_set_is_complete(self):
         """TASK_IDS matches TASK_CRON keys."""
@@ -428,7 +428,7 @@ class TestTaskDefinitionsStorage:
         assert TASK_IDS == set(TASK_CRON.keys())
 
     def test_all_expected_task_ids_present(self):
-        """All 11 task IDs (8 PRD 7.7.1 + 1 #103 + 1 #104 + 1 #190) are present."""
+        """All 12 task IDs (8 PRD 7.7.1 + 1 #103 + 1 #104 + 1 #190 + 1 #216) are present."""
         from alphascreener.scheduler.tasks import TASK_CRON
 
         expected = {
@@ -439,6 +439,7 @@ class TestTaskDefinitionsStorage:
             "monthly_universe_refresh",
             "daily_cusum_check",
             "daily_backtest_incremental",
+            "daily_data_sync",
             "daily_health_check",
             "daily_scan",
             "daily_feishu_push",
@@ -522,15 +523,15 @@ class TestSchedulerOrchestrator:
             f"max_instances should be 1, got {job_defaults.get('max_instances')}"
         )
 
-    def test_eleven_jobs_registered(self, tmp_path):
-        """All 11 tasks are registered as jobs."""
+    def test_twelve_jobs_registered(self, tmp_path):
+        """All 12 tasks are registered as jobs."""
         from alphascreener.scheduler.orchestrator import SchedulerApp
 
         db_path = str(tmp_path / "test.db")
         app = SchedulerApp(db_url=f"sqlite:///{db_path}")
         jobs = app.scheduler.get_jobs()
         job_ids = {job.id for job in jobs}
-        assert len(job_ids) == 11
+        assert len(job_ids) == 12
         from alphascreener.scheduler.tasks import TASK_IDS
 
         assert job_ids == TASK_IDS

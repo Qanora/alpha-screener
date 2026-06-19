@@ -32,6 +32,7 @@ TASK_CRON: dict[str, str] = {
     "daily_cusum_check": "0 8 * * *",
     "daily_backtest_incremental": "0 11 * * 2-6",
     "daily_health_check": "0 12 * * *",
+    "daily_data_sync": "0 21 * * 1-5",
     "daily_scan": "0 23 * * 1-5",
     "daily_feishu_push": "5 23 * * 1-5",
     "weekly_case_library_rebuild": "0 10 * * 6",
@@ -144,6 +145,69 @@ def daily_health_check() -> None:
     _logger.info("daily_health_check: done")
 
 
+def daily_data_sync() -> None:
+    """Sync OHLCV data from primary (yfinance) and fallback (Stooq) sources.
+
+    Cron: 0 21 * * 1-5 (21:00 UTC Mon-Fri, before daily_scan at 23:00).
+
+    Downloads fresh OHLCV data, cross-validates against the fallback source,
+    and persists field-level diffs to ``data_source_diff`` for monitoring.
+    """
+    import asyncio
+
+    from alphascreener.config import Settings
+    from alphascreener.cross_validation import DiffStore
+    from alphascreener.data_sync.orchestrator import SyncOrchestrator
+    from alphascreener.db.engine import create_db_engine
+    from alphascreener.sources.stooq_adapter import StooqAdapter
+    from alphascreener.sources.yfinance_adapter import YFinanceAdapter
+
+    _logger.info("daily_data_sync: starting")
+    settings = Settings()
+    engine = create_db_engine(settings.get_db_url())
+    try:
+        from alphascreener.db.ensure_schema import _ensure_schema
+
+        _ensure_schema(engine)
+
+        diff_store = DiffStore(settings.get_db_url())
+        yf = YFinanceAdapter()
+        stooq = StooqAdapter()
+        orch = SyncOrchestrator(yfinance=yf, stooq=stooq, diff_store=diff_store)
+
+        # Load ticker universe
+        try:
+            from alphascreener.universe.meta import read_meta_cache
+
+            meta = read_meta_cache().collect()
+            tickers = meta["ticker"].to_list() if meta.height > 0 else []
+        except FileNotFoundError:
+            _logger.warning("Universe meta cache not found, skipping data sync")
+            return
+        except Exception:
+            _logger.error("Failed to load universe meta cache", exc_info=True)
+            return
+
+        if not tickers:
+            _logger.warning("Empty ticker universe, skipping data sync")
+            return
+
+        _logger.info("Syncing %d tickers via yfinance + Stooq cross-validation", len(tickers))
+        report = asyncio.run(orch.sync(tickers, incremental=True))
+        _logger.info(
+            "daily_data_sync: done — %d/%d succeeded, %d OHLCV rows, "
+            "%d Stooq validated, %d diffs, %.1fs",
+            report.tickers_succeeded,
+            report.tickers_total,
+            report.ohlcv_rows,
+            report.stooq_validated,
+            report.stooq_diff_count,
+            report.elapsed_s,
+        )
+    finally:
+        engine.dispose()
+
+
 def daily_cusum_check() -> None:
     """Run CUSUM fast-layer factor health monitoring (PRD 6.1.1 / 6.3, Issue #103).
 
@@ -236,6 +300,46 @@ def daily_cusum_check() -> None:
             results["l3_triggered"],
             results["records_written"],
         )
+
+        # -- Alpha acceptance metrics (Issue #216) -------------------------------
+        # Compute and persist alpha acceptance for the same metric date when
+        # t7_return is available.  breakout_score is computed on-the-fly from
+        # factor columns; refined_score is unavailable for historical data and
+        # is proxied by breakout_score with a log annotation.
+        if return_col is not None and return_col in factors_df.columns:
+            try:
+                from alphascreener.alpha_acceptance import (
+                    compute_all_alpha_metrics,
+                    write_alpha_acceptance,
+                )
+                from alphascreener.screening.phase2 import compute_breakout_score
+
+                scored = compute_breakout_score(factors_df)
+                metrics = compute_all_alpha_metrics(
+                    scored,
+                    score_col_pure="breakout_score",
+                    score_col_llm="breakout_score",  # proxy: no LLM refinement for historical data
+                    return_col=return_col,
+                )
+                metrics["metric_date"] = metric_date
+                write_alpha_acceptance(metrics, engine)
+                _logger.info(
+                    "Alpha acceptance persisted for %s (base_rate=%.4f, precision@20_pure=%.4f)",
+                    metric_date.isoformat(),
+                    metrics.get("base_rate", 0.0),
+                    metrics.get("precision_at_20_pure", 0.0),
+                )
+            except Exception:
+                _logger.error(
+                    "Failed to compute/persist alpha acceptance for %s",
+                    metric_date.isoformat(),
+                    exc_info=True,
+                )
+        else:
+            _logger.info(
+                "Skipping alpha acceptance for %s: t7_return not available",
+                metric_date.isoformat(),
+            )
     finally:
         engine.dispose()
 
@@ -805,6 +909,7 @@ TASK_FUNCS: dict[str, Callable[[], None]] = {
     "monthly_universe_refresh": monthly_universe_refresh,
     "daily_cusum_check": daily_cusum_check,
     "daily_backtest_incremental": daily_backtest_incremental,
+    "daily_data_sync": daily_data_sync,
     "daily_health_check": daily_health_check,
     "daily_scan": daily_scan,
     "daily_feishu_push": daily_feishu_push,

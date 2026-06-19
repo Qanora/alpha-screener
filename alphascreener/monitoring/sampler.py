@@ -67,10 +67,13 @@ def _with_session(
     fn: Callable[[Session], T],
     *,
     rollback_value: T | None = None,
+    operation: str = "unknown",
 ) -> T | None:
     """Execute *fn* inside a new session, commit, and close.
 
     On failure the session is rolled back and ``rollback_value`` is returned.
+    The *operation* string is used in error logs to identify the failing write
+    path (e.g. ``"monitoring_samples.insert"``, ``"alerts.insert"``).
     """
     session = session_factory()
     try:
@@ -78,7 +81,12 @@ def _with_session(
         session.commit()
         return result
     except Exception:
-        logger.exception("Session operation failed")
+        logger.error(
+            "Monitoring write failed [%s] — data will NOT be persisted. "
+            "Check DB schema, disk space, and engine connectivity.",
+            operation,
+            exc_info=True,
+        )
         session.rollback()
         return rollback_value
     finally:
@@ -198,7 +206,7 @@ class ResourceMonitor:
                 )
             )
 
-        _with_session(self._session_factory, _write)
+        _with_session(self._session_factory, _write, operation="monitoring_samples.insert")
 
     # -- peaks ---------------------------------------------------------------
 
@@ -240,7 +248,7 @@ class ResourceMonitor:
                 )
             )
 
-        _with_session(self._session_factory, _write)
+        _with_session(self._session_factory, _write, operation="monitoring_samples.insert_peak")
 
     # -- alert evaluation ----------------------------------------------------
 
@@ -290,7 +298,7 @@ def _alert_severity(
             )
         )
 
-    _with_session(session_factory, _write)
+    _with_session(session_factory, _write, operation="alerts.insert")
 
 
 def _check_sustained(
@@ -563,7 +571,7 @@ def write_stage_metric(
             )
         )
 
-    _with_session(session_factory, _write)
+    _with_session(session_factory, _write, operation="monitoring_samples.insert_stage")
 
 
 # ---------------------------------------------------------------------------
@@ -584,5 +592,10 @@ def _cleanup_old_samples(
             .delete(synchronize_session="fetch")
         )
 
-    result = _with_session(session_factory, _delete, rollback_value=0)
+    result = _with_session(
+        session_factory,
+        _delete,
+        rollback_value=0,
+        operation="monitoring_samples.cleanup",
+    )
     return result if result is not None else 0
