@@ -33,8 +33,11 @@ DEFAULT_RPS: int = 5
 MAX_RETRIES: int = 3
 RETRY_WAIT_INIT_S: float = 2.0
 RETRY_WAIT_MAX_S: float = 60.0
-CIRCUIT_BREAKER_THRESHOLD: int = 3
+CIRCUIT_BREAKER_THRESHOLD: int = 5
 CIRCUIT_BREAKER_TTL_DAYS: int = 1
+# When a batch download fails, retry each ticker individually up to this
+# many per-ticker attempts before recording a failure.
+INDIVIDUAL_RETRY_MAX: int = 2
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +476,66 @@ class YFinanceAdapter:
                 self._record_failure(ticker, today)
             raise
 
+    # -- Individual ticker fallback (Issue #224) ----------------------------------
+
+    async def _download_individual_fallback(
+        self,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        today: date,
+        results: list[pl.DataFrame],
+        max_attempts: int = INDIVIDUAL_RETRY_MAX,
+    ) -> None:
+        """Attempt to download a single ticker individually after batch failure.
+
+        When a batch download fails or a ticker is missing from batch results,
+        this method tries the ticker individually up to *max_attempts* times.
+        Only records a circuit-breaker failure if all individual attempts fail.
+
+        This prevents healthy tickers from being penalised when a batch fails
+        due to a different problematic ticker in the same batch (Issue #224).
+        """
+        for attempt in range(1, max_attempts + 1):
+            try:
+                pd_df = await self._rate_limited_call(
+                    ticker,
+                    _download_batch,
+                    [ticker],
+                    start_date,
+                    end_date,
+                    track_circuit=False,
+                )
+                pl_df = _ohlcv_to_polars(pd_df, fallback_ticker=ticker)
+                if pl_df.height > 0:
+                    results.append(pl_df)
+                    self._record_success(ticker)
+                    self._logger.debug(
+                        "Individual fallback succeeded for %s (attempt %d/%d)",
+                        ticker, attempt, max_attempts,
+                    )
+                    return
+                # Empty result — retry if attempts remain
+                if attempt < max_attempts:
+                    self._logger.debug(
+                        "Individual fallback for %s returned empty (attempt %d/%d), retrying",
+                        ticker, attempt, max_attempts,
+                    )
+            except CircuitBreakerOpenError:
+                return
+            except Exception:
+                if attempt < max_attempts:
+                    self._logger.debug(
+                        "Individual fallback for %s failed (attempt %d/%d), retrying",
+                        ticker, attempt, max_attempts,
+                    )
+        # All individual attempts exhausted
+        self._record_failure(ticker, today)
+        self._logger.warning(
+            "Individual fallback exhausted for %s after %d attempts",
+            ticker, max_attempts,
+        )
+
     # -- Batched OHLCV -----------------------------------------------------------
 
     def _split_batches(self, tickers: list[str]) -> list[list[str]]:
@@ -493,6 +556,12 @@ class YFinanceAdapter:
 
         Circuit breaker state is tracked **per ticker** so that a healthy ticker
         is never blocked because it shared a batch with a failing ticker.
+
+        **Individual fallback (Issue #224)**: When a batch download fails or a
+        ticker is missing from batch results, the adapter retries that ticker
+        individually (up to ``INDIVIDUAL_RETRY_MAX`` attempts) before recording
+        a circuit-breaker failure. This prevents healthy tickers from being
+        penalised when the batch fails due to a different problematic ticker.
 
         Args:
             tickers: List of ticker symbols (e.g. ``["AAPL", "GOOGL"]``).
@@ -574,7 +643,11 @@ class YFinanceAdapter:
                     if t in present_tickers:
                         self._record_success(t)
                     else:
-                        self._record_failure(t, today)
+                        # Ticker missing from batch result — try individually
+                        # before recording a failure (Issue #224).
+                        await self._download_individual_fallback(
+                            t, start_date, _end, today, results
+                        )
             except CircuitBreakerOpenError as e:
                 self._logger.warning(
                     "OHLCV batch %s skipped (circuit breaker): %s",
@@ -587,9 +660,14 @@ class YFinanceAdapter:
                     batch[0],
                     e,
                 )
-                # Per-ticker failure tracking
+                # Batch download failed entirely — try each ticker individually
+                # before recording per-ticker failures (Issue #224).
                 for t in batch:
-                    self._record_failure(t, today)
+                    if self._is_circuit_open(t, today):
+                        continue
+                    await self._download_individual_fallback(
+                        t, start_date, _end, today, results
+                    )
 
         if not results:
             return pl.DataFrame(

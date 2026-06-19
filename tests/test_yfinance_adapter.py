@@ -232,16 +232,15 @@ class TestSplitBatches:
 
 
 class TestCircuitBreaker:
-    """Circuit breaker: 3 consecutive failures → skip for the day."""
+    """Circuit breaker: CIRCUIT_BREAKER_THRESHOLD consecutive failures → skip for the day."""
 
-    def test_open_after_three_failures(self, adapter):
+    def test_open_after_threshold_failures(self, adapter):
         today = _utc_today()
         ticker = "FAIL"
         assert not adapter._is_circuit_open(ticker, today)
-        adapter._record_failure(ticker, today)
-        assert not adapter._is_circuit_open(ticker, today)
-        adapter._record_failure(ticker, today)
-        assert not adapter._is_circuit_open(ticker, today)
+        for i in range(CIRCUIT_BREAKER_THRESHOLD - 1):
+            adapter._record_failure(ticker, today)
+            assert not adapter._is_circuit_open(ticker, today), f"still closed at failure {i+1}"
         adapter._record_failure(ticker, today)
         assert adapter._is_circuit_open(ticker, today)
 
@@ -461,10 +460,12 @@ class TestDownloadOhlcvAsync:
         monkeypatch.setattr(mod, "_download_batch", lambda tickers, start, end: single_ticker_ohlcv)
 
         result = await adapter_fast.download_ohlcv(["A", "B", "C"], "2025-01-01", "2025-01-05")
-        # Each batch returns 3 rows; we have 2 batches (size=2), so 6 rows
-        # Wait actually the fixture returns for AAPL, and we're using the same fixture
-        # for all batches. Each batch gets the same 3 rows.
-        assert result.height == 6  # 2 batches x 3 rows
+        # With individual fallback (Issue #224): when a ticker is missing from
+        # a batch result, the adapter retries it individually.  The mock returns
+        # plain-column data, so batch["A","B"] produces empty-ticker rows and
+        # triggers individual fallback for both A and B (3 rows each), plus
+        # batch["C"] succeeds normally (3 rows) = 3+3+3+3 = 12 rows total.
+        assert result.height == 12  # 4 downloads x 3 rows each
 
     async def test_download_empty_tickers(self, adapter_fast):
         result = await adapter_fast.download_ohlcv([], "2025-01-01", "2025-01-05")
@@ -775,7 +776,12 @@ class TestPartialBatchTracking:
     only those tickers get _record_success; the missing ones get _record_failure."""
 
     async def test_missing_ticker_gets_failure_not_success(self, adapter_fast, monkeypatch):
-        """Batch with AAPL+GOOGL, but yfinance only returns AAPL data."""
+        """Batch with AAPL+GOOGL, but yfinance only returns AAPL data.
+
+        With individual fallback (Issue #224), the missing ticker (GOOGL)
+        gets retried individually. If the individual download also fails,
+        it is recorded as a circuit-breaker failure.
+        """
         import alphascreener.sources.yfinance_adapter as mod
 
         # Build a MultiIndex DataFrame that only has AAPL
@@ -798,14 +804,20 @@ class TestPartialBatchTracking:
         cols = pd.MultiIndex.from_tuples(arrays)
         aapl_only_df = pd.DataFrame(data, index=idx, columns=cols)
 
-        monkeypatch.setattr(mod, "_download_batch", lambda t, s, e: aapl_only_df)
+        # Mock: batch download returns only AAPL; individual GOOGL download fails
+        def selective_download(tickers, start, end):
+            if "GOOGL" in tickers and len(tickers) == 1:
+                raise RuntimeError("no data for GOOGL")
+            return aapl_only_df
 
-        # AAPL should succeed, GOOGL should fail
+        monkeypatch.setattr(mod, "_download_batch", selective_download)
+
+        # AAPL should succeed, GOOGL should fail after individual fallback exhausted
         await adapter_fast.download_ohlcv(["AAPL", "GOOGL"], "2025-01-01", "2025-01-05")
 
         # AAPL: success recorded → no failure counter
         assert "AAPL" not in adapter_fast._failures
-        # GOOGL: NOT in result → failure recorded
+        # GOOGL: individual fallback exhausted → failure recorded
         assert adapter_fast._failures.get("GOOGL", 0) == 1
 
     async def test_all_tickers_present_all_succeed(

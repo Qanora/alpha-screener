@@ -318,7 +318,8 @@ class TestSyncWithStooq:
 
         assert report.stooq_validated > 0
         assert report.stooq_diff_count == 0  # Matching data → no diffs
-        mock_stooq.download_ohlcv.assert_awaited_once()
+        # Stooq is called for both OHLCV fallback (Issue #224) and cross-validation
+        assert mock_stooq.download_ohlcv.await_count >= 1
 
     @pytest.mark.asyncio
     async def test_sync_detects_stooq_diffs(
