@@ -27,6 +27,19 @@ fwp-inspect（引擎观察）  fw-audit（飞轮自检）
          fw-audit（再审计 → 优化飞轮）
 ```
 
+## 辅助 Skill
+
+| Skill | 用途 |
+|-------|------|
+| `fwp-debug` | Bug 修复入口：复现→收集证据→创建 issue→派发 |
+| `fwp-resume` | 恢复中断：自动检测未完成的 milestone/issue，继续飞轮执行 |
+| `fwp-setup` | 项目初始化：创建仓库、CI/CD、分支保护、模板、标签 |
+| `diagnose` | 深度诊断：Reproduce→Minimise→Hypothesise→Instrument→Fix |
+| `code-review` | AI 代码审查（CodeRabbit） |
+| `security-review` | 安全审查：当前分支待处理更改 |
+| `triage` | Issue 分诊：状态机驱动的 triage 流程 |
+| `handoff` | 压缩当前会话为 handoff 文档供下一个 agent 恢复 |
+
 ## Scripts
 
 | 脚本                                   | 用途                                                 |
