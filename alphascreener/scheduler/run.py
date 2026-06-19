@@ -39,6 +39,17 @@ def main() -> None:
     # Auto-run all pending migrations so the schema is always current.
     _run_migrations(db_url)
 
+    # Belt-and-suspenders: ensure ORM tables exist even if migrations
+    # didn't cover every model (Issue #214).
+    from alphascreener.db.engine import create_db_engine
+    from alphascreener.db.ensure_schema import _ensure_schema
+
+    engine = create_db_engine(db_url)
+    try:
+        _ensure_schema(engine)
+    finally:
+        engine.dispose()
+
     # Start the scheduler (blocks forever).
     app = SchedulerApp(db_url=db_url)
     app.start()

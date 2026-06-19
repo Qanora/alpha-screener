@@ -569,7 +569,21 @@ def main() -> None:
 
     Run 'alphascreener COMMAND --help' for detailed usage of each command.
     """
-    pass
+    # Ensure DB schema exists before any subcommand writes data (Issue #214).
+    # Best-effort: commands that don't touch the DB still work if this fails.
+    try:
+        from alphascreener.config import Settings
+        from alphascreener.db.engine import create_db_engine
+        from alphascreener.db.ensure_schema import _ensure_schema
+
+        settings = Settings()
+        engine = create_db_engine(settings.get_db_url())
+        try:
+            _ensure_schema(engine)
+        finally:
+            engine.dispose()
+    except Exception:
+        pass
 
 
 main.add_command(screen)
