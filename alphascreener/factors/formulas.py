@@ -46,9 +46,7 @@ def compute_mom_5d(df: pl.DataFrame) -> pl.DataFrame:
     Returns the input DataFrame with a ``MOM_5D`` column added.
     """
     return df.with_columns(
-        ((pl.col("close") - pl.col("close").shift(5)) / pl.col("close").shift(5)).alias(
-            "MOM_5D"
-        )
+        ((pl.col("close") - pl.col("close").shift(5)) / pl.col("close").shift(5)).alias("MOM_5D")
     )
 
 
@@ -100,11 +98,15 @@ def compute_bb_squeeze(df: pl.DataFrame) -> pl.DataFrame:
     bb_width = 4.0 * std20 / sma20
     # 20th percentile of bb_width over trailing 60 days
     bb_pct20 = bb_width.rolling_quantile(quantile=0.20, window_size=60)
-    squeeze = pl.when(
-        bb_width.is_not_null()
-        & bb_pct20.is_not_null()
-        & ((bb_width < bb_pct20) | (bb_width == 0.0))
-    ).then(1).otherwise(0)
+    squeeze = (
+        pl.when(
+            bb_width.is_not_null()
+            & bb_pct20.is_not_null()
+            & ((bb_width < bb_pct20) | (bb_width == 0.0))
+        )
+        .then(1)
+        .otherwise(0)
+    )
     return df.with_columns(squeeze.alias("BB_SQUEEZE"))
 
 
@@ -180,15 +182,16 @@ def compute_cmf_21(df: pl.DataFrame) -> pl.DataFrame:
     Returns the input DataFrame with a ``CMF_21`` column added.
     """
     hl_range = pl.col("high") - pl.col("low")
-    mf_mult = pl.when(hl_range == 0.0).then(0.0).otherwise(
-        ((pl.col("close") - pl.col("low")) - (pl.col("high") - pl.col("close")))
-        / hl_range
+    mf_mult = (
+        pl.when(hl_range == 0.0)
+        .then(0.0)
+        .otherwise(
+            ((pl.col("close") - pl.col("low")) - (pl.col("high") - pl.col("close"))) / hl_range
+        )
     )
     mf_volume = mf_mult * pl.col("volume")
 
-    cmf = mf_volume.rolling_sum(window_size=21) / pl.col("volume").rolling_sum(
-        window_size=21
-    )
+    cmf = mf_volume.rolling_sum(window_size=21) / pl.col("volume").rolling_sum(window_size=21)
 
     return df.with_columns(cmf.alias("CMF_21"))
 
@@ -205,12 +208,16 @@ def compute_vol_anomaly(df: pl.DataFrame) -> pl.DataFrame:
     vol_z = (pl.col("volume") - vol_sma50) / vol_std50
     close_sma5 = pl.col("close").rolling_mean(window_size=5)
 
-    anomaly = pl.when(
-        (vol_z > 2.0)
-        & (pl.col("close") > close_sma5)
-        & vol_z.is_not_null()
-        & close_sma5.is_not_null()
-    ).then(1).otherwise(0)
+    anomaly = (
+        pl.when(
+            (vol_z > 2.0)
+            & (pl.col("close") > close_sma5)
+            & vol_z.is_not_null()
+            & close_sma5.is_not_null()
+        )
+        .then(1)
+        .otherwise(0)
+    )
 
     return df.with_columns(anomaly.alias("VOL_ANOMALY"))
 
@@ -242,12 +249,11 @@ def compute_rsi_oversold(df: pl.DataFrame) -> pl.DataFrame:
     rsi = pl.when((avg_gain == 0.0) & (avg_loss == 0.0)).then(50.0).otherwise(rsi)
 
     sma20 = pl.col("close").rolling_mean(window_size=20)
-    oversold = pl.when(
-        (rsi < 30.0)
-        & (pl.col("close") > sma20)
-        & rsi.is_not_null()
-        & sma20.is_not_null()
-    ).then(1).otherwise(0)
+    oversold = (
+        pl.when((rsi < 30.0) & (pl.col("close") > sma20) & rsi.is_not_null() & sma20.is_not_null())
+        .then(1)
+        .otherwise(0)
+    )
 
     return df.with_columns(rsi.alias("RSI_14"), oversold.alias("RSI_OVERSOLD"))
 

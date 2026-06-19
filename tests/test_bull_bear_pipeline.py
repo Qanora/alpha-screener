@@ -34,11 +34,14 @@ from alphascreener.tradingagents.bull_bear_pipeline import (
 # ============================================================================
 
 
-def _mock_invoker(response_text: str = '{"status": "ok"}',
-                  input_tokens: int = 100, output_tokens: int = 50):
+def _mock_invoker(
+    response_text: str = '{"status": "ok"}', input_tokens: int = 100, output_tokens: int = 50
+):
     """Factory for a mock LLM invoker that returns *response_text*."""
+
     def invoker(prompt: str, max_tokens: int) -> tuple[str, int, int]:
         return response_text, input_tokens, output_tokens
+
     return invoker
 
 
@@ -69,7 +72,9 @@ class TestBreakoutAssessmentSchema:
 
     def test_valid_minimal_construction(self):
         """Minimum required fields should produce a valid model."""
-        ba = BreakoutAssessment(ticker="AAPL", final_rating=FinalRating.HOLD, breakout_probability=50.0)
+        ba = BreakoutAssessment(
+            ticker="AAPL", final_rating=FinalRating.HOLD, breakout_probability=50.0
+        )
         assert ba.ticker == "AAPL"
         assert ba.final_rating == FinalRating.HOLD
         assert ba.breakout_probability == 50.0
@@ -110,22 +115,30 @@ class TestBreakoutAssessmentSchema:
 
     def test_breakout_probability_clamped(self):
         """breakout_probability is clamped to [0, 100]."""
-        ba_high = BreakoutAssessment(ticker="T1", final_rating=FinalRating.BUY, breakout_probability=150.0)
+        ba_high = BreakoutAssessment(
+            ticker="T1", final_rating=FinalRating.BUY, breakout_probability=150.0
+        )
         assert ba_high.breakout_probability == 100.0
 
-        ba_low = BreakoutAssessment(ticker="T2", final_rating=FinalRating.AVOID, breakout_probability=-20.0)
+        ba_low = BreakoutAssessment(
+            ticker="T2", final_rating=FinalRating.AVOID, breakout_probability=-20.0
+        )
         assert ba_low.breakout_probability == 0.0
 
     def test_score_correction_clamped(self):
         """score_correction is clamped to [0.90, 1.05]."""
         ba_high = BreakoutAssessment(
-            ticker="T1", final_rating=FinalRating.BUY, breakout_probability=60.0,
+            ticker="T1",
+            final_rating=FinalRating.BUY,
+            breakout_probability=60.0,
             score_correction=1.20,
         )
         assert ba_high.score_correction == SCORE_CORRECTION_MAX
 
         ba_low = BreakoutAssessment(
-            ticker="T2", final_rating=FinalRating.AVOID, breakout_probability=10.0,
+            ticker="T2",
+            final_rating=FinalRating.AVOID,
+            breakout_probability=10.0,
             score_correction=0.50,
         )
         assert ba_low.score_correction == SCORE_CORRECTION_MIN
@@ -658,6 +671,7 @@ class TestRunBullBearPM:
 
     def test_retry_disabled_returns_defaults_on_json_failure(self):
         """When retry_on_json_failure=False, JSON failures return defaults."""
+
         def mock(prompt: str, max_tokens: int) -> tuple[str, int, int]:
             return "not json", 100, 50
 

@@ -63,7 +63,8 @@ def _default_retry_policy(
     return retry(
         retry=retry_if_exception_type(
             (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError)
-        ) | retry_if_exception(_is_retryable_http_status),
+        )
+        | retry_if_exception(_is_retryable_http_status),
         stop=stop_after_attempt(max_retries),
         wait=wait_exponential(multiplier=1, min=wait_init, max=wait_max),
         reraise=True,
@@ -263,10 +264,7 @@ class StooqAdapter:
         """
         d1 = start_date.strftime("%Y%m%d")
         d2 = end_date.strftime("%Y%m%d")
-        return (
-            f"{self.base_url}?s={ticker.lower()}"
-            f"&d1={d1}&d2={d2}&i=d"
-        )
+        return f"{self.base_url}?s={ticker.lower()}&d1={d1}&d2={d2}&i=d"
 
     async def _fetch_csv(self, url: str) -> str:
         """Fetch CSV data from a Stooq URL with rate limiting and retry.

@@ -390,8 +390,10 @@ class TestPushOrchestration:
         )
 
         _reset_consecutive_failures()
-        with mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m, \
-             mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m:
+        with (
+            mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m,
+            mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m,
+        ):
             token_m.return_value = "t-test-token"
             send_m.return_value = _msg_ok_response()
             result = push_daily_report(
@@ -413,10 +415,11 @@ class TestPushOrchestration:
         )
 
         _reset_consecutive_failures()
-        with mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m, \
-             mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m, \
-             mock.patch("alphascreener.feishu.push._send_message") as msg_m:
-
+        with (
+            mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m,
+            mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m,
+            mock.patch("alphascreener.feishu.push._send_message") as msg_m,
+        ):
             # First call to _send_card_with_retry returns 401
             send_m.return_value = _msg_401_response()
             # Token refresh returns new token
@@ -444,10 +447,11 @@ class TestPushOrchestration:
         )
 
         _reset_consecutive_failures()
-        with mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m, \
-             mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m, \
-             mock.patch("alphascreener.feishu.push._send_message") as msg_m:
-
+        with (
+            mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m,
+            mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m,
+            mock.patch("alphascreener.feishu.push._send_message") as msg_m,
+        ):
             token_m.return_value = "t-test-token"
             # Card send fails with 400
             send_m.return_value = _msg_400_response()
@@ -474,8 +478,10 @@ class TestPushOrchestration:
         )
 
         _reset_consecutive_failures()
-        with mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m, \
-             mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m:
+        with (
+            mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m,
+            mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m,
+        ):
             token_m.return_value = "t-test-token"
             # Simulate exhausted retries by raising exception
             send_m.side_effect = RuntimeError("All retries exhausted")
@@ -501,8 +507,10 @@ class TestPushOrchestration:
 
         _reset_consecutive_failures()
         push_mod._consecutive_failures = 2
-        with mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m, \
-             mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m:
+        with (
+            mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m,
+            mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m,
+        ):
             token_m.return_value = "t-test-token"
             send_m.return_value = _msg_ok_response()
             result = push_daily_report(
@@ -527,9 +535,11 @@ class TestPushOrchestration:
         )
 
         _reset_consecutive_failures()
-        with mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m, \
-             mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m, \
-             mock.patch("alphascreener.feishu.push._logger") as logger_m:
+        with (
+            mock.patch("alphascreener.feishu.push.get_tenant_access_token") as token_m,
+            mock.patch("alphascreener.feishu.push._send_card_with_retry") as send_m,
+            mock.patch("alphascreener.feishu.push._logger") as logger_m,
+        ):
             token_m.return_value = "t-test-token"
             send_m.side_effect = RuntimeError("All retries exhausted")
 

@@ -69,31 +69,37 @@ class TestIsRetryableError:
     def test_http_429_via_status_code_retryable(self):
         class FakeHttpError(Exception):
             status_code = 429
+
         assert _is_retryable_error(FakeHttpError()) is True
 
     def test_http_500_via_status_code_retryable(self):
         class FakeHttpError(Exception):
             status_code = 500
+
         assert _is_retryable_error(FakeHttpError()) is True
 
     def test_http_503_via_status_code_retryable(self):
         class FakeHttpError(Exception):
             status_code = 503
+
         assert _is_retryable_error(FakeHttpError()) is True
 
     def test_http_400_not_retryable(self):
         class FakeHttpError(Exception):
             status_code = 400
+
         assert _is_retryable_error(FakeHttpError()) is False
 
     def test_http_401_not_retryable(self):
         class FakeHttpError(Exception):
             status_code = 401
+
         assert _is_retryable_error(FakeHttpError()) is False
 
     def test_http_403_not_retryable(self):
         class FakeHttpError(Exception):
             status_code = 403
+
         assert _is_retryable_error(FakeHttpError()) is False
 
     @staticmethod
@@ -111,7 +117,9 @@ class TestIsRetryableError:
         except ImportError:
             pytest.skip("openai SDK not installed")
         e = openai.RateLimitError(
-            "rate limit", response=self._mock_response(429), body=None,
+            "rate limit",
+            response=self._mock_response(429),
+            body=None,
         )
         assert _is_retryable_error(e) is True
 
@@ -121,7 +129,9 @@ class TestIsRetryableError:
         except ImportError:
             pytest.skip("openai SDK not installed")
         e = openai.InternalServerError(
-            "server error", response=self._mock_response(500), body=None,
+            "server error",
+            response=self._mock_response(500),
+            body=None,
         )
         assert _is_retryable_error(e) is True
 
@@ -131,7 +141,9 @@ class TestIsRetryableError:
         except ImportError:
             pytest.skip("openai SDK not installed")
         e = openai.AuthenticationError(
-            "bad key", response=self._mock_response(401), body=None,
+            "bad key",
+            response=self._mock_response(401),
+            body=None,
         )
         assert _is_retryable_error(e) is False
 
@@ -141,7 +153,9 @@ class TestIsRetryableError:
         except ImportError:
             pytest.skip("openai SDK not installed")
         e = openai.BadRequestError(
-            "bad request", response=self._mock_response(400), body=None,
+            "bad request",
+            response=self._mock_response(400),
+            body=None,
         )
         assert _is_retryable_error(e) is False
 
@@ -280,8 +294,7 @@ class TestLLMInvocationTracker:
         with caplog.at_level(_logging.INFO):
             t.log_summary()
         # log_summary should not emit stats for empty tracker
-        info_messages = [r.message for r in caplog.records
-                         if r.levelno == _logging.INFO]
+        info_messages = [r.message for r in caplog.records if r.levelno == _logging.INFO]
         assert not any("LLM invocation stats" in m for m in info_messages)
 
     def test_snapshot_returns_new_dict(self):
@@ -324,54 +337,70 @@ class TestDetectLlmProvider:
 
     def test_deepseek_from_base_url(self):
         """Detect 'deepseek' when base URL contains api.deepseek.com."""
-        assert _detect_llm_provider(
-            base_url="https://api.deepseek.com",
-            model="gpt-4o-mini",
-        ) == "deepseek"
+        assert (
+            _detect_llm_provider(
+                base_url="https://api.deepseek.com",
+                model="gpt-4o-mini",
+            )
+            == "deepseek"
+        )
 
     def test_deepseek_from_model_name(self):
         """Detect 'deepseek' when model contains 'deepseek'."""
-        assert _detect_llm_provider(
-            base_url="",
-            model="deepseek-chat",
-        ) == "deepseek"
+        assert (
+            _detect_llm_provider(
+                base_url="",
+                model="deepseek-chat",
+            )
+            == "deepseek"
+        )
 
     def test_openai_from_base_url(self):
         """Detect 'openai' when base URL contains api.openai.com."""
-        assert _detect_llm_provider(
-            base_url="https://api.openai.com/v1",
-            model="gpt-4o-mini",
-        ) == "openai"
+        assert (
+            _detect_llm_provider(
+                base_url="https://api.openai.com/v1",
+                model="gpt-4o-mini",
+            )
+            == "openai"
+        )
 
     def test_default_openai_for_unrecognized(self):
         """Return 'openai' when nothing matches."""
-        assert _detect_llm_provider(
-            base_url="https://custom.llm.api",
-            model="unknown-model",
-        ) == "openai"
+        assert (
+            _detect_llm_provider(
+                base_url="https://custom.llm.api",
+                model="unknown-model",
+            )
+            == "openai"
+        )
 
     def test_deepseek_second_level_domain(self):
         """DeepSeek subdomain like api.deepseek.com matches."""
-        assert _detect_llm_provider(
-            base_url="https://api.deepseek.com",
-            model="",
-        ) == "deepseek"
+        assert (
+            _detect_llm_provider(
+                base_url="https://api.deepseek.com",
+                model="",
+            )
+            == "deepseek"
+        )
 
     def test_openrouter_from_base_url(self):
         """Detect 'openrouter' from base URL."""
-        assert _detect_llm_provider(
-            base_url="https://openrouter.ai/api/v1",
-            model="any-model",
-        ) == "openrouter"
+        assert (
+            _detect_llm_provider(
+                base_url="https://openrouter.ai/api/v1",
+                model="any-model",
+            )
+            == "openrouter"
+        )
 
 
 class TestBuildLlmInvokerProvider:
     """build_llm_invoker uses detected provider to disable Responses API on
     third-party OpenAI-compatible backends (Issue #218)."""
 
-    @patch(
-        "alphascreener.tradingagents.llm_adapter.create_llm_client_safe"
-    )
+    @patch("alphascreener.tradingagents.llm_adapter.create_llm_client_safe")
     def test_always_registers_as_openai(self, mock_create):
         """Even when the backend is DeepSeek, the TradingAgents adapter is
         always called with provider='openai' (not 'deepseek') to avoid the

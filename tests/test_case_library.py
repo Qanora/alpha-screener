@@ -41,23 +41,34 @@ def _make_factor_df(
 
     if with_breakout_score:
         data["breakout_score"] = pl.Series(
-            "breakout_score", [random.uniform(-1.0, 3.0) for _ in range(n_rows)],
+            "breakout_score",
+            [random.uniform(-1.0, 3.0) for _ in range(n_rows)],
             dtype=pl.Float64,
         )
 
     if with_t7_return:
         data["t7_return"] = pl.Series(
-            "t7_return", [random.uniform(-0.05, 0.25) for _ in range(n_rows)],
+            "t7_return",
+            [random.uniform(-0.05, 0.25) for _ in range(n_rows)],
             dtype=pl.Float64,
         )
 
     if with_z_capped:
-        for col in ["z_capped_MOM_5D", "z_capped_PTH", "z_capped_MOM_SLOPE",
-                     "z_capped_BB_SQUEEZE", "z_capped_ATR_RATIO", "z_capped_MFI_14",
-                     "z_capped_CMF_21", "z_capped_VOL_ANOMALY",
-                     "z_capped_RSI_OVERSOLD", "z_capped_REV_ACCEL"]:
+        for col in [
+            "z_capped_MOM_5D",
+            "z_capped_PTH",
+            "z_capped_MOM_SLOPE",
+            "z_capped_BB_SQUEEZE",
+            "z_capped_ATR_RATIO",
+            "z_capped_MFI_14",
+            "z_capped_CMF_21",
+            "z_capped_VOL_ANOMALY",
+            "z_capped_RSI_OVERSOLD",
+            "z_capped_REV_ACCEL",
+        ]:
             data[col] = pl.Series(
-                col, [random.uniform(-1.5, 1.5) for _ in range(n_rows)],
+                col,
+                [random.uniform(-1.5, 1.5) for _ in range(n_rows)],
                 dtype=pl.Float64,
             )
 
@@ -78,9 +89,13 @@ class TestCaseLibraryBuilder:
         # Ensure at least some rows meet thresholds
         df = df.with_columns(
             pl.when(pl.col("ticker").str.contains("0|1|5"))
-            .then(2.5).otherwise(pl.col("breakout_score")).alias("breakout_score"),
+            .then(2.5)
+            .otherwise(pl.col("breakout_score"))
+            .alias("breakout_score"),
             pl.when(pl.col("ticker").str.contains("0|1|5"))
-            .then(0.15).otherwise(pl.col("t7_return")).alias("t7_return"),
+            .then(0.15)
+            .otherwise(pl.col("t7_return"))
+            .alias("t7_return"),
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -151,10 +166,12 @@ class TestCaseLibraryBuilder:
         # Manually set: first 3 rows get high score+return, rest get low values
         bscore = [2.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         t7ret = [0.15, 0.15, 0.15, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
-        df = df.with_columns([
-            pl.Series("breakout_score", bscore),
-            pl.Series("t7_return", t7ret),
-        ])
+        df = df.with_columns(
+            [
+                pl.Series("breakout_score", bscore),
+                pl.Series("t7_return", t7ret),
+            ]
+        )
 
         builder = CaseLibraryBuilder(breakout_score_pct=0.5, min_return=0.10)
         cases = builder._select_positive_cases(df)
@@ -279,10 +296,18 @@ class TestCaseLibraryBuilder:
             pl.Series("close", [105.0, 105.0, 105.0], dtype=pl.Float64),
         )
         # Re-assign z_capped cols
-        for col in ["z_capped_MOM_5D", "z_capped_PTH", "z_capped_MOM_SLOPE",
-                     "z_capped_BB_SQUEEZE", "z_capped_ATR_RATIO", "z_capped_MFI_14",
-                     "z_capped_CMF_21", "z_capped_VOL_ANOMALY",
-                     "z_capped_RSI_OVERSOLD", "z_capped_REV_ACCEL"]:
+        for col in [
+            "z_capped_MOM_5D",
+            "z_capped_PTH",
+            "z_capped_MOM_SLOPE",
+            "z_capped_BB_SQUEEZE",
+            "z_capped_ATR_RATIO",
+            "z_capped_MFI_14",
+            "z_capped_CMF_21",
+            "z_capped_VOL_ANOMALY",
+            "z_capped_RSI_OVERSOLD",
+            "z_capped_REV_ACCEL",
+        ]:
             df2 = df2.with_columns(pl.Series(col, [0.5, 0.5, 0.5], dtype=pl.Float64))
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -356,9 +381,11 @@ class TestCaseLibraryBuilder:
             builder._load_all_factors = lambda: df
 
             called = {"v": False}
+
             def _fake_forward(x: pl.DataFrame) -> pl.DataFrame:
                 called["v"] = True
                 return x.with_columns(pl.lit(0.15).alias("t7_return"))
+
             builder._compute_forward_returns = _fake_forward
 
             n = builder.rebuild()
@@ -382,5 +409,6 @@ class TestRebuildConvenience:
 
         monkeypatch.setattr(io, "scan_parquet", _raise)
         import alphascreener.tradingagents.case_library as cl
+
         n = cl.rebuild_case_library()
         assert n == 0

@@ -121,9 +121,13 @@ def normalize_factors(df: pl.DataFrame) -> pl.DataFrame:
         if fname not in result.columns:
             continue
         col = pl.col(fname)
-        display_score = pl.when(col.is_null()).then(
-            DISPLAY_SCORE_NEUTRAL
-        ).when(col == 1).then(100.0).otherwise(0.0)
+        display_score = (
+            pl.when(col.is_null())
+            .then(DISPLAY_SCORE_NEUTRAL)
+            .when(col == 1)
+            .then(100.0)
+            .otherwise(0.0)
+        )
         result = result.with_columns(display_score.alias(f"score_{fname}"))
 
     # Final composite score: sum of z_capped for continuous factors
@@ -180,9 +184,7 @@ def _validate_missing_data(
 # -- chunking ----------------------------------------------------------------
 
 
-def _chunk_tickers(
-    tickers: Sequence[str], batch_size: int = DEFAULT_BATCH_SIZE
-) -> list[list[str]]:
+def _chunk_tickers(tickers: Sequence[str], batch_size: int = DEFAULT_BATCH_SIZE) -> list[list[str]]:
     """Split a list of tickers into fixed-size batches."""
     chunks = []
     for i in range(0, len(tickers), batch_size):
@@ -306,9 +308,7 @@ class FactorEngine:
             return pl.DataFrame()
 
         # Collect all tickers and chunk them
-        tickers_all = sorted(
-            lf.select("ticker").unique().collect().get_column("ticker").to_list()
-        )
+        tickers_all = sorted(lf.select("ticker").unique().collect().get_column("ticker").to_list())
         if not tickers_all:
             _logger.warning("No tickers in OHLCV data for %s", dt.isoformat())
             return pl.DataFrame()
@@ -324,13 +324,15 @@ class FactorEngine:
         # Limit to n_batches
         results: list[pl.DataFrame] = []
         for idx, chunk_tickers in enumerate(chunks[: self.n_batches]):
-            _logger.debug("Chunk %d/%d: %d tickers", idx + 1, len(chunks[: self.n_batches]), len(chunk_tickers))
+            _logger.debug(
+                "Chunk %d/%d: %d tickers",
+                idx + 1,
+                len(chunks[: self.n_batches]),
+                len(chunk_tickers),
+            )
 
             # Filter scan to this chunk's tickers and materialise
-            chunk_df = (
-                lf.filter(pl.col("ticker").is_in(chunk_tickers))
-                .collect()
-            )
+            chunk_df = lf.filter(pl.col("ticker").is_in(chunk_tickers)).collect()
 
             if chunk_df.height == 0:
                 _logger.debug("Chunk %d: empty, skipping", idx + 1)

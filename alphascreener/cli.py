@@ -63,10 +63,20 @@ def _echo_table(headers: list[str], rows: list[list[str]]) -> None:
 
 
 @click.command()
-@click.option("--market", type=_MARKET_CHOICES, default="US", show_default=True,
-              help="Target market (currently only US supported).")
-@click.option("--top", type=_TOP_RANGE, default=20, show_default=True,
-              help="Number of top candidates to output after dedup.")
+@click.option(
+    "--market",
+    type=_MARKET_CHOICES,
+    default="US",
+    show_default=True,
+    help="Target market (currently only US supported).",
+)
+@click.option(
+    "--top",
+    type=_TOP_RANGE,
+    default=20,
+    show_default=True,
+    help="Number of top candidates to output after dedup.",
+)
 def screen(market: str, top: int) -> None:
     """Run a full-market coarse screening scan.
 
@@ -127,7 +137,7 @@ def screen(market: str, top: int) -> None:
 
     try:
         from alphascreener.factors.engine import compute_factors
-        from alphascreener.screening.phase1 import hard_filter
+        from alphascreener.screening.phase1 import hard_filter_with_fallback
         from alphascreener.screening.phase2 import phase2_pipeline
 
         # Compute factors
@@ -139,13 +149,14 @@ def screen(market: str, top: int) -> None:
             meta_subset = meta.select(["ticker", "sector", "industry"])
             factors = factors.join(meta_subset, on="ticker", how="left")
 
-        # Phase 1 hard filter
-        filtered = hard_filter(factors)
+        # Phase 1 hard filter (with auto-relaxation fallback, Issue #219)
+        filtered, relaxed_used = hard_filter_with_fallback(factors)
         passed = filtered.filter(pl.col("pass_phase1"))
-        click.echo(f"  Phase 1 pass: {passed.height} / {filtered.height}")
+        relax_note = " (relaxed thresholds)" if relaxed_used else ""
+        click.echo(f"  Phase 1 pass: {passed.height} / {filtered.height}{relax_note}")
 
         if passed.height == 0:
-            click.echo("  No tickers passed Phase 1 hard filters.")
+            click.echo("  No tickers passed Phase 1 hard filters (even after relaxation).")
             return
 
         # Phase 2 weighted scoring + dedup
@@ -172,10 +183,15 @@ def screen(market: str, top: int) -> None:
 
 
 @click.command()
-@click.option("--start", required=True, metavar="YYYY-MM-DD",
-              help="Backtest start date (inclusive).")
-@click.option("--end", default=None, metavar="YYYY-MM-DD",
-              help="Backtest end date (inclusive). Defaults to today.")
+@click.option(
+    "--start", required=True, metavar="YYYY-MM-DD", help="Backtest start date (inclusive)."
+)
+@click.option(
+    "--end",
+    default=None,
+    metavar="YYYY-MM-DD",
+    help="Backtest end date (inclusive). Defaults to today.",
+)
 def backtest(start: str, end: str | None) -> None:
     """Run a historical backtest using the SevenDayBreakoutStrategy.
 
@@ -268,8 +284,13 @@ def evolve() -> None:
 
 
 @evolve.command(name="review-last")
-@click.option("--days", type=click.IntRange(min=1), default=30, show_default=True,
-              help="Number of days to look back for acceptance metrics.")
+@click.option(
+    "--days",
+    type=click.IntRange(min=1),
+    default=30,
+    show_default=True,
+    help="Number of days to look back for acceptance metrics.",
+)
 def evolve_review_last(days: int) -> None:
     """Review the last N days of alpha acceptance metrics.
 
@@ -316,7 +337,9 @@ def evolve_review_last(days: int) -> None:
         from sqlalchemy.exc import OperationalError
 
         err_msg = str(exc)
-        if isinstance(exc, OperationalError) and ("no such table" in err_msg or "no such column" in err_msg):
+        if isinstance(exc, OperationalError) and (
+            "no such table" in err_msg or "no such column" in err_msg
+        ):
             click.echo(
                 "Error: Database schema not ready. Run:\n"
                 "  alembic upgrade head\n"
@@ -348,16 +371,18 @@ def evolve_review_last(days: int) -> None:
     ]
     rows = []
     for r in records:
-        rows.append([
-            r.metric_date.isoformat(),
-            f"{r.base_rate:.3f}" if r.base_rate is not None else "-",
-            f"{r.precision_at_20_pure:.3f}" if r.precision_at_20_pure is not None else "-",
-            f"{r.precision_at_20_llm:.3f}" if r.precision_at_20_llm is not None else "-",
-            f"{r.ic_pure:.3f}" if r.ic_pure is not None else "-",
-            f"{r.ic_llm:.3f}" if r.ic_llm is not None else "-",
-            f"{r.lift_at_20_pure:.2f}" if r.lift_at_20_pure is not None else "-",
-            str(r.sample_size) if r.sample_size is not None else "-",
-        ])
+        rows.append(
+            [
+                r.metric_date.isoformat(),
+                f"{r.base_rate:.3f}" if r.base_rate is not None else "-",
+                f"{r.precision_at_20_pure:.3f}" if r.precision_at_20_pure is not None else "-",
+                f"{r.precision_at_20_llm:.3f}" if r.precision_at_20_llm is not None else "-",
+                f"{r.ic_pure:.3f}" if r.ic_pure is not None else "-",
+                f"{r.ic_llm:.3f}" if r.ic_llm is not None else "-",
+                f"{r.lift_at_20_pure:.2f}" if r.lift_at_20_pure is not None else "-",
+                str(r.sample_size) if r.sample_size is not None else "-",
+            ]
+        )
     _echo_table(headers, rows)
     click.echo()
 
@@ -366,8 +391,12 @@ def evolve_review_last(days: int) -> None:
 
 
 @evolve.command(name="propose-factor")
-@click.option("--formula", required=True, metavar="FORMULA",
-              help="Factor formula expression (e.g. 'MOM_5D > 0.02').")
+@click.option(
+    "--formula",
+    required=True,
+    metavar="FORMULA",
+    help="Factor formula expression (e.g. 'MOM_5D > 0.02').",
+)
 def evolve_propose_factor(formula: str) -> None:
     """Propose a new factor formula for evaluation.
 
@@ -411,8 +440,12 @@ def evolve_propose_factor(formula: str) -> None:
 
 
 @click.command(name="walk-forward")
-@click.option("--version", required=True, metavar="VERSION",
-              help="New factor version identifier (e.g. 'v2.0.0').")
+@click.option(
+    "--version",
+    required=True,
+    metavar="VERSION",
+    help="New factor version identifier (e.g. 'v2.0.0').",
+)
 def walk_forward(version: str) -> None:
     """Validate a factor version upgrade via walk-forward cross-validation.
 

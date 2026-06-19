@@ -403,7 +403,9 @@ def daily_scan() -> None:
 
             from alphascreener.cost.tracker import CircuitLevel
             from alphascreener.data.io import scan_parquet
-            from alphascreener.screening.phase1 import hard_filter
+            from alphascreener.screening.phase1 import (
+                hard_filter_with_fallback,
+            )
             from alphascreener.screening.phase2 import phase2_pipeline
             from alphascreener.tradingagents.bull_bear_pipeline import (
                 BatchConfig,
@@ -447,17 +449,23 @@ def daily_scan() -> None:
                 )
                 raise
 
-            # Phase 1: hard filter
-            filtered = hard_filter(factors_df)
+            # Phase 1: hard filter (with auto-relaxation fallback, Issue #219)
+            filtered, relaxed_used = hard_filter_with_fallback(factors_df)
             passers = filtered.filter(pl.col("pass_phase1"))
             n_pass = passers.height
             pct_p1 = (n_pass / n_total * 100) if n_total > 0 else 0.0
-            _logger.info("Phase 1: %d/%d tickers passed hard filter", n_pass, n_total)
+            relax_note = " (relaxed)" if relaxed_used else ""
+            _logger.info(
+                "Phase 1: %d/%d tickers passed hard filter%s",
+                n_pass,
+                n_total,
+                relax_note,
+            )
             write_stage_metric(
                 _sf,
                 "daily_scan",
                 "phase1",
-                f"{n_total} tickers, {n_pass} passed ({pct_p1:.1f}%)",
+                f"{n_total} tickers, {n_pass} passed ({pct_p1:.1f}%){relax_note}",
             )
 
             if n_pass == 0:

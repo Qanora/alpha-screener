@@ -136,9 +136,7 @@ class BreakoutAssessment(BaseModel):
     # Supporting detail
     bull_thesis: str = Field(default="", description="Bull researcher's core thesis")
     bear_thesis: str = Field(default="", description="Bear researcher's core thesis")
-    pm_verdict: str = Field(
-        default="", description="Portfolio Manager's summary verdict"
-    )
+    pm_verdict: str = Field(default="", description="Portfolio Manager's summary verdict")
 
     # Phase-1 filter pass-through
     phase1_pass: bool = Field(
@@ -207,11 +205,7 @@ class BreakoutAssessment(BaseModel):
         """
         if self.score_correction < 1.05:
             return True
-        return (
-            self.bull_score >= 70
-            and self.bear_score <= 40
-            and self.catalyst_consistency >= 60
-        )
+        return self.bull_score >= 70 and self.bear_score <= 40 and self.catalyst_consistency >= 60
 
 
 # ============================================================================
@@ -610,9 +604,7 @@ def _validate_pm_result(
                 "score_correction {} clamped to {}".format(raw_correction, score_correction)
             )
     else:
-        validation_errors.append(
-            "score_correction missing or wrong type, defaulting to 1.00"
-        )
+        validation_errors.append("score_correction missing or wrong type, defaulting to 1.00")
 
     # breakout_probability: clamp to [0, 100]
     breakout_prob: float = 50.0
@@ -625,13 +617,9 @@ def _validate_pm_result(
     # final_rating: validate enum
     raw_rating = parsed.get("final_rating", "Hold")
     valid_ratings = {r.value for r in FinalRating}
-    final_rating: str = (
-        raw_rating if raw_rating in valid_ratings else "Hold"
-    )
+    final_rating: str = raw_rating if raw_rating in valid_ratings else "Hold"
     if raw_rating not in valid_ratings:
-        validation_errors.append(
-            "final_rating {!r} invalid, defaulting to Hold".format(raw_rating)
-        )
+        validation_errors.append("final_rating {!r} invalid, defaulting to Hold".format(raw_rating))
 
     # catalyst_consistency: clamp to [0, 100]
     catalyst_consistency: float = 50.0
@@ -646,8 +634,7 @@ def _validate_pm_result(
     # the single source of truth for the triple-condition predicate.
     if score_correction >= 1.05:
         rating_for_provisional = (
-            FinalRating(final_rating) if final_rating in valid_ratings
-            else FinalRating.HOLD
+            FinalRating(final_rating) if final_rating in valid_ratings else FinalRating.HOLD
         )
         provisional = BreakoutAssessment(
             ticker="_validate",
@@ -679,9 +666,7 @@ def _validate_pm_result(
     risk_tags: list[str] = [t for t in raw_tags if t in ALLOWED_RISK_TAGS]
     removed = len(raw_tags) - len(risk_tags)
     if removed:
-        validation_errors.append(
-            "Filtered {} illegal risk tags".format(removed)
-        )
+        validation_errors.append("Filtered {} illegal risk tags".format(removed))
 
     # data_conflict_detected
     data_conflict: bool = bool(parsed.get("data_conflict_detected", False))
@@ -753,7 +738,8 @@ def run_bull_bear_pm(
             except Exception:
                 _logger.warning(
                     "Failed to record bull call cost for %s",
-                    context.ticker, exc_info=True,
+                    context.ticker,
+                    exc_info=True,
                 )
     except Exception as exc:
         _logger.error("Bull researcher invocation failed for %s: %s", context.ticker, exc)
@@ -767,7 +753,8 @@ def run_bull_bear_pm(
             if retry_on_json_failure:
                 _logger.warning(
                     "Bull JSON parse failed for %s, retrying once: %s",
-                    context.ticker, exc,
+                    context.ticker,
+                    exc,
                 )
                 try:
                     retry_prompt = (
@@ -783,14 +770,16 @@ def run_bull_bear_pm(
                         except Exception:
                             _logger.warning(
                                 "Failed to record bull retry call cost for %s",
-                                context.ticker, exc_info=True,
+                                context.ticker,
+                                exc_info=True,
                             )
                     bull_raw = _extract_json_response(bull_response)
                     bull_raw = _validate_bull_result(bull_raw)
                 except Exception as exc2:
                     _logger.error(
                         "Bull JSON retry also failed for %s: %s",
-                        context.ticker, exc2,
+                        context.ticker,
+                        exc2,
                     )
                     bull_raw = _validate_bull_result({})
                     validation_errors.append(f"Bull JSON parse failed: {exc}; retry: {exc2}")
@@ -811,7 +800,8 @@ def run_bull_bear_pm(
             except Exception:
                 _logger.warning(
                     "Failed to record bear call cost for %s",
-                    context.ticker, exc_info=True,
+                    context.ticker,
+                    exc_info=True,
                 )
     except Exception as exc:
         _logger.error("Bear researcher invocation failed for %s: %s", context.ticker, exc)
@@ -825,7 +815,8 @@ def run_bull_bear_pm(
             if retry_on_json_failure:
                 _logger.warning(
                     "Bear JSON parse failed for %s, retrying once: %s",
-                    context.ticker, exc,
+                    context.ticker,
+                    exc,
                 )
                 try:
                     retry_prompt = (
@@ -841,14 +832,16 @@ def run_bull_bear_pm(
                         except Exception:
                             _logger.warning(
                                 "Failed to record bear retry call cost for %s",
-                                context.ticker, exc_info=True,
+                                context.ticker,
+                                exc_info=True,
                             )
                     bear_raw = _extract_json_response(bear_response)
                     bear_raw = _validate_bear_result(bear_raw)
                 except Exception as exc2:
                     _logger.error(
                         "Bear JSON retry also failed for %s: %s",
-                        context.ticker, exc2,
+                        context.ticker,
+                        exc2,
                     )
                     bear_raw = _validate_bear_result({})
                     validation_errors.append(f"Bear JSON parse failed: {exc}; retry: {exc2}")
@@ -873,7 +866,8 @@ def run_bull_bear_pm(
             except Exception:
                 _logger.warning(
                     "Failed to record PM call cost for %s",
-                    context.ticker, exc_info=True,
+                    context.ticker,
+                    exc_info=True,
                 )
     except Exception as exc:
         _logger.error("PM invocation failed for %s: %s", context.ticker, exc)
@@ -897,7 +891,8 @@ def run_bull_bear_pm(
             if retry_on_json_failure:
                 _logger.warning(
                     "PM JSON parse failed for %s, retrying once: %s",
-                    context.ticker, exc,
+                    context.ticker,
+                    exc,
                 )
                 try:
                     retry_prompt = (
@@ -913,7 +908,8 @@ def run_bull_bear_pm(
                         except Exception:
                             _logger.warning(
                                 "Failed to record PM retry call cost for %s",
-                                context.ticker, exc_info=True,
+                                context.ticker,
+                                exc_info=True,
                             )
                     pm_parsed = _extract_json_response(pm_response)
                     pm_raw = _validate_pm_result(
@@ -925,7 +921,8 @@ def run_bull_bear_pm(
                 except Exception as exc2:
                     _logger.error(
                         "PM JSON retry also failed for %s: %s",
-                        context.ticker, exc2,
+                        context.ticker,
+                        exc2,
                     )
                     pm_raw = _validate_pm_result(
                         {},
@@ -1049,7 +1046,9 @@ def run_pipeline_batch(
         status = cost_tracker.check_circuit()
         _logger.info(
             "Circuit status before pipeline: level=%s daily=$%.4f monthly=$%.4f",
-            status.label, status.daily_cost, status.monthly_cost,
+            status.label,
+            status.daily_cost,
+            status.monthly_cost,
         )
         if status.is_blocked():
             _logger.error("L4 BREAKER: all LLM calls stopped")

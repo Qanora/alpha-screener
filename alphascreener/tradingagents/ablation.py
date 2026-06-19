@@ -214,15 +214,14 @@ class AblationEntry:
 
 
 def _top_k_scores(
-    df: pl.DataFrame, score_col: str, k: int,
+    df: pl.DataFrame,
+    score_col: str,
+    k: int,
 ) -> pl.DataFrame:
     """Return the top-k rows by *score_col* (descending, nulls last)."""
     if df.height == 0:
         return df
-    return (
-        df.sort(score_col, descending=True, nulls_last=True)
-        .head(k)
-    )
+    return df.sort(score_col, descending=True, nulls_last=True).head(k)
 
 
 def compute_precision_at_k(
@@ -439,7 +438,8 @@ class AblationTracker:
         if not self._pure_records:
             return pl.DataFrame(
                 schema={
-                    "ticker": pl.Utf8, "dt": pl.Date,
+                    "ticker": pl.Utf8,
+                    "dt": pl.Date,
                     "coarse_final_score": pl.Float64,
                     "refined_score_pure": pl.Float64,
                     "phase1_pass": pl.Boolean,
@@ -452,7 +452,8 @@ class AblationTracker:
         if not self._llm_records:
             return pl.DataFrame(
                 schema={
-                    "ticker": pl.Utf8, "dt": pl.Date,
+                    "ticker": pl.Utf8,
+                    "dt": pl.Date,
                     "coarse_final_score": pl.Float64,
                     "score_correction": pl.Float64,
                     "risk_filter": pl.Float64,
@@ -496,15 +497,19 @@ class AblationTracker:
 
         pure_with_outcomes = pure.join(
             outcomes_df.select(["ticker", "dt", "hit"]),
-            on=["ticker", "dt"], how="inner",
+            on=["ticker", "dt"],
+            how="inner",
         )
         llm_with_outcomes = llm.join(
             outcomes_df.select(["ticker", "dt", "hit"]),
-            on=["ticker", "dt"], how="inner",
+            on=["ticker", "dt"],
+            how="inner",
         )
 
         delta = compute_delta_lift(
-            pure_with_outcomes, llm_with_outcomes, k,
+            pure_with_outcomes,
+            llm_with_outcomes,
+            k,
             score_col_pure="refined_score_pure",
             score_col_llm="refined_score",
             outcome_col="hit",
@@ -531,7 +536,9 @@ class AblationTracker:
         """
         k = k or self._config.k
         delta = compute_delta_lift(
-            aligned_df, aligned_df, k,
+            aligned_df,
+            aligned_df,
+            k,
             score_col_pure="refined_score_pure",
             score_col_llm="refined_score",
             outcome_col="hit",
@@ -634,8 +641,10 @@ def build_outcomes_from_ohlcv(
     if ohlcv_df.height == 0:
         return pl.DataFrame(
             schema={
-                "ticker": pl.Utf8, "dt": pl.Date,
-                "fwd_return": pl.Float64, "hit": pl.Int64,
+                "ticker": pl.Utf8,
+                "dt": pl.Date,
+                "fwd_return": pl.Float64,
+                "hit": pl.Int64,
             }
         )
 
@@ -646,15 +655,11 @@ def build_outcomes_from_ohlcv(
 
     # Sort and compute forward close
     df = ohlcv_df.sort(["ticker", "dt"])
-    df = df.with_columns(
-        pl.col("close").shift(-holding_days).over("ticker").alias("close_fwd")
-    )
+    df = df.with_columns(pl.col("close").shift(-holding_days).over("ticker").alias("close_fwd"))
     df = df.with_columns(
         ((pl.col("close_fwd") - pl.col("close")) / pl.col("close")).alias("fwd_return")
     )
-    df = df.with_columns(
-        (pl.col("fwd_return") >= return_threshold).cast(pl.Int64).alias("hit")
-    )
+    df = df.with_columns((pl.col("fwd_return") >= return_threshold).cast(pl.Int64).alias("hit"))
     # Drop rows where forward return is null (end of window)
     df = df.filter(pl.col("fwd_return").is_not_null())
     return df.select(["ticker", "dt", "fwd_return", "hit"])
