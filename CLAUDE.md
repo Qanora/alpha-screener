@@ -27,6 +27,15 @@ fwp-inspect（引擎观察）  fw-audit（飞轮自检）
          fw-audit（再审计 → 优化飞轮）
 ```
 
+## 辅助 Skill
+
+| Skill | 用途 |
+|-------|------|
+| `fwp-debug` | Bug 修复入口：复现→收集证据→创建 issue→派发 fwp-plan |
+| `fwp-resume` | 恢复中断：自动检测未完成的 milestone/issue，继续飞轮执行 |
+| `fwp-setup` | 项目初始化：创建仓库、CI/CD、分支保护、模板、标签 |
+| `fwp-help` | 飞轮帮助：列出所有可用 skill、用途和调用方式 |
+
 ## Scripts
 
 | 脚本                                   | 用途                                                 |
