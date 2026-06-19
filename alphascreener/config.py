@@ -83,6 +83,55 @@ class Settings(BaseSettings):
         """Full path to the SQLite database file."""
         return self.alphascreener_home / "data" / "alphascreener.db"
 
+    @staticmethod
+    def _legacy_db_has_data(legacy_path: Path) -> bool:
+        """Check whether a legacy SQLite database contains any data in user tables.
+
+        Returns ``True`` if at least one user table has one or more rows.
+        Returns ``False`` when all user tables are empty or the file cannot
+        be read.
+        """
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(f"file:{legacy_path}?mode=ro", uri=True)
+        except Exception:
+            _logger.debug(
+                "Could not open legacy database at %s for inspection.",
+                legacy_path,
+                exc_info=True,
+            )
+            return False
+
+        try:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table'"
+                "  AND name NOT LIKE 'sqlite_%'"
+                "  AND name != 'alembic_version'"
+            )
+            tables = [row[0] for row in cursor.fetchall()]
+            if not tables:
+                return False
+            for table in tables:
+                # Use a quoted identifier so table names with special
+                # characters do not break the query.
+                row = conn.execute(
+                    f'SELECT COUNT(*) FROM "{table}"'
+                ).fetchone()
+                if row and row[0] > 0:
+                    return True
+            return False
+        except Exception:
+            _logger.debug(
+                "Could not inspect legacy database at %s.",
+                legacy_path,
+                exc_info=True,
+            )
+            return False
+        finally:
+            conn.close()
+
     def get_db_url(self) -> str:
         """Return the SQLAlchemy database URL.
 
@@ -90,23 +139,33 @@ class Settings(BaseSettings):
         derives a ``sqlite:///`` URL from ``alphascreener_home``.
 
         When no explicit ``db_url`` is given, the old default location
-        ``<home>/alphabase.db`` is checked first.  If it exists the legacy
-        path is used so existing installations do not lose data, and a
-        WARNING is logged advising the operator to migrate.
+        ``<home>/alphabase.db`` is checked first.  If it exists **and**
+        contains data the legacy path is used so existing installations do
+        not lose data, and a WARNING is logged advising the operator to
+        migrate.  An empty legacy database (tables present but 0 rows) is
+        silently ignored in favour of the new default path.
         """
         if self.db_url:
             return self.db_url
 
         legacy_path = self.alphascreener_home / "alphabase.db"
-        if legacy_path.exists():
+        if legacy_path.exists() and self._legacy_db_has_data(legacy_path):
             _logger.warning(
-                "Legacy database found at %s.  "
+                "Legacy database found at %s with data.  "
                 "The default path has moved to %s.  "
                 "Move the file to the new location to suppress this warning.",
                 legacy_path,
                 self.db_path,
             )
             return f"sqlite:///{legacy_path}"
+
+        if legacy_path.exists():
+            _logger.info(
+                "Legacy database found at %s but it is empty.  "
+                "Using new default path %s.",
+                legacy_path,
+                self.db_path,
+            )
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{self.db_path}"

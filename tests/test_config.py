@@ -167,3 +167,111 @@ class TestSettingsEnvFile:
         monkeypatch.chdir(tmp_path)
         s = Settings(_env_file=str(dotenv))
         assert s.alphascreener_home == Path("/custom/data/path")
+
+
+class TestGetDbUrl:
+    """Tests for :meth:`Settings.get_db_url` with various legacy-DB states."""
+
+    def test_explicit_db_url_takes_priority(self, tmp_path):
+        home = tmp_path / "home"
+        s = Settings(
+            alphascreener_home=str(home),
+            db_url="sqlite:///explicit/my.db",
+        )
+        assert s.get_db_url() == "sqlite:///explicit/my.db"
+
+    def test_no_legacy_uses_new_path(self, tmp_path):
+        home = tmp_path / "home"
+        s = Settings(alphascreener_home=str(home))
+        url = s.get_db_url()
+        expected = f"sqlite:///{home / 'data' / 'alphascreener.db'}"
+        assert url == expected
+
+    def test_legacy_exists_but_empty_uses_new_path(self, tmp_path):
+        import sqlite3
+
+        home = tmp_path / "home"
+        legacy = home / "alphabase.db"
+        home.mkdir(parents=True, exist_ok=True)
+
+        # Create an empty legacy DB with tables but 0 rows
+        conn = sqlite3.connect(str(legacy))
+        conn.execute("CREATE TABLE alerts (id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE paper_trades (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        s = Settings(alphascreener_home=str(home))
+        url = s.get_db_url()
+        expected = f"sqlite:///{home / 'data' / 'alphascreener.db'}"
+        assert url == expected
+
+    def test_legacy_exists_with_data_uses_legacy_path(self, tmp_path):
+        import sqlite3
+
+        home = tmp_path / "home"
+        legacy = home / "alphabase.db"
+        home.mkdir(parents=True, exist_ok=True)
+
+        # Create a legacy DB with tables that actually have data
+        conn = sqlite3.connect(str(legacy))
+        conn.execute("CREATE TABLE alerts (id INTEGER PRIMARY KEY, msg TEXT)")
+        conn.execute("INSERT INTO alerts VALUES (1, 'test alert')")
+        conn.commit()
+        conn.close()
+
+        s = Settings(alphascreener_home=str(home))
+        url = s.get_db_url()
+        expected = f"sqlite:///{legacy}"
+        assert url == expected
+
+    def test_legacy_has_only_alembic_version_table_uses_new_path(self, tmp_path):
+        """alembic_version is excluded from the data check."""
+        import sqlite3
+
+        home = tmp_path / "home"
+        legacy = home / "alphabase.db"
+        home.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(str(legacy))
+        conn.execute(
+            "CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO alembic_version VALUES ('abc123')"
+        )
+        conn.commit()
+        conn.close()
+
+        s = Settings(alphascreener_home=str(home))
+        url = s.get_db_url()
+        # alembic_version is excluded, so this counts as "no data"
+        expected = f"sqlite:///{home / 'data' / 'alphascreener.db'}"
+        assert url == expected
+
+    def test_legacy_db_has_data_static_method(self, tmp_path):
+        import sqlite3
+
+        from alphascreener.config import Settings
+
+        legacy = tmp_path / "test.db"
+
+        # Empty DB -> False
+        conn = sqlite3.connect(str(legacy))
+        conn.execute("CREATE TABLE alerts (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        assert Settings._legacy_db_has_data(legacy) is False
+
+        # DB with data -> True
+        conn = sqlite3.connect(str(legacy))
+        conn.execute("INSERT INTO alerts VALUES (1)")
+        conn.commit()
+        conn.close()
+        assert Settings._legacy_db_has_data(legacy) is True
+
+    def test_legacy_db_has_data_nonexistent_file(self, tmp_path):
+        from alphascreener.config import Settings
+
+        nonexistent = tmp_path / "does_not_exist.db"
+        assert Settings._legacy_db_has_data(nonexistent) is False
