@@ -18,9 +18,21 @@ class TestSettingsDefaults:
         assert s.stooq_base_url == "https://stooq.com/q/d/l/"
 
     def test_default_llm(self):
-        s = Settings()
+        # Construct Settings with explicit values so .env file does not
+        # interfere with default-value assertions in local dev.
+        s = Settings(
+            openai_api_key="",
+            openai_base_url="",
+            llm_model="gpt-4o-mini",
+            llm_provider="openai",
+            llm_rps=5,
+            llm_batch_size=3,
+            llm_max_concurrent_stage1=6,
+        )
         assert s.openai_api_key == ""
+        assert s.openai_base_url == ""
         assert s.llm_model == "gpt-4o-mini"
+        assert s.llm_provider == "openai"
         assert s.llm_rps == 5
         assert s.llm_batch_size == 3
         assert s.llm_max_concurrent_stage1 == 6
