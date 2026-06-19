@@ -416,7 +416,12 @@ class CUSUMMonitor:
                 return 0.0
             return row.cusum_value if row.cusum_value is not None else 0.0
 
-        return _with_session(self._session_factory, _query, rollback_value=0.0)
+        return _with_session(
+            self._session_factory,
+            _query,
+            rollback_value=0.0,
+            operation="factor_health_daily.read_prev_cusum",
+        )
 
     def _get_ic_history(
         self,
@@ -445,7 +450,12 @@ class CUSUMMonitor:
             )
             return [r.daily_ic for r in rows if r.daily_ic is not None]
 
-        return _with_session(self._session_factory, _query, rollback_value=[])
+        return _with_session(
+            self._session_factory,
+            _query,
+            rollback_value=[],
+            operation="factor_health_daily.read_ic_history",
+        )
 
     def _get_trigger_dates(
         self,
@@ -480,7 +490,12 @@ class CUSUMMonitor:
             )
             return [r.metric_date for r in rows]
 
-        return _with_session(self._session_factory, _query, rollback_value=[])
+        return _with_session(
+            self._session_factory,
+            _query,
+            rollback_value=[],
+            operation="factor_health_daily.read_trigger_dates",
+        )
 
     def _count_recent_alerts(
         self,
@@ -512,7 +527,12 @@ class CUSUMMonitor:
                 .count()
             )
 
-        return _with_session(self._session_factory, _query, rollback_value=0)
+        return _with_session(
+            self._session_factory,
+            _query,
+            rollback_value=0,
+            operation="factor_health_daily.count_alerts",
+        )
 
     def _persist_record(
         self,
@@ -554,7 +574,12 @@ class CUSUMMonitor:
                     )
                 )
 
-        _with_session(self._session_factory, _write, suppress_exception=False)
+        _with_session(
+            self._session_factory,
+            _write,
+            suppress_exception=False,
+            operation="factor_health_daily.upsert",
+        )
 
     def _write_alert(
         self,
@@ -613,6 +638,7 @@ class CUSUMMonitor:
             _write,
             rollback_value=False,
             suppress_exception=False,
+            operation="alerts.insert_cusum",
         )
 
     def _find_recent_alert(
@@ -684,6 +710,7 @@ def _with_session(
     *,
     rollback_value: Any = None,
     suppress_exception: bool = True,
+    operation: str = "unknown",
 ) -> Any:
     """Execute *fn* inside a new session, commit, and close.
 
@@ -696,6 +723,8 @@ def _with_session(
             the session is rolled back, and the exception is re-raised so the
             caller can handle it (intended for write paths where silent
             swallowing would hide data-loss bugs).
+        operation: Human-readable label for the failing write path
+            (e.g. ``"factor_health_daily.upsert"``, ``"alerts.insert"``).
     """
     session = session_factory()
     try:
@@ -703,7 +732,12 @@ def _with_session(
         session.commit()
         return result
     except Exception:
-        _logger.exception("CUSUM session operation failed")
+        _logger.error(
+            "CUSUM write failed [%s] — data will NOT be persisted. "
+            "Check DB schema, disk space, and engine connectivity.",
+            operation,
+            exc_info=True,
+        )
         session.rollback()
         if suppress_exception:
             return rollback_value
