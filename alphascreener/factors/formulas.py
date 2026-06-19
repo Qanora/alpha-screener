@@ -13,9 +13,56 @@ Reference: PRD 3.1.2.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import polars as pl
+
+_logger = logging.getLogger("alphascreener.factors.formulas")
+
+# -- minimum-history helpers (Issue #225) --------------------------------------
+
+
+def _get_min_ticker_rows(df: pl.DataFrame) -> int:
+    """Return the minimum number of rows per ticker in the DataFrame."""
+    if "ticker" not in df.columns:
+        return df.height
+    return df.group_by("ticker").len().get_column("len").min()
+
+
+def _warn_insufficient_history(
+    factor_name: str,
+    required: int,
+    available: int,
+) -> None:
+    """Log a WARNING when a factor requires more history than available."""
+    _logger.warning(
+        "%s requires %d rows per ticker but min available is %d. "
+        "Factor will be null for affected tickers.",
+        factor_name,
+        required,
+        available,
+    )
+
+
+def _check_min_history(
+    df: pl.DataFrame,
+    *requirements: tuple[str, int],
+) -> None:
+    """Warn for each factor whose required window exceeds available ticker history.
+
+    All checks are performed in a single group-by pass, avoiding the per-function
+    overhead of repeated ``_get_min_ticker_rows`` calls in the chained
+    ``compute_all_technical_factors`` pipeline.
+
+    Args:
+        df: OHLCV DataFrame.
+        *requirements: Pairs of ``(factor_name, min_rows_required)``.
+    """
+    min_rows = _get_min_ticker_rows(df)
+    for name, required in requirements:
+        if min_rows < required:
+            _warn_insufficient_history(name, required, min_rows)
 
 # -- factor name constants ---------------------------------------------------
 
@@ -43,10 +90,13 @@ FACTOR_NAMES: tuple[str, ...] = (
 def compute_mom_5d(df: pl.DataFrame) -> pl.DataFrame:
     """MOM_5D = (Close_t - Close_{t-5}) / Close_{t-5}.
 
+    Uses ``over("ticker")`` so that lagged values are per-ticker (Issue #225).
+
     Returns the input DataFrame with a ``MOM_5D`` column added.
     """
+    prev_close5 = pl.col("close").shift(5).over("ticker")
     return df.with_columns(
-        ((pl.col("close") - pl.col("close").shift(5)) / pl.col("close").shift(5)).alias("MOM_5D")
+        ((pl.col("close") - prev_close5) / prev_close5).alias("MOM_5D")
     )
 
 
@@ -55,10 +105,15 @@ def compute_pth(df: pl.DataFrame) -> pl.DataFrame:
 
     Hard-filter threshold > 0.90 at screening time; the raw ratio is stored.
 
+    Uses ``over("ticker")`` so that rolling_max is computed per-ticker (Issue #225).
+
     Returns the input DataFrame with a ``PTH`` column added.
     """
     return df.with_columns(
-        (pl.col("close") / pl.col("close").rolling_max(window_size=63)).alias("PTH")
+        (
+            pl.col("close")
+            / pl.col("close").rolling_max(window_size=63).over("ticker")
+        ).alias("PTH")
     )
 
 
@@ -71,14 +126,16 @@ def compute_mom_slope(df: pl.DataFrame) -> pl.DataFrame:
     For a fixed 10-day window with x = [0, 1, ..., 9], var(x) = 8.25 and the
     numerator is Σ((x_i - x̄) * r_i) where x̄ = 4.5.
 
+    Uses ``over("ticker")`` so that lagged returns are per-ticker (Issue #225).
+
     Returns the input DataFrame with a ``MOM_SLOPE`` column added.
     """
-    daily_ret = pl.col("close").pct_change()
+    daily_ret = pl.col("close").pct_change().over("ticker")
     # Centred weights: x_i - x̄ for i=0..9
     w = [-4.5, -3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5]
-    numerator = daily_ret.shift(9) * w[0]
+    numerator = daily_ret.shift(9).over("ticker") * w[0]
     for i in range(1, 10):
-        numerator = numerator + daily_ret.shift(9 - i) * w[i]
+        numerator = numerator + daily_ret.shift(9 - i).over("ticker") * w[i]
     slope = numerator / 82.5  # var(x) for n=10
     return df.with_columns(slope.alias("MOM_SLOPE"))
 
@@ -91,13 +148,16 @@ def compute_bb_squeeze(df: pl.DataFrame) -> pl.DataFrame:
 
     BB_Width = (upper_band - lower_band) / SMA_20 = 4 * std_20 / SMA_20.
 
+    Uses ``over("ticker")`` for per-ticker rolling statistics (Issue #225).
+
     Returns the input DataFrame with a ``BB_SQUEEZE`` column added (i32, 0 or 1).
     """
-    sma20 = pl.col("close").rolling_mean(window_size=20)
-    std20 = pl.col("close").rolling_std(window_size=20)
-    bb_width = 4.0 * std20 / sma20
+    sma20 = pl.col("close").rolling_mean(window_size=20).over("ticker")
+    std20 = pl.col("close").rolling_std(window_size=20).over("ticker")
+    # Guard against div-by-zero when sma20 == 0
+    bb_width = pl.when(sma20 > 1e-12).then(4.0 * std20 / sma20).otherwise(None)
     # 20th percentile of bb_width over trailing 60 days
-    bb_pct20 = bb_width.rolling_quantile(quantile=0.20, window_size=60)
+    bb_pct20 = bb_width.rolling_quantile(quantile=0.20, window_size=60).over("ticker")
     squeeze = (
         pl.when(
             bb_width.is_not_null()
@@ -118,17 +178,21 @@ def compute_atr_ratio(df: pl.DataFrame) -> pl.DataFrame:
 
     Squeeze signal when ATR_RATIO < 0.8.
 
+    Division-by-zero guard (Issue #225): when ATR(20) <= 1e-12 or null,
+    ATR_RATIO is set to null.  Uses ``over("ticker")`` for per-ticker rolling means.
+
     Returns the input DataFrame with an ``ATR_RATIO`` column added.
     """
-    prev_close = pl.col("close").shift(1)
+    prev_close = pl.col("close").shift(1).over("ticker")
     high_low = pl.col("high") - pl.col("low")
     high_prev = (pl.col("high") - prev_close).abs()
     low_prev = (pl.col("low") - prev_close).abs()
     true_range = pl.max_horizontal(high_low, high_prev, low_prev)
 
-    atr5 = true_range.rolling_mean(window_size=5)
-    atr20 = true_range.rolling_mean(window_size=20)
-    atr_ratio = atr5 / atr20
+    atr5 = true_range.rolling_mean(window_size=5).over("ticker")
+    atr20 = true_range.rolling_mean(window_size=20).over("ticker")
+
+    atr_ratio = pl.when(atr20 > 1e-12).then(atr5 / atr20).otherwise(None)
 
     return df.with_columns(atr_ratio.alias("ATR_RATIO"))
 
@@ -151,16 +215,16 @@ def compute_mfi_14(df: pl.DataFrame) -> pl.DataFrame:
     Returns the input DataFrame with an ``MFI_14`` column added.
     """
     tp = (pl.col("high") + pl.col("low") + pl.col("close")) / 3.0
-    prev_tp = tp.shift(1)
+    prev_tp = tp.shift(1).over("ticker")
     raw_mf = tp * pl.col("volume")
 
     pos_mf = pl.when(tp > prev_tp).then(raw_mf).otherwise(0.0)
     neg_mf = pl.when(tp < prev_tp).then(raw_mf).otherwise(0.0)
 
-    # Wilder smoothing: EMA with alpha = 1/14
+    # Wilder smoothing: EMA with alpha = 1/14, per-ticker
     alpha = 1.0 / 14.0
-    avg_pos = pos_mf.ewm_mean(alpha=alpha, adjust=False)
-    avg_neg = neg_mf.ewm_mean(alpha=alpha, adjust=False)
+    avg_pos = pos_mf.ewm_mean(alpha=alpha, adjust=False).over("ticker")
+    avg_neg = neg_mf.ewm_mean(alpha=alpha, adjust=False).over("ticker")
 
     mfr = avg_pos / avg_neg
     mfi = 100.0 - 100.0 / (1.0 + mfr)
@@ -179,6 +243,8 @@ def compute_cmf_21(df: pl.DataFrame) -> pl.DataFrame:
     MF_Multiplier = ((Close - Low) - (High - Close)) / (High - Low), 0 if H==L.
     MF_Volume = MF_Multiplier * Volume.
 
+    Uses ``over("ticker")`` so that rolling sums are per-ticker (Issue #225).
+
     Returns the input DataFrame with a ``CMF_21`` column added.
     """
     hl_range = pl.col("high") - pl.col("low")
@@ -191,7 +257,10 @@ def compute_cmf_21(df: pl.DataFrame) -> pl.DataFrame:
     )
     mf_volume = mf_mult * pl.col("volume")
 
-    cmf = mf_volume.rolling_sum(window_size=21) / pl.col("volume").rolling_sum(window_size=21)
+    cmf = (
+        mf_volume.rolling_sum(window_size=21).over("ticker")
+        / pl.col("volume").rolling_sum(window_size=21).over("ticker")
+    )
 
     return df.with_columns(cmf.alias("CMF_21"))
 
@@ -201,12 +270,18 @@ def compute_vol_anomaly(df: pl.DataFrame) -> pl.DataFrame:
 
     Volume z-score = (volume - SMA_volume_50) / Std_volume_50.
 
+    Uses ``over("ticker")`` for per-ticker rolling statistics (Issue #225).
+    A WARNING is emitted when any ticker has fewer than 50 rows (the z-score window).
+
     Returns the input DataFrame with a ``VOL_ANOMALY`` column added (i32, 0 or 1).
     """
-    vol_sma50 = pl.col("volume").rolling_mean(window_size=50)
-    vol_std50 = pl.col("volume").rolling_std(window_size=50)
-    vol_z = (pl.col("volume") - vol_sma50) / vol_std50
-    close_sma5 = pl.col("close").rolling_mean(window_size=5)
+    vol_sma50 = pl.col("volume").rolling_mean(window_size=50).over("ticker")
+    vol_std50 = pl.col("volume").rolling_std(window_size=50).over("ticker")
+    # Guard against div-by-zero in z-score
+    vol_z = pl.when(vol_std50 > 1e-12).then(
+        (pl.col("volume") - vol_sma50) / vol_std50
+    ).otherwise(0.0)
+    close_sma5 = pl.col("close").rolling_mean(window_size=5).over("ticker")
 
     anomaly = (
         pl.when(
@@ -230,16 +305,18 @@ def compute_rsi_oversold(df: pl.DataFrame) -> pl.DataFrame:
 
     RSI(14) uses Wilder smoothing (EMA alpha=1/14).
 
+    Uses ``over("ticker")`` for per-ticker differencing and rolling mean (Issue #225).
+
     Returns the input DataFrame with both ``RSI_OVERSOLD`` (i32) and ``RSI_14``
     (f64, intermediate) columns added.
     """
-    delta = pl.col("close").diff()
+    delta = pl.col("close").diff().over("ticker")
     gain = delta.clip(lower_bound=0.0)
     loss = (-delta).clip(lower_bound=0.0)
 
     alpha = 1.0 / 14.0
-    avg_gain = gain.ewm_mean(alpha=alpha, adjust=False)
-    avg_loss = loss.ewm_mean(alpha=alpha, adjust=False)
+    avg_gain = gain.ewm_mean(alpha=alpha, adjust=False).over("ticker")
+    avg_loss = loss.ewm_mean(alpha=alpha, adjust=False).over("ticker")
 
     rs = avg_gain / avg_loss
     rsi = 100.0 - 100.0 / (1.0 + rs)
@@ -248,7 +325,7 @@ def compute_rsi_oversold(df: pl.DataFrame) -> pl.DataFrame:
     # Edge: when both = 0, RSI = 50
     rsi = pl.when((avg_gain == 0.0) & (avg_loss == 0.0)).then(50.0).otherwise(rsi)
 
-    sma20 = pl.col("close").rolling_mean(window_size=20)
+    sma20 = pl.col("close").rolling_mean(window_size=20).over("ticker")
     oversold = (
         pl.when((rsi < 30.0) & (pl.col("close") > sma20) & rsi.is_not_null() & sma20.is_not_null())
         .then(1)
@@ -270,13 +347,13 @@ def compute_macd_cross(df: pl.DataFrame) -> pl.DataFrame:
     Returns the input DataFrame with ``MACD``, ``SIGNAL``, ``HISTOGRAM``, and
     ``MACD_CROSS`` columns added.
     """
-    ema12 = pl.col("close").ewm_mean(span=12)
-    ema26 = pl.col("close").ewm_mean(span=26)
+    ema12 = pl.col("close").ewm_mean(span=12).over("ticker")
+    ema26 = pl.col("close").ewm_mean(span=26).over("ticker")
     macd_line = ema12 - ema26
-    signal_line = macd_line.ewm_mean(span=9)
+    signal_line = macd_line.ewm_mean(span=9).over("ticker")
     histogram = macd_line - signal_line
 
-    prev_histogram = histogram.shift(1)
+    prev_histogram = histogram.shift(1).over("ticker")
     crossed_up = (
         (histogram > 0.0)
         & (prev_histogram <= 0.0)
@@ -297,13 +374,16 @@ def compute_golden_cross(df: pl.DataFrame) -> pl.DataFrame:
 
     Cross-up: SMA(50)_t > SMA(200)_t AND SMA(50)_{t-1} <= SMA(200)_{t-1}.
 
+    Uses ``over("ticker")`` so that rolling means are per-ticker (Issue #225).
+    A WARNING is emitted when any ticker has fewer rows than the required window.
+
     Returns the input DataFrame with ``SMA_50``, ``SMA_200``, and ``GOLDEN_CROSS``
     columns added.
     """
-    sma50 = pl.col("close").rolling_mean(window_size=50)
-    sma200 = pl.col("close").rolling_mean(window_size=200)
-    prev_sma50 = sma50.shift(1)
-    prev_sma200 = sma200.shift(1)
+    sma50 = pl.col("close").rolling_mean(window_size=50).over("ticker")
+    sma200 = pl.col("close").rolling_mean(window_size=200).over("ticker")
+    prev_sma50 = sma50.shift(1).over("ticker")
+    prev_sma200 = sma200.shift(1).over("ticker")
 
     crossed_up = (
         (sma50 > sma200)
@@ -409,11 +489,20 @@ def compute_rev_accel(
     chronological order, most recent last]``.  The acceleration is the difference
     between the last two growth rates.
 
-    If *revenue_growth* is ``None``, the value is set to null (missing data).
+    If *revenue_growth* is ``None``, the value is set to null (missing data) and
+    a WARNING is emitted (Issue #225).  REV_ACCEL does **not** depend on SMA_200
+    or other technical factors — it uses only fundamental revenue data.
 
     Returns the input DataFrame with a ``REV_ACCEL`` column added.
     """
-    if revenue_growth is None or "ticker" not in df.columns:
+    if revenue_growth is None:
+        _logger.warning(
+            "REV_ACCEL: revenue_growth data is None, factor will be null for all tickers"
+        )
+        return df.with_columns(pl.lit(None, dtype=pl.Float64).alias("REV_ACCEL"))
+
+    if "ticker" not in df.columns:
+        _logger.warning("REV_ACCEL: df has no ticker column, factor will be null")
         return df.with_columns(pl.lit(None, dtype=pl.Float64).alias("REV_ACCEL"))
 
     # Build a lookup DataFrame: ticker -> REV_ACCEL
@@ -425,6 +514,9 @@ def compute_rev_accel(
             lookup_rows.append({"ticker": ticker, "REV_ACCEL": None})
 
     if not lookup_rows:
+        _logger.warning(
+            "REV_ACCEL: revenue_growth dict is empty, factor will be null for all tickers"
+        )
         return df.with_columns(pl.lit(None, dtype=pl.Float64).alias("REV_ACCEL"))
 
     lookup_df = pl.DataFrame(lookup_rows)
@@ -440,10 +532,23 @@ def compute_all_technical_factors(df: pl.DataFrame) -> pl.DataFrame:
     This function chains all OHLCV-only factor computations, returning the input
     DataFrame with all factor columns appended.
 
+    Minimum-history checks (Issue #225) are performed once upfront, avoiding
+    repeated ``group_by("ticker")`` calls across the chained pipeline.
+
     Returns a DataFrame with columns: MOM_5D, PTH, MOM_SLOPE, BB_SQUEEZE,
     ATR_RATIO, MFI_14, CMF_21, VOL_ANOMALY, RSI_14, RSI_OVERSOLD, MACD, SIGNAL,
     HISTOGRAM, MACD_CROSS, SMA_50, SMA_200, GOLDEN_CROSS.
     """
+    _check_min_history(
+        df,
+        ("PTH", 63),
+        ("BB_SQUEEZE", 60),
+        ("ATR_RATIO", 20),
+        ("CMF_21", 21),
+        ("VOL_ANOMALY", 50),
+        ("SMA_50", 50),
+        ("SMA_200", 200),
+    )
     return (
         df.pipe(compute_mom_5d)
         .pipe(compute_pth)
