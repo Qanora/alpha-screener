@@ -22,13 +22,6 @@
 - 流程: feature 分支 → MR → squash merge
 - CI 通过后 auto-merge
 
-## Scripts
-
-- `scripts/watch-pr.sh <N>` — 轮询 MR CI 状态
-- `scripts/fwp-ship-cleanup.sh <N> <branch>` — MR 合入后清理
-- `scripts/cleanup-merged-branches.sh` — 批量清理残留分支
-- `scripts/commit-msg` — Git hook 校验 commit 含 issue 引用
-
 ## Triage Labels
 
 `needs-triage` | `needs-info` | `ready-for-agent` | `ready-for-human` | `wontfix`
