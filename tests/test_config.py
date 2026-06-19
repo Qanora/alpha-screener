@@ -155,6 +155,14 @@ class TestSettingsEnvFile:
         dotenv = tmp_path / ".env"
         dotenv.write_text("LLM_MODEL=gpt-4o-from-file\nLLM_RPS=8\n")
 
+        # Clear env vars that may have been leaked by third-party packages
+        # (e.g. tradingagents calls load_dotenv() at import time, which writes
+        #  the projectʼs .env into os.environ).  Those real env vars take
+        #  priority over _env_file in pydantic-settings, so we must remove
+        #  them before the assertion.
+        monkeypatch.delenv("LLM_MODEL", raising=False)
+        monkeypatch.delenv("LLM_RPS", raising=False)
+
         monkeypatch.chdir(tmp_path)
         s = Settings(_env_file=str(dotenv))
         assert s.llm_model == "gpt-4o-from-file"
