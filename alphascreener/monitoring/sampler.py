@@ -526,6 +526,47 @@ def _check_disk(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline-stage metric persistence
+# ---------------------------------------------------------------------------
+
+
+def write_stage_metric(
+    session_factory: _SessionFactory,
+    task_id: str,
+    stage: str,
+    notes: str = "",
+) -> None:
+    """Persist a pipeline-stage completion metric to ``monitoring_samples``.
+
+    Uses the ``notes`` column to record stage-specific information (e.g.
+    ticker counts, pass rates, assessment breakdowns).  RSS/CPU/FD/thread
+    fields are set to 0.0 / 0 to distinguish these from resource samples.
+
+    Args:
+        session_factory: Callable returning a new SQLAlchemy Session.
+        task_id: The scheduler task identifier (e.g. ``"daily_scan"``).
+        stage: Pipeline stage label (e.g. ``"phase1"``, ``"phase2"``, ``"fine"``).
+        notes: Human-readable metric summary.
+    """
+    full_notes = f"[{stage}] {notes}" if notes else f"[{stage}]"
+
+    def _write(session: Session) -> None:
+        session.add(
+            MonitoringSample(
+                task_id=task_id,
+                sampled_at=_utcnow_iso(),
+                rss_mb=0.0,
+                cpu_percent=0.0,
+                open_fd_count=0,
+                thread_count=0,
+                notes=full_notes,
+            )
+        )
+
+    _with_session(session_factory, _write)
+
+
+# ---------------------------------------------------------------------------
 # Data retention
 # ---------------------------------------------------------------------------
 

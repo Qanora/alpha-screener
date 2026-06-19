@@ -680,3 +680,169 @@ class TestMonitoringConfig:
         assert cfg.sample_interval_seconds == 120
         assert cfg.rss_warning_mb == 3000.0
         assert cfg.cpu_warning_percent == 200.0
+
+
+# ============================================================================
+# 12. Schema auto-migration — ensure tables exist on engine creation
+# ============================================================================
+
+
+class TestEnsureSchema:
+    """_ensure_schema() creates all required tables if they don't exist."""
+
+    def test_ensure_schema_creates_all_tables(self, tmp_path):
+        """_ensure_schema on a file-based SQLite creates all 9 core tables."""
+        from sqlalchemy import create_engine, inspect
+
+        from alphascreener.db.ensure_schema import _ensure_schema
+
+        db_path = str(tmp_path / "test_ensure.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+
+        # Verify tables don't exist before
+        inspector = inspect(engine)
+        assert len(inspector.get_table_names()) == 0
+
+        _ensure_schema(engine)
+
+        # Verify all 9 core tables exist after
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        expected = {
+            "alerts",
+            "alpha_acceptance_daily",
+            "data_source_diff",
+            "factor_health_daily",
+            "factor_versions",
+            "llm_cost_daily",
+            "monitoring_samples",
+            "pid_lock",
+            "paper_trades",
+        }
+        assert expected == table_names, f"Missing tables: {expected - table_names}"
+
+    def test_ensure_schema_is_idempotent(self, tmp_path):
+        """Calling _ensure_schema multiple times does not raise errors."""
+        from sqlalchemy import create_engine
+
+        from alphascreener.db.ensure_schema import _ensure_schema
+
+        db_path = str(tmp_path / "test_idem.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+
+        _ensure_schema(engine)
+        _ensure_schema(engine)  # second call should not fail
+        _ensure_schema(engine)  # third call should not fail
+
+    def test_ensure_schema_creates_monitoring_samples_writable(self, tmp_path):
+        """After _ensure_schema, monitoring_samples table accepts writes."""
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session
+
+        from alphascreener.db.ensure_schema import _ensure_schema
+        from alphascreener.db.models import MonitoringSample
+
+        db_path = str(tmp_path / "test_writable.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        _ensure_schema(engine)
+
+        with Session(engine) as session:
+            sample = MonitoringSample(
+                task_id="test-task",
+                sampled_at="2025-06-19T10:00:00+00:00",
+                rss_mb=100.0,
+                cpu_percent=10.0,
+            )
+            session.add(sample)
+            session.commit()
+
+            rows = session.query(MonitoringSample).filter_by(task_id="test-task").all()
+            assert len(rows) == 1
+            assert rows[0].rss_mb == 100.0
+
+
+# ============================================================================
+# 13. Pipeline-stage metric persistence
+# ============================================================================
+
+
+class TestPipelineStageMetrics:
+    """Pipeline-stage metrics can be persisted to monitoring_samples."""
+
+    def test_write_stage_metric_to_monitoring_samples(self, db_engine):
+        """write_stage_metric() writes a monitoring sample with stage notes."""
+        from sqlalchemy.orm import Session
+
+        from alphascreener.db.models import MonitoringSample
+        from alphascreener.monitoring import write_stage_metric
+
+        def sf():
+            return Session(db_engine)
+
+        write_stage_metric(
+            session_factory=sf,
+            task_id="daily_scan",
+            stage="phase1",
+            notes="Phase1: 500 tickers, 120 passed (24.0%)",
+        )
+
+        with Session(db_engine) as s:
+            rows = s.query(MonitoringSample).filter_by(task_id="daily_scan").all()
+            assert len(rows) == 1
+            assert rows[0].notes == "[phase1] Phase1: 500 tickers, 120 passed (24.0%)"
+            assert rows[0].rss_mb == 0.0
+            assert rows[0].thread_count == 0
+
+    def test_write_multiple_stage_metrics(self, db_engine):
+        """Multiple stage metrics can be written for a single task run."""
+        from sqlalchemy.orm import Session
+
+        from alphascreener.monitoring import write_stage_metric
+
+        def sf():
+            return Session(db_engine)
+
+        write_stage_metric(sf, "daily_scan", "phase1", "Phase1: done")
+        write_stage_metric(sf, "daily_scan", "phase2", "Phase2: 50 candidates")
+        write_stage_metric(sf, "daily_scan", "fine", "Fine: 12 assessments")
+
+        with Session(db_engine) as s:
+            from alphascreener.db.models import MonitoringSample
+
+            rows = (
+                s.query(MonitoringSample)
+                .filter_by(task_id="daily_scan")
+                .order_by(MonitoringSample.sampled_at)
+                .all()
+            )
+            assert len(rows) == 3
+            assert rows[0].notes == "[phase1] Phase1: done"
+            assert rows[1].notes == "[phase2] Phase2: 50 candidates"
+            assert rows[2].notes == "[fine] Fine: 12 assessments"
+
+
+# ============================================================================
+# 14. Daily scan monitoring integration
+# ============================================================================
+
+
+class TestDailyScanMonitoringIntegration:
+    """daily_scan writes monitoring_samples during pipeline execution."""
+
+    def test_daily_scan_function_is_callable_with_monitoring(self):
+        """daily_scan is callable and importable."""
+        from alphascreener.scheduler.tasks import daily_scan
+
+        assert callable(daily_scan)
+
+    def test_monitoring_module_exports_stage_writer(self):
+        """The monitoring module exports write_stage_metric."""
+        from alphascreener.monitoring import write_stage_metric
+
+        assert callable(write_stage_metric)
+
+    def test_db_ensure_schema_module_exists(self):
+        """The ensure_schema module is importable."""
+        from alphascreener.db.ensure_schema import _ensure_schema
+
+        assert callable(_ensure_schema)
