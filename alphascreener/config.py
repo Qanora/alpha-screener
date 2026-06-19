@@ -35,13 +35,6 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
     llm_retry_base_delay: float = 1.0
 
-    # ====== 成本熔断阈值 ======
-    cost_l1_warning_daily_usd: float = 0.80
-    cost_l2_degrade_daily_usd: float = 1.00
-    cost_l3_savings_monthly_usd: float = 80.0
-    cost_l4_circuit_monthly_usd: float = 95.0
-    cost_budget_monthly_usd: int = 100
-
     # ====== 粗筛阈值 ======
     mom_5d_min: float = 0.0
     atr_ratio_max: float = 0.8
@@ -52,12 +45,6 @@ class Settings(BaseSettings):
     # ====== 行业去重 ======
     sector_cap: int = 3
     industry_cap: int = 2
-
-    # ====== 飞书推送 ======
-    feishu_app_id: str = ""
-    feishu_app_secret: str = ""
-    feishu_target_openid: str = ""
-    feishu_push_enabled: bool = True
 
     # ====== 系统行为开关 ======
     evolution_weight_adjust_enabled: bool = False
