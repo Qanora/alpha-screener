@@ -74,10 +74,10 @@ AlphaScreener 是一个面向美股（V1.5 起扩展港股）的 **AI-Native 量
 | LLM 精筛 | Top 20 × 3 调用，4 位 Analyst | 多轮深度辩论、多模型投票 |
 | 回测 | backtrader 增量回测 | vectorbt 全量向量化 |
 | Alpha 验收 | base_rate / Precision@20 / Lift@20 / Bootstrap CI | 风险因子归因分解 |
-| 自进化 | 全部因子权重冻结，仅 CUSUM 监控告警 | 慢速层权重调整（延后到 V1.0 第二阶段） |
+| 自进化 | 全部因子权重冻结，IC 定期审查 | 慢速层权重调整（延后到 V1.0 第二阶段） |
 | 数据源 | yfinance 主 + 备用 OHLCV + FMP Free | Bloomberg / Refinitiv |
-| 推送 | 飞书每日卡片 | 微信 / 钉钉 / 邮件 |
-| 部署 | systemd + APScheduler | Docker / k8s |
+| 推送 | 终端输出 | 微信 / 钉钉 / 邮件 |
+| 部署 | cron + CLI | Docker / k8s |
 
 ---
 
@@ -92,7 +92,7 @@ AlphaScreener 是一个面向美股（V1.5 起扩展港股）的 **AI-Native 量
 | yfinance | 动量因子 | 粗筛引擎 | 精筛 Top 20 |
 | 备用 OHLCV | 波动率因子 | (硬规则过滤) | 风险审计报告 |
 | FMP (辅助) | 资金流因子 | 行业去重 | 回测验证标签 |
-| | 情绪因子(V1.5) | LLM 精筛 | 飞书推送 |
+| | 情绪因子(V1.5) | LLM 精筛 | 终端输出 |
 | | 技术形态因子 | (风险审计层) | 进化诊断日志 |
 | | 基本面因子 | | |
 +---------------+----------------+----------------+----------------+
@@ -489,7 +489,7 @@ Refined_Score = Coarse_Final_Score
 2. **催化剂时序一致性**: Bull 报告的催化剂日期是否真实落在 T+1 ~ T+7 窗口内? 是否存在"催化剂已过去"或"催化剂尚未到达"的时序错位?
 3. **流动性与退市风险**: 是否识别出流动性陷阱({avg_daily_volume_20d_usd} 偏低但 Bull 仍预期大幅突破)或退市风险?
 4. **粗筛分数修正**: 默认 1.00; 中等风险 → 0.95; 严重风险 → 0.90; 仅当催化剂明确一致 + 流动性充足 + 无数据冲突三项同时满足才允许上调至 1.05。
-5. **可解释性附加输出**: final_rating / breakout_probability / catalyst_events 等字段保留作为飞书卡片展示和回测分析用，不进入最终排序。
+5. **可解释性附加输出**: final_rating / breakout_probability / catalyst_events 等字段保留作为终端展示和回测分析用，不进入最终排序。
 
 ## Output Format (严格 JSON, 字段命名与 4.3 BreakoutAssessment 对齐)
 {
@@ -615,14 +615,9 @@ Refined_Score = Coarse_Final_Score
 月成本: ~$1.8 / $100 月预算
 ```
 
-#### 4.6.3 成本熔断
+#### 4.6.3 成本预算
 
-| 级别 | 触发条件 | 动作 |
-|------|----------|------|
-| L1 警告 | 日成本 ≥ $0.80 | 批大小 3 → 2 |
-| L2 降级 | 日成本 ≥ $1.0 | 暂停精筛，仅输出粗筛 |
-| L3 节约 | 月成本 ≥ $80 | 精筛缩减至 Top 10 |
-| L4 熔断 | 月成本 ≥ $95 | 完全停止 LLM 调用 |
+> **CLI-only 模式**: 成本管理由用户自行控制。LLM 调用预算通过 `llm_rps` 和 `llm_batch_size` 限制速率，无自动熔断。
 
 #### 4.6.4 Rate Limit 处理
 
@@ -687,7 +682,7 @@ Refined_Score = Coarse_Final_Score
 | 条件 | 阈值 |
 |------|------|
 | 积累交易日 | ≥ 60 天 |
-| 系统稳定性 | 60 天内无 L3/L4 成本熔断 |
+| 系统稳定性 | 60 天内无异常 |
 | 数据完整性 | factor_nan_count 日均 < 全标的 5% |
 | 调度准时 | daily_scan 成功率 ≥ 95% |
 | 备用数据源校验 | 主备 OHLCV 差异 > 0.5% 告警 ≤ 5 次/月 |
@@ -752,38 +747,25 @@ Refined_Score = Coarse_Final_Score
 
 ## 6. 自我进化机制
 
-> **MVP 阶段策略**：完全冻结全部 13 因子权重（参数版本号 v1.0.0），仅启用快速层 CUSUM 监控做保护性告警，不调权。慢速层权重调整延后至工程转正后启用（环境变量 `EVOLUTION_WEIGHT_ADJUST_ENABLED` 控制）。
+> **MVP 阶段策略**：完全冻结全部 13 因子权重（参数版本号 v1.0.0）。慢速层权重调整延后至工程转正后启用（环境变量 `EVOLUTION_WEIGHT_ADJUST_ENABLED` 控制）。
 
 ### 6.1 双层进化反馈
 
-#### 6.1.1 快速层（CUSUM 监控）
+#### 6.1.1 快速层（IC 监控）
 
 **触发**：每日 T+8 标签回填后立即触发
 
-```
-对每个 active 因子 f:
-S_t = max(0, S_{t-1} + IC_t - μ_IC - k)
-其中 μ_IC = 滚动 90 天 IC 均值，k = 0.005，CUSUM 阈值 h = 0.05
-若 S_t > h → 触发告警
-```
-
-**触发动作（不调权）**：
-
-| 级别 | 条件 | 行为 |
-|------|------|------|
-| L1 告警 | 单因子 CUSUM 触发 | 飞书告警，记录 `factor_health_daily` |
-| L2 暂停因子 | 单因子 5 日内触发 ≥ 2 次 | active → degraded（权重冻结） |
-| L3 全局降级 | 当日 ≥ 5 个因子同时触发 | 启用低活跃期模式 + critical 告警 |
+通过 `evolve review-last` CLI 命令查看滚动 IC 指标，人工判断是否触发权重调整。
 
 #### 6.1.2 慢速层（30 天权重调整，V1.0 第二阶段启用）
 
-**触发频率**：每两周（biweekly_evolution，月初 1 日 + 月中 15 日 05:30 UTC）
+**触发频率**：用户按需运行 `evolve propose-factor` / `walk-forward` CLI 命令
 
 | 动作 | 触发条件 |
 |------|----------|
-| 权重微调 | 30 天 CUSUM 累计 ≥ 5 次 + 30 天 IC 较入选时下降 ≥ 30% |
-| 因子降级 | 30 天内 5 次 CUSUM 未恢复 + 30 天 IC < 0 |
-| 因子重启 | degraded 因子 30 天 IC > 0 且 CUSUM 连续 15 天无告警 |
+| 权重微调 | 30 天 IC 较入选时下降 ≥ 30% |
+| 因子降级 | 30 天 IC < 0 |
+| 因子重启 | degraded 因子 30 天 IC > 0 |
 | 进化暂停 | Lift@20 < 1.0 持续 30 天 |
 
 #### 6.1.3 Strategy Review Agent Prompt（慢速层执行体）
@@ -888,7 +870,7 @@ LLM 提案 (requires_human_review=true)
 写入 evolution_proposals 表 (status=pending)
 │
 ▼
-飞书推送审核卡片 (含 diff: 旧权重 vs 新权重)
+终端输出审核卡片 (含 diff: 旧权重 vs 新权重)
 │
 ├─ approve → 进入下次 biweekly 任务执行
 ├─ reject → 状态置 rejected, 记录拒绝原因
@@ -1131,7 +1113,7 @@ probation 状态加入因子体系（初始 2-3% 权重，30 日观察）
 2. 备用源拉取相同标的（5 RPS 限速）
 3. 字段级对比 Open/High/Low/Close 任一相对差异 > 0.5%
 → 写入 data_source_diff 表
-→ 当日告警 ≥ 5 次 → 飞书告警
+→ 当日告警 ≥ 5 次 → 终端警告
 4. 差异标的：daily_scan 仍以 yfinance 为准，PM Prompt 注入 data_source_diff_flag = true
 ```
 
@@ -1163,118 +1145,16 @@ probation 状态加入因子体系（初始 2-3% 权重，30 日观察）
 ↓
 5. LLM 精筛 (4 位 Analyst + Bull/Bear/PM 风险审计)
 ↓
-6. 最终输出 (signals_refined.parquet + 飞书推送)
+6. 最终输出 (signals_refined.parquet + 终端输出)
 ↓
 7. Paper Trading 记录
 ↓
 8. 次日 11:00 UTC: daily_backtest_incremental
 ```
 
-### 7.5 飞书消息推送
+### 7.5 CLI 输出
 
-**触发**：每日扫描完成后自动触发（7.4 流水线第 6 步之后），1 次/日。
-
-#### 7.5.1 配置
-
-**环境变量**：
-```bash
-FEISHU_APP_ID=cli_xxxx # 飞书自建应用 App ID
-FEISHU_APP_SECRET=xxxx # 飞书自建应用 App Secret
-FEISHU_TARGET_OPENID=ou_xxxx # 接收消息的用户 Open ID
-FEISHU_PUSH_ENABLED=true # 推送开关（可关闭，默认 true）
-```
-
-**应用权限**：`im:message:send_as_bot`（以应用身份发送消息）
-
-#### 7.5.2 API 调用流程
-
-```
-Step 1: 获取 tenant_access_token (有效期 2 小时)
-POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
-Body: {"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}
-Response: {"tenant_access_token": "t-xxxx", "expire": 7200}
-
-Step 2: 发送交互卡片
-POST https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id
-Header: Authorization: Bearer {tenant_access_token}
-Body: {
-"receive_id": FEISHU_TARGET_OPENID,
-"msg_type": "interactive",
-"content": "{card_json_stringified}"
-}
-```
-
-> **Token 缓存**：tenant_access_token 缓存到内存或 SQLite（key=`feishu_token`），过期前 5 分钟主动刷新。
-
-#### 7.5.3 卡片 JSON 模板
-
-```json
-{
-"msg_type": "interactive",
-"card": {
-"header": {
-"title": "📊 AlphaScreener 每日报告 | {date}",
-"template": "blue"
-},
-"elements": [
-{
-"tag": "markdown",
-"content": "**扫描概览**\n全市场标的: {total} | 粗筛通过: {pass_count} | 精筛输出: {refine_count}"
-},
-{
-"tag": "markdown",
-"content": "**🏆 今日精筛 Top 标的**\n| 排名 | 标的 | 评级 | 置信度 | 主要催化剂 |\n|---|---|---|---|---|\n| 1 | {ticker1} | {rating1} | {confidence1}% | {catalyst1} |\n| 2 | {ticker2} | {rating2} | {confidence2}% | {catalyst2} |\n| ... | ... | ... | ... | ... |"
-},
-{
-"tag": "markdown",
-"content": "**📈 Alpha 验收（pure / llm 双轨）**\nPrecision@20: {p20_pure}% / {p20_llm}%\nLift@20: {lift_pure} / {lift_llm}\nbase_rate: {base_rate}%"
-},
-{
-"tag": "markdown",
-"content": "**📉 回测绩效（滚动 7 天）**\n胜率: {win_rate}% | 夏普: {sharpe} | 平均收益: {avg_return}%"
-},
-{
-"tag": "markdown",
-"content": "**💰 成本控制**\n今日 LLM 成本: ${daily_cost} | 本月累计: ${monthly_cost}/$100"
-},
-{"tag": "hr"},
-{
-"tag": "markdown",
-"content": "**⚠️ 异常/告警**\n{alerts_summary}"
-}
-]
-}
-}
-```
-
-**字段映射**：
-
-| 占位符 | 数据来源 | 备注 |
-|--------|----------|------|
-| `{date}` | 系统日期 | 扫描执行日期 |
-| `{total}` / `{pass_count}` / `{refine_count}` | scan_engine 输出 | 标的数量 |
-| `{ticker_i}` / `{rating_i}` / `{confidence_i}` / `{catalyst_i}` | PM Output | i = 1..N（默认 5，可配置） |
-| `{p20_pure}` / `{p20_llm}` / `{lift_pure}` / `{lift_llm}` / `{base_rate}` | `alpha_acceptance_daily` 表 | Ablation 双轨展示 |
-| `{win_rate}` / `{sharpe}` / `{avg_return}` | 回测模块滚动指标 | 7 天窗口 |
-| `{daily_cost}` / `{monthly_cost}` | `llm_cost_daily` 表 | 美元计 |
-| `{alerts_summary}` | `alerts` 表当日记录 | 无告警则 `"✅ 系统正常"` |
-
-#### 7.5.4 失败处理
-
-| 失败类型 | 处置 |
-|----------|------|
-| API 调用失败 | tenacity 重试 3 次，间隔 5s / 15s / 60s |
-| Token 过期（401） | 自动刷新 tenant_access_token 后重试 |
-| 连续 3 天推送失败 | 记录 ERROR 日志 + 进程内告警计数；不阻塞主流程 |
-| 卡片渲染失败（400） | 降级为纯文本消息（保留 Top 5 标的列表） |
-
-#### 7.5.5 MVP 阶段范围
-
-- ✅ 每日精筛结果卡片推送
-- ✅ Alpha 验收双轨指标 + 回测绩效 + 成本统计
-- ✅ 失败重试与降级
-- ❌ 卡片交互按钮（V1.0：如"查看详情"、"加入自选"）
-- ❌ 多人推送 / 群推送（V1.0）
+> **CLI-only 模式**: 所有结果直接输出到终端。用户通过 `alphascreener` CLI 命令按需运行扫描/回测/进化审查，结果使用 rich 终端组件渲染（table/panel/kpi），无需外部推送通道。
 
 ### 7.6 数据存储
 
@@ -1358,7 +1238,7 @@ pid INTEGER NOT NULL, -- 持锁进程 PID（psutil 校验存活）
 task_id TEXT NOT NULL, -- 任务标识（如 'daily_scan' / 'monthly_full_backtest'）
 acquired_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 expires_at TIMESTAMP NOT NULL, -- 锁超时时间（acquired_at + 任务超时上限 + 10 分钟缓冲）
-meta_json TEXT -- {"started_by": "apscheduler", "trigger_time": "..."}
+meta_json TEXT -- {"started_by": "cli", "trigger_time": "..."}
 );
 CREATE INDEX idx_pid_lock_expires ON pid_lock(expires_at);
 
@@ -1434,29 +1314,9 @@ CREATE INDEX idx_factor_health_factor_date ON factor_health_daily(factor_name, m
 
 超期数据归档为 zstd Parquet 移至 `~/.alphascreener/archive/`。
 
-### 7.7 调度系统
+### 7.7 执行模式
 
-**调度器**：APScheduler `BlockingScheduler`，单机模式，UTC 时区，`SQLAlchemyJobStore` 持久化。
-
-#### 7.7.1 任务清单（严格分时调度，单机串行执行）
-
-| 任务 ID | Cron (UTC) | 描述 | 耗时 | 内存预算 |
-|---------|------------|------|------|----------|
-| `monthly_cost_reset` | `0 0 1 * *` | 月度成本计数器重置 | < 1 分钟 | < 50 MB |
-| `monthly_full_backtest` | `5 0 1 * *` | 全量历史回测（2 年窗口） | ≤ 4 小时 | ≤ 2 GB |
-| `monthly_isoforest_retrain` | `0 5 1 * *` | IsolationForest 重训练（V1.5） | ≤ 10 分钟 | ≤ 1.5 GB |
-| `biweekly_evolution` | `30 5 1,15 * *` | 进化 Agent 复盘 | ≤ 15 分钟 | ≤ 1.5 GB |
-| `monthly_universe_refresh` | `0 8 1 * *` | 指数白名单更新 | ≤ 5 分钟 | < 200 MB |
-| `daily_backtest_incremental` | `0 11 * * 2-6` | 日频增量回测 | ≤ 30 分钟 | ≤ 1 GB |
-| `daily_health_check` | `0 12 * * *` | 数据源连通性 + 缓存清理 | ≤ 5 分钟 | < 200 MB |
-| `daily_scan` | `0 23 * * 1-5` | 美股盘后日频扫描全流程 | ≤ 30 分钟 | ≤ 4 GB |
-
-#### 7.7.2 单机串行执行约束
-
-- **进程级互斥**：`pid_lock` 表 `lock_name='global'` + APScheduler `max_instances=1` 双重保险
-- **任务排队**：上一任务未结束时，新任务等待 ≤ 2 小时；超时跳过本次执行并告警
-- **死锁恢复**：进程启动时校验持锁 PID 是否存活（psutil），不存活则强制释放
-- **资源预留**：任意时刻最多 1 个任务运行，峰值内存不叠加
+> **CLI-only 模式**: 所有任务通过 CLI 命令按需执行。用户通过 `cron` / `systemd timer` 自行编排调度。无内置调度器，无 `pid_lock` 进程互斥。
 
 ---
 
@@ -1521,20 +1381,19 @@ dependencies = [
 
 # 数据源
 "yfinance>=0.2.40", # 主力数据源
-"requests>=2.31", # FMP / 飞书 / Stooq HTTP 调用
+"requests>=2.31", # FMP / Stooq HTTP 调用
 "httpx>=0.26", # 异步 HTTP（LLM/数据源并发）
+	# 终端显示与 CLI
+	"rich>=13.0", # 终端渲染
 
 # 调度与存储
-"apscheduler>=3.10", # 任务调度
 "sqlalchemy>=2.0", # SQLite ORM
 "alembic>=1.13", # 数据库迁移
-
 # 系统支持
 "tenacity>=8.2", # 重试与退避
 "psutil>=5.9", # 进程资源监控
 "pydantic>=2.5", # BreakoutAssessment schema 校验
 "python-dotenv>=1.0", # .env 加载
-"click>=8.1", # CLI 框架
 ]
 
 [project.optional-dependencies]
@@ -1557,11 +1416,7 @@ FMP_API_KEY=your_fmp_api_key # FMP Free tier
 # yfinance 无需 API key
 STOOQ_BASE_URL=https://stooq.com/q/d/l/
 
-# ====== 飞书推送 ======
-FEISHU_APP_ID=cli_xxxx
-FEISHU_APP_SECRET=xxxx
-FEISHU_TARGET_OPENID=ou_xxxx
-FEISHU_PUSH_ENABLED=true
+# ====== 终端输出 ======
 
 # ====== 系统行为开关 ======
 EVOLUTION_WEIGHT_ADJUST_ENABLED=false # MVP 冻结权重；工程转正后置 true
@@ -1694,7 +1549,7 @@ alphascreener walk-forward --version <new_version> # 因子升级前验证
 | 磁盘紧张 | disk_usage_gb > 80 | 🔴 | 触发归档 |
 | 任务排队超时 | task_queue_wait_sec > 7200 | ⚠️ | 跳过本次 |
 | OOM 发生 | oom_kill_count > 0 | 🔴 | 停机自检 |
-| 数据源差异 | data_source_diff 当日 ≥ 5 次 | ⚠️ | 飞书告警 |
+| 数据源差异 | data_source_diff 当日 ≥ 5 次 | ⚠️ | 终端警告 |
 | yfinance 连续失效 | 失败率 > 30% 持续 3 天 | 🔴 | 切换备用源全量 |
 | Lift@20 低于 base | 滚动 30 天 < 1.0 持续 7 天 | ⚠️ | 触发慢速进化 |
 | Alpha critical | 滚动 30 天 Lift@20 < 0.9 持续 14 天 | 🔴 | 暂停 LLM 修正层 |
@@ -1724,7 +1579,7 @@ alphascreener walk-forward --version <new_version> # 因子升级前验证
 8 GB 总内存
 ├─ OS + 基础进程: 800 MB
 ├─ Python runtime + 依赖库: 600 MB
-├─ APScheduler + SQLite WAL: 200 MB
+├─ SQLite WAL: 100 MB
 ├─ ─────────────────────────────────
 ├─ 任务工作内存 (单任务): ≤ 4 GB
 │ └─ daily_scan: ≤ 4 GB（峰值任务）
@@ -1797,16 +1652,16 @@ alphascreener walk-forward --version <new_version> # 因子升级前验证
 | 契约名 | 类型 | 生产者 | 消费者 |
 |--------|------|--------|--------|
 | `factors.parquet` | Parquet | 因子计算引擎 | 粗筛、回测、进化 Agent |
-| `signals_refined.parquet` | Parquet | LLM 精筛 / PM Output | 飞书推送、回测对账、进化 Agent |
+| `signals_refined.parquet` | Parquet | LLM 精筛 / PM Output | 终端输出、回测对账、进化 Agent |
 | `paper_trades` | SQLite | 回测引擎 | 进化 Agent、Dashboard |
 | `factor_versions` | SQLite | 进化 Agent | 因子计算引擎、回测 |
-| `alerts` | SQLite | 监控系统 | 飞书推送、运维 |
+| `alerts` | SQLite | 监控系统 | 终端输出、运维 |
 | `llm_cost_daily` | SQLite | LLM 适配器 | 成本熔断、月报 |
-| `pid_lock` | SQLite | APScheduler 装饰器 | 任务排队、互斥锁 |
+| -- | -- | (已移除 — CLI 按需执行，无调度器) | -- |
 | `monitoring_samples` | SQLite | 资源监控 | 告警系统、容量评估 |
-| `BreakoutAssessment` | Pydantic | LLM PM Output | 评级映射、回测、飞书卡片 |
+| `BreakoutAssessment` | Pydantic | LLM PM Output | 评级映射、回测、CLI 输出 |
 | `case_library/cases.parquet` | Parquet | 每日新增正样本 | Breakout Analyst 检索 |
-| `alpha_acceptance_daily` | SQLite | Alpha 验收口径计算 | 飞书卡片、月度 walk-forward |
+| `alpha_acceptance_daily` | SQLite | Alpha 验收口径计算 | CLI 输出、月度 walk-forward |
 | `data_source_diff` | SQLite | 备用 OHLCV 校验 | 告警系统 |
 | `factor_health_daily` | SQLite | CUSUM 快速监控 | 慢速层进化、告警 |
 
@@ -1818,7 +1673,7 @@ alphascreener walk-forward --version <new_version> # 因子升级前验证
 | Strategy Review Prompt | LLM Prompt | 进化 Agent（双周触发） |
 | 因子公式 DSL | Python AST 子集 | 进化 Agent / 人工 CLI |
 | `alphascreener` CLI | Bash | 用户 / cron |
-| 飞书 Open API | HTTP/JSON | 推送适配器 |
+| 终端 stdout | rich 渲染 | CLI 输出 |
 | TradingAgents 适配器 | Python API | adapters/ 五类 |
 | LLM 适配器 | Python API | 业务代码（tenacity + 5 RPS） |
 | yfinance 适配器 | Python API | dataflow_adapter（50 股/批 + 5 RPS） |
@@ -1875,7 +1730,7 @@ alphascreener walk-forward --version <new_version> # 因子升级前验证
 4. 粗筛 Phase 1 + Phase 2 → AAPL 通过硬过滤，Breakout_Score 加权排序进 Top 30
 5. 行业去重 → Sector="Technology", Industry="Consumer Electronics"，假设 AAPL 通过为 Top 20 #5
 6. LLM 精筛 → Batch 2，Bull/Bear 并行 + PM 风险审计，输出 BreakoutAssessment
-7. 飞书推送 + Paper Trading 写入 `paper_trades` 表
+7. 终端输出 + Paper Trading 写入 `paper_trades` 表
 8. 次日 11:00 UTC daily_backtest_incremental → backtrader 7 天持仓回测
 
 ---
