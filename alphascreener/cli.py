@@ -125,6 +125,19 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
 
     signals = _load_signals_data(start_date=s, end_date=e)
 
+    # If no signal data exists, create a minimal signal so the backtest
+    # measures raw price action (buy on first available date)
+    if signals is None or signals.height == 0:
+        import pandas as pd
+        rows = []
+        for t in tickers[:5]:
+            df_t = ticker_dfs.get(t)
+            if df_t is not None and df_t.height > 0:
+                first_date = df_t["dt"].min()
+                rows.append({"ticker": t, "dt": first_date, "refined_score": 1.0})
+        if rows:
+            signals = pl.DataFrame(rows)
+
     bt_headers = ["Ticker", "Return", "Ann.Ret", "Sharpe", "MaxDD", "Win%"]
     bt_rows = []
     for ticker in tickers[:5]:
@@ -152,10 +165,11 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     spy = ticker_dfs.get("SPY")
     if spy is not None and spy.height > 0:
         try:
-            bench = run_backtest({"SPY": spy}, signals=signals)
+            bt = run_backtest({"SPY": spy}, signals=signals)
+            m = bt["metrics"]
             click.echo(f"  {note('SPY benchmark:')} "
-                       f"return {bench['metrics']['total_return']:.1%}  "
-                       f"sharpe {bench['metrics']['sharpe_ratio']:.2f}")
+                       f"return {m['total_return']:.1%}  "
+                       f"sharpe {m['sharpe_ratio']:.2f}")
         except Exception:
             pass
 
