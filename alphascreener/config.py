@@ -30,10 +30,6 @@ class Settings(BaseSettings):
     sector_cap: int = 3
     industry_cap: int = 2
 
-    # ====== 系统行为开关 ======
-    evolution_weight_adjust_enabled: bool = False
-    llm_ablation_enabled: bool = True
-
     # ====== 路径 ======
     alphascreener_home: Path = Path("~/.alphascreener")
     db_url: str = ""

@@ -367,7 +367,7 @@ def compute_all_alpha_metrics(
     base_rate = compute_base_rate(t7, threshold=hit_threshold)
 
     # --- Hit mask ---
-    hits = t7 >= hit_threshold
+    hits = (t7.drop_nulls() >= hit_threshold).cast(pl.Int64)
 
     # --- Per-track metrics ---
     results: dict[str, float | None | int] = {
