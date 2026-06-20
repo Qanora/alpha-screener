@@ -18,6 +18,8 @@ import click
 
 from alphascreener.display import Color, kv_table, note, panel, result_table, rule, warn_card
 
+def _n(t): return t
+
 
 def _suppress_log_noise() -> None:
     logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
@@ -286,11 +288,7 @@ def backtest(ticker: str, start: str | None, end: str | None) -> None:
     spy = ticker_dfs.get("SPY")
     if spy is not None and not spy.height == 0:
         try:
-            bench = run_backtest({"SPY": spy}, signals=signals)
-            bm = bench["metrics"]
-            click.echo(f"  {_n('SPY:')} return {bm['total_return']:.1%}  "
-                       f"sharpe {bm['sharpe_ratio']:.2f}  "
-                       f"excess {m.get('excess_return', 0):.1%}")
+            spy_close = spy.sort("dt")["close"]({"SPY": spy}, signals=signals)
         except Exception:
             pass
 
