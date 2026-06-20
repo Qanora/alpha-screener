@@ -541,6 +541,11 @@ def main() -> None:
 
     Run 'alphascreener COMMAND --help' for detailed usage of each command.
     """
+    # Suppress log noise on stderr — user-facing output is via rich.
+    # WARNING/INFO/DEBUG go to file only; ERROR still visible on stderr.
+    import logging
+    logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
+
     # Ensure DB schema exists before any subcommand writes data (Issue #214).
     try:
         from alphascreener.config import Settings

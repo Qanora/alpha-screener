@@ -82,12 +82,7 @@ def get_logger(module: str, log_dir: str | None = None) -> logging.Logger:
     logger.propagate = False
     formatter = JsonFormatter()
 
-    # Console / stream handler
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-
-    # File handler with 30-day rotation
+    # File handler with 30-day rotation (CLI mode: no stdout — all output via rich)
     if log_dir is None:
         settings = Settings()
         log_dir = str(settings.alphascreener_home / "logs")
