@@ -10,7 +10,7 @@ Computes the following metrics for alpha model validation:
   - IC: Spearman rank correlation between scores and actual returns
   - Block-bootstrap 95% CI: block size=5 trading days x 1000 resamples
 
-Writes results to the ``alpha_acceptance_daily`` SQLite table.
+Writes results to the ``acceptance_daily`` SQLite table.
 """
 
 from __future__ import annotations
@@ -347,7 +347,7 @@ def compute_all_alpha_metrics(
         ci_pct: Confidence interval level in percent.
 
     Returns:
-        Dict with all metric keys matching the alpha_acceptance_daily schema.
+        Dict with all metric keys matching the acceptance_daily schema.
 
     Raises:
         ValueError: If required columns are missing from *df*.
@@ -450,11 +450,11 @@ def compute_all_alpha_metrics(
 # ---------------------------------------------------------------------------
 
 
-def write_alpha_acceptance(
+def write_acceptance(
     metrics: dict[str, float | None | int | date],
     db_engine: Engine,
 ) -> None:
-    """Write alpha acceptance metrics to the ``alpha_acceptance_daily`` table.
+    """Write alpha acceptance metrics to the ``acceptance_daily`` table.
 
     Uses upsert semantics (merge): if a record for the same ``metric_date``
     already exists, it is updated in place.
