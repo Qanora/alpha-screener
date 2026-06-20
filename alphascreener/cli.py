@@ -116,8 +116,9 @@ def screen(market: str, top: int) -> None:
     except Exception:
         pass
 
-    df = ohlcv.filter(pl.col("dt") == latest_date)
-    df = df.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
+    # Factor computation needs full time series per ticker (rolling windows),
+    # so pass all OHLCV data — not just the latest date.
+    df = ohlcv.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
     n_tickers = df["ticker"].n_unique()
 
     try:
