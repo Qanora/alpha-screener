@@ -41,10 +41,11 @@ def _write_partition(df: pl.DataFrame, partition_dir: Path) -> None:
     grouping all rows that belong to the same partition into a single call.
     """
     partition_dir.mkdir(parents=True, exist_ok=True)
-    # Delete old parquet files to prevent data accumulation across sync runs
-    for old_file in partition_dir.glob("*.parquet"):
-        old_file.unlink()
-    df.write_parquet(partition_dir / "data.parquet")
+    # Atomic write: write to temp file first, then replace
+    tmp_path = partition_dir / ".tmp_data.parquet"
+    final_path = partition_dir / "data.parquet"
+    df.write_parquet(tmp_path)
+    tmp_path.replace(final_path)
 
 
 # -- public API ---------------------------------------------------------------

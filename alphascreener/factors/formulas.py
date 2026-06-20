@@ -464,7 +464,7 @@ def compute_insider_buy(
 
     # Build a lookup DataFrame: ticker -> INSIDER_BUY
     lookup_rows: list[dict] = []
-    for ticker, ratio in insider_ratio.items():
+    for ticker, ratio in (insider_ratio or {}).items():
         lookup_rows.append({"ticker": ticker, "INSIDER_BUY": 1 if ratio > 0.001 else 0})
 
     if not lookup_rows:
@@ -507,7 +507,7 @@ def compute_rev_accel(
 
     # Build a lookup DataFrame: ticker -> REV_ACCEL
     lookup_rows: list[dict] = []
-    for ticker, growths in revenue_growth.items():
+    for ticker, growths in (revenue_growth or {}).items():
         if len(growths) >= 2:
             lookup_rows.append({"ticker": ticker, "REV_ACCEL": growths[-1] - growths[-2]})
         else:

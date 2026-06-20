@@ -160,13 +160,11 @@ def _evaluate_window(
         hits.append(hit)
 
     # ── Metrics ──
-    scores = np.array([1.0] * len(tickers))  # all have equal score in result
-    hits_arr = np.array(hits, dtype=np.int32)
+    scores = pl.Series("score", [1.0] * len(tickers))
+    hits_series = pl.Series("hit", hits, dtype=pl.Int64)
 
-    precision = compute_precision_at_k(
-        pl.DataFrame({"score": scores, "hit": hits_arr}), 20, score_col="score", outcome_col="hit"
-    )
-    base_rate = compute_base_rate(pl.DataFrame({"score": scores, "hit": hits_arr}), outcome_col="hit")
+    precision = compute_precision_at_k(scores, hits_series, 20)
+    base_rate = compute_base_rate(hits_series.cast(pl.Float64))
     if math.isnan(precision):
         precision = 0.0
     lift = precision / base_rate if base_rate and base_rate > 0 else 0.0

@@ -350,7 +350,7 @@ def sync(full: bool) -> None:
         click.echo(f"\r  {note(f'[{pct}%]')} batch {batch}/{batches}", nl=False)
 
     try:
-        n = sync_ohlcv(tickers, progress_callback=progress)
+        n = sync_ohlcv(tickers, start=None if full else None, progress_callback=progress)
         click.echo(f"\n  {note('New rows:')} {n}")
     except Exception as exc:
         warn_card(f"Sync failed: {exc}")
