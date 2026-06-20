@@ -160,10 +160,9 @@ def _evaluate_window(
         hits.append(hit)
 
     # ── Metrics ──
-    scores = np.array([1.0] * len(tickers))  # all have equal score in result
-    hits_arr = np.array(hits, dtype=np.int32)
-
-    scores_s = pl.Series("score", [1.0] * len(tickers), dtype=pl.Float64)
+    # Use actual Phase2 scores for ranking-based metrics
+    result_scores = result["breakout_score"].to_list()
+    scores_s = pl.Series("score", result_scores, dtype=pl.Float64)
     hits_s = pl.Series("hit", hits, dtype=pl.Int64)
     precision = compute_precision_at_k(scores_s, hits_s, 20)
     base_rate = compute_base_rate(hits_s.cast(pl.Float64))
