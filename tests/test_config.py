@@ -37,14 +37,6 @@ class TestSettingsDefaults:
         assert s.llm_batch_size == 3
         assert s.llm_max_concurrent_stage1 == 6
 
-    def test_default_cost_thresholds(self):
-        s = Settings()
-        assert s.cost_l1_warning_daily_usd == 0.80
-        assert s.cost_l2_degrade_daily_usd == 1.00
-        assert s.cost_l3_savings_monthly_usd == 80.0
-        assert s.cost_l4_circuit_monthly_usd == 95.0
-        assert s.cost_budget_monthly_usd == 100
-
     def test_default_screening_thresholds(self):
         s = Settings()
         assert s.mom_5d_min == 0.0
@@ -57,16 +49,6 @@ class TestSettingsDefaults:
         s = Settings()
         assert s.sector_cap == 3
         assert s.industry_cap == 2
-
-    def test_default_feishu(self, monkeypatch):
-        monkeypatch.setenv("FEISHU_APP_ID", "")
-        monkeypatch.setenv("FEISHU_APP_SECRET", "")
-        monkeypatch.setenv("FEISHU_TARGET_OPENID", "")
-        s = Settings()
-        assert s.feishu_app_id == ""
-        assert s.feishu_app_secret == ""
-        assert s.feishu_target_openid == ""
-        assert s.feishu_push_enabled is True
 
     def test_default_behavior_switches(self):
         s = Settings()
@@ -113,16 +95,6 @@ class TestSettingsEnvOverride:
         s = Settings()
         assert s.openai_api_key == "test-openai-key"
 
-    def test_feishu_settings_from_env(self, monkeypatch):
-        monkeypatch.setenv("FEISHU_APP_ID", "app-123")
-        monkeypatch.setenv("FEISHU_APP_SECRET", "secret-abc")
-        monkeypatch.setenv("FEISHU_TARGET_OPENID", "ou-xyz")
-        monkeypatch.setenv("FEISHU_PUSH_ENABLED", "false")
-        s = Settings()
-        assert s.feishu_app_id == "app-123"
-        assert s.feishu_app_secret == "secret-abc"
-        assert s.feishu_target_openid == "ou-xyz"
-        assert s.feishu_push_enabled is False
 
     def test_behavior_switches_from_env(self, monkeypatch):
         monkeypatch.setenv("EVOLUTION_WEIGHT_ADJUST_ENABLED", "true")
@@ -130,11 +102,6 @@ class TestSettingsEnvOverride:
         s = Settings()
         assert s.evolution_weight_adjust_enabled is True
         assert s.llm_ablation_enabled is False
-
-    def test_cost_budget_from_env(self, monkeypatch):
-        monkeypatch.setenv("COST_BUDGET_MONTHLY_USD", "50")
-        s = Settings()
-        assert s.cost_budget_monthly_usd == 50
 
     def test_daily_budget_from_env(self, monkeypatch):
         monkeypatch.setenv("FMP_DAILY_BUDGET", "100")

@@ -437,24 +437,18 @@ class TestEngineeringGraduation:
         """When all conditions are met, returns PASS."""
         from alphascreener.papertrade.graduation import check_engineering_graduation
 
-        # Seed: >60 days of data (we simulate by providing manually)
-        # Populate some data to make conditions pass
         result = check_engineering_graduation(
             session_factory=session_factory,
             db_engine=db_engine,
             days_in_operation=65,
             l3_l4_events_last_30d=0,
             nan_rate=0.02,
-            scheduler_success_rate=0.97,
-            alt_source_alerts_monthly=2,
         )
 
         assert result.passed
         assert result.days_in_operation == 65
         assert result.l3_l4_event_count == 0
         assert result.nan_rate == pytest.approx(0.02)
-        assert result.scheduler_success_rate == pytest.approx(0.97)
-        assert result.alt_source_alerts_monthly == 2
         assert len(result.failed_checks) == 0
 
     def test_insufficient_days_fails(self, session_factory, db_engine):
@@ -467,8 +461,6 @@ class TestEngineeringGraduation:
             days_in_operation=30,
             l3_l4_events_last_30d=0,
             nan_rate=0.0,
-            scheduler_success_rate=1.0,
-            alt_source_alerts_monthly=0,
         )
 
         assert not result.passed
@@ -484,8 +476,6 @@ class TestEngineeringGraduation:
             days_in_operation=60,
             l3_l4_events_last_30d=0,
             nan_rate=0.0,
-            scheduler_success_rate=1.0,
-            alt_source_alerts_monthly=0,
         )
 
         assert result.passed
@@ -500,8 +490,6 @@ class TestEngineeringGraduation:
             days_in_operation=60,
             l3_l4_events_last_30d=1,
             nan_rate=0.0,
-            scheduler_success_rate=1.0,
-            alt_source_alerts_monthly=0,
         )
 
         assert not result.passed
@@ -517,8 +505,6 @@ class TestEngineeringGraduation:
             days_in_operation=60,
             l3_l4_events_last_30d=0,
             nan_rate=0.07,
-            scheduler_success_rate=1.0,
-            alt_source_alerts_monthly=0,
         )
 
         assert not result.passed
@@ -534,16 +520,14 @@ class TestEngineeringGraduation:
             days_in_operation=60,
             l3_l4_events_last_30d=0,
             nan_rate=0.05,
-            scheduler_success_rate=1.0,
-            alt_source_alerts_monthly=0,
         )
 
         # <0.05 means 5% fails. Let the test confirm which way the spec goes.
         # PRD says "<5%", so 0.05 should FAIL (equal to 5% is not <5%)
         assert not result.passed
 
-    def test_low_scheduler_success_rate_fails(self, session_factory, db_engine):
-        """Scheduler success rate < 95% fails."""
+    def test_graduation_boundary_60_days_passes(self, session_factory, db_engine):
+        """Exactly 60 days with no issues should pass."""
         from alphascreener.papertrade.graduation import check_engineering_graduation
 
         result = check_engineering_graduation(
@@ -552,45 +536,39 @@ class TestEngineeringGraduation:
             days_in_operation=60,
             l3_l4_events_last_30d=0,
             nan_rate=0.01,
-            scheduler_success_rate=0.90,
-            alt_source_alerts_monthly=0,
-        )
-
-        assert not result.passed
-        assert "scheduler_success_rate" in result.failed_checks
-
-    def test_scheduler_success_rate_exactly_95_passes(self, session_factory, db_engine):
-        """Scheduler success rate >= 95% passes at exactly 0.95."""
-        from alphascreener.papertrade.graduation import check_engineering_graduation
-
-        result = check_engineering_graduation(
-            session_factory=session_factory,
-            db_engine=db_engine,
-            days_in_operation=60,
-            l3_l4_events_last_30d=0,
-            nan_rate=0.01,
-            scheduler_success_rate=0.95,
-            alt_source_alerts_monthly=0,
         )
 
         assert result.passed
 
-    def test_too_many_alt_source_alerts_fails(self, session_factory, db_engine):
-        """More than 5 alt source diff alerts per month fails."""
+    def test_graduation_all_conditions_met(self, session_factory, db_engine):
+        """All 3 conditions met."""
+        from alphascreener.papertrade.graduation import check_engineering_graduation
+
+        result = check_engineering_graduation(
+            session_factory=session_factory,
+            db_engine=db_engine,
+            days_in_operation=100,
+            l3_l4_events_last_30d=0,
+            nan_rate=0.03,
+        )
+
+        assert result.passed
+
+    def test_graduation_nan_and_l3l4_fail(self, session_factory, db_engine):
+        """NaN rate >= 5% and L3/L4 events both fail."""
         from alphascreener.papertrade.graduation import check_engineering_graduation
 
         result = check_engineering_graduation(
             session_factory=session_factory,
             db_engine=db_engine,
             days_in_operation=60,
-            l3_l4_events_last_30d=0,
-            nan_rate=0.01,
-            scheduler_success_rate=0.98,
-            alt_source_alerts_monthly=7,
+            l3_l4_events_last_30d=1,
+            nan_rate=0.06,
         )
 
         assert not result.passed
-        assert "alt_source_alerts" in result.failed_checks
+        assert "nan_rate" in result.failed_checks
+        assert "l3_l4_events" in result.failed_checks
 
     def test_multiple_failures_all_reported(self, session_factory, db_engine):
         """When multiple conditions fail, all failures are reported."""
@@ -602,17 +580,13 @@ class TestEngineeringGraduation:
             days_in_operation=20,
             l3_l4_events_last_30d=2,
             nan_rate=0.08,
-            scheduler_success_rate=0.80,
-            alt_source_alerts_monthly=10,
         )
 
         assert not result.passed
-        assert len(result.failed_checks) == 5
+        assert len(result.failed_checks) == 3
         assert "days_in_operation" in result.failed_checks
         assert "l3_l4_events" in result.failed_checks
         assert "nan_rate" in result.failed_checks
-        assert "scheduler_success_rate" in result.failed_checks
-        assert "alt_source_alerts" in result.failed_checks
 
     def test_result_summary_includes_all_details(self, session_factory, db_engine):
         """EngineeringGraduationResult.summary returns human-readable text."""
@@ -624,8 +598,6 @@ class TestEngineeringGraduation:
             days_in_operation=40,
             l3_l4_events_last_30d=1,
             nan_rate=0.01,
-            scheduler_success_rate=0.97,
-            alt_source_alerts_monthly=2,
         )
 
         summary = result.summary

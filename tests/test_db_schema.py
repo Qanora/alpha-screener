@@ -41,24 +41,22 @@ def file_db_path(tmp_path: Path) -> Path:
 EXPECTED_TABLES = [
     "factor_versions",
     "paper_trades",
-    "alerts",
     "llm_cost_daily",
-    "pid_lock",
-    "monitoring_samples",
     "alpha_acceptance_daily",
     "data_source_diff",
-    "factor_health_daily",
 ]
+
+CORE_TABLE_COUNT = len(EXPECTED_TABLES)
 
 
 class TestAllTablesExist:
-    """Verify all 9 core tables are declared in the SQLAlchemy metadata."""
+    """Verify all core tables are declared in the SQLAlchemy metadata."""
 
-    def test_all_nine_tables_in_metadata(self):
+    def test_all_core_tables_in_metadata(self):
         table_names = sorted(Base.metadata.tables.keys())
         for expected in EXPECTED_TABLES:
             assert expected in table_names, f"Missing table: {expected}"
-        assert len([t for t in table_names if t in EXPECTED_TABLES]) == 9
+        assert len([t for t in table_names if t in EXPECTED_TABLES]) == CORE_TABLE_COUNT
 
 
 class TestTableCreation:
@@ -126,21 +124,6 @@ class TestPaperTrades:
         assert "idx_paper_trades_signal_date" in index_names
 
 
-class TestAlerts:
-    """alerts table: alert events."""
-
-    def test_columns(self, fresh_sqlite_db):
-        inspector = inspect(fresh_sqlite_db)
-        cols = {c["name"]: c for c in inspector.get_columns("alerts")}
-        assert "id" in cols
-        assert "triggered_at" in cols
-        assert "severity" in cols
-        assert "rule_name" in cols
-        assert "metric_value" in cols
-        assert "notes" in cols
-        assert "resolved_at" in cols
-
-
 class TestLlmCostDaily:
     """llm_cost_daily table: daily LLM cost aggregation."""
 
@@ -156,53 +139,6 @@ class TestLlmCostDaily:
         inspector = inspect(fresh_sqlite_db)
         pk = inspector.get_pk_constraint("llm_cost_daily")
         assert pk["constrained_columns"] == ["cost_date"]
-
-
-class TestPidLock:
-    """pid_lock table: process mutex for serial execution."""
-
-    def test_columns(self, fresh_sqlite_db):
-        inspector = inspect(fresh_sqlite_db)
-        cols = {c["name"]: c for c in inspector.get_columns("pid_lock")}
-        assert "lock_name" in cols
-        assert "pid" in cols
-        assert "task_id" in cols
-        assert "acquired_at" in cols
-        assert "expires_at" in cols
-        assert "meta_json" in cols
-
-    def test_lock_name_is_primary_key(self, fresh_sqlite_db):
-        inspector = inspect(fresh_sqlite_db)
-        pk = inspector.get_pk_constraint("pid_lock")
-        assert pk["constrained_columns"] == ["lock_name"]
-
-    def test_index_on_expires_at(self, fresh_sqlite_db):
-        inspector = inspect(fresh_sqlite_db)
-        indexes = inspector.get_indexes("pid_lock")
-        index_names = [idx["name"] for idx in indexes]
-        assert "idx_pid_lock_expires" in index_names
-
-
-class TestMonitoringSamples:
-    """monitoring_samples table: resource monitoring samples."""
-
-    def test_columns(self, fresh_sqlite_db):
-        inspector = inspect(fresh_sqlite_db)
-        cols = {c["name"]: c for c in inspector.get_columns("monitoring_samples")}
-        assert "id" in cols
-        assert "task_id" in cols
-        assert "sampled_at" in cols
-        assert "rss_mb" in cols
-        assert "cpu_percent" in cols
-        assert "open_fd_count" in cols
-        assert "thread_count" in cols
-        assert "notes" in cols
-
-    def test_index_on_task_id_sampled_at(self, fresh_sqlite_db):
-        inspector = inspect(fresh_sqlite_db)
-        indexes = inspector.get_indexes("monitoring_samples")
-        index_names = [idx["name"] for idx in indexes]
-        assert "idx_monitoring_task_time" in index_names
 
 
 class TestAlphaAcceptanceDaily:
@@ -254,32 +190,6 @@ class TestDataSourceDiff:
         indexes = inspector.get_indexes("data_source_diff")
         index_names = [idx["name"] for idx in indexes]
         assert "idx_data_source_diff_date" in index_names
-
-
-class TestFactorHealthDaily:
-    """factor_health_daily: CUSUM fast-monitoring time series."""
-
-    def test_columns(self, fresh_sqlite_db):
-        inspector = inspect(fresh_sqlite_db)
-        cols = {c["name"]: c for c in inspector.get_columns("factor_health_daily")}
-        assert "metric_date" in cols
-        assert "factor_name" in cols
-        assert "daily_ic" in cols
-        assert "rolling_ic_mean_90d" in cols
-        assert "cusum_value" in cols
-        assert "cusum_alert" in cols
-        assert "consecutive_alerts" in cols
-
-    def test_composite_primary_key(self, fresh_sqlite_db):
-        inspector = inspect(fresh_sqlite_db)
-        pk = inspector.get_pk_constraint("factor_health_daily")
-        assert set(pk["constrained_columns"]) == {"metric_date", "factor_name"}
-
-    def test_index_on_factor_name_metric_date(self, fresh_sqlite_db):
-        inspector = inspect(fresh_sqlite_db)
-        indexes = inspector.get_indexes("factor_health_daily")
-        index_names = [idx["name"] for idx in indexes]
-        assert "idx_factor_health_factor_date" in index_names
 
 
 # ============================================================================
@@ -343,13 +253,6 @@ class TestDataRetentionDocumentation:
         # Comment should mention 365 or retention
         assert "365" in table.comment
 
-    def test_factor_health_daily_365_day_retention_documented(self):
-        """factor_health_daily retains 365 days."""
-        table = Base.metadata.tables["factor_health_daily"]
-        assert table.comment is not None, "factor_health_daily should have a comment"
-        assert "365" in table.comment
-
-
 # ============================================================================
 # Alembic migration tests
 # ============================================================================
@@ -372,7 +275,7 @@ class TestAlembicSetup:
 
 
 class TestMigrationUpgrade:
-    """Verify the initial migration creates all 9 tables."""
+    """Verify the initial migration creates all core tables."""
 
     def test_initial_migration_creates_all_tables(self, file_db_path: Path):
         """Run the initial Alembic migration and verify all tables exist."""

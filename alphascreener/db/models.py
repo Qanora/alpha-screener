@@ -76,29 +76,6 @@ class PaperTrade(Base):
 
 
 # ============================================================================
-# alerts — alert events (PRD 10.3 alert rules)
-# ============================================================================
-
-
-class Alert(Base):
-    __tablename__ = "alerts"
-    __table_args__ = (
-        CheckConstraint(
-            "severity IN ('warning','critical')",
-            name="ck_alerts_severity",
-        ),
-    )
-
-    id = mapped_column(Integer, primary_key=True, autoincrement=True)
-    triggered_at = mapped_column(Text, nullable=False)  # TIMESTAMP
-    severity = mapped_column(Text, nullable=True)
-    rule_name = mapped_column(Text, nullable=False)
-    metric_value = mapped_column(Float, nullable=True)
-    notes = mapped_column(Text, nullable=True)
-    resolved_at = mapped_column(Text, nullable=True)
-
-
-# ============================================================================
 # llm_cost_daily — daily LLM cost aggregation
 # ============================================================================
 
@@ -111,45 +88,6 @@ class LlmCostDaily(Base):
     call_count = mapped_column(Integer, nullable=False)
     by_module_json = mapped_column(Text, nullable=True)
     # {"refining": 0.05, "evolution": 0.01, ...}
-
-
-# ============================================================================
-# pid_lock — process mutex for serial execution (PRD 7.7.2)
-# ============================================================================
-
-
-class PidLock(Base):
-    __tablename__ = "pid_lock"
-    __table_args__ = (Index("idx_pid_lock_expires", "expires_at"),)
-
-    lock_name = mapped_column(Text, primary_key=True)  # usually 'global'
-    pid = mapped_column(Integer, nullable=False)
-    task_id = mapped_column(Text, nullable=False)  # e.g. 'daily_scan'
-    acquired_at = mapped_column(Text, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
-    expires_at = mapped_column(Text, nullable=False)  # acquired_at + task timeout + 10min buffer
-    meta_json = mapped_column(Text, nullable=True)
-
-
-# ============================================================================
-# monitoring_samples — resource monitoring (RSS/CPU/FD samples)
-# ============================================================================
-
-
-class MonitoringSample(Base):
-    __tablename__ = "monitoring_samples"
-    __table_args__ = (
-        Index("idx_monitoring_task_time", "task_id", "sampled_at"),
-        {"comment": "资源监控采样；保留最近 30 天"},
-    )
-
-    id = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_id = mapped_column(Text, nullable=False)  # aligns with pid_lock.task_id
-    sampled_at = mapped_column(Text, nullable=False)  # TIMESTAMP
-    rss_mb = mapped_column(Float, nullable=False)  # psutil resident memory (MB)
-    cpu_percent = mapped_column(Float, nullable=False)  # 4-core normalized 0-400%
-    open_fd_count = mapped_column(Integer, nullable=True)  # file descriptor count
-    thread_count = mapped_column(Integer, nullable=True)
-    notes = mapped_column(Text, nullable=True)
 
 
 # ============================================================================
@@ -210,22 +148,3 @@ class DataSourceDiff(Base):
     alerted = mapped_column(Boolean, server_default=text("0"))
 
 
-# ============================================================================
-# factor_health_daily — CUSUM fast-monitoring time series (PRD 6.4.1)
-# ============================================================================
-
-
-class FactorHealthDaily(Base):
-    __tablename__ = "factor_health_daily"
-    __table_args__ = (
-        Index("idx_factor_health_factor_date", "factor_name", "metric_date"),
-        {"comment": "CUSUM 快速监控时序；保留 365 天后归档至冷备份"},
-    )
-
-    metric_date = mapped_column(Date, primary_key=True)
-    factor_name = mapped_column(Text, primary_key=True)
-    daily_ic = mapped_column(Float, nullable=True)
-    rolling_ic_mean_90d = mapped_column(Float, nullable=True)
-    cusum_value = mapped_column(Float, nullable=True)
-    cusum_alert = mapped_column(Boolean, server_default=text("0"))
-    consecutive_alerts = mapped_column(Integer, server_default=text("0"))
