@@ -31,16 +31,6 @@ def _suppress_log_noise() -> None:
 def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     _suppress_log_noise()
 
-    # Auto-sync if data is stale (>1 day)
-    from alphascreener.data.sync import last_sync_date, sync_ohlcv
-    last = last_sync_date()
-    if last is None or (date.today() - last).days > 1:
-        click.echo(f"  {note('Data stale, auto-updating ...')}")
-        try:
-            sync_ohlcv(progress_callback=None)
-        except Exception:
-            pass  # proceed with existing data if sync fails
-
     try:
         import polars as pl
         from alphascreener.data.io import scan_parquet
@@ -48,21 +38,37 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         warn_card("Data I/O layer not available.")
         return
 
-    # ── Load OHLCV ────────────────────────────────────────────────────────
+    ohlcv = None
     try:
         ohlcv = scan_parquet("ohlcv").collect()
     except Exception:
-        warn_card("No OHLCV data. Run data sync first.")
-        return
+        pass
 
-    if ohlcv.height == 0:
-        warn_card("No OHLCV data found.")
+    # Auto-sync if stale or insufficient data
+    from alphascreener.data.sync import last_sync_date, sync_ohlcv
+    last = last_sync_date()
+    needs_sync = last is None or (date.today() - last).days > 1
+    if not needs_sync and ohlcv is not None and ohlcv.height > 0:
+        data_span = (last - ohlcv["dt"].min()).days if last else 0
+        if data_span < 180:
+            needs_sync = True
+    if needs_sync:
+        click.echo(f"  {note('Updating data ...')}")
+        try:
+            sync_ohlcv(progress_callback=None)
+            ohlcv = scan_parquet("ohlcv").collect()
+        except Exception:
+            click.echo(f"  {note('(sync failed, using existing data)')}")
+
+    if ohlcv is None or ohlcv.height == 0:
+        warn_card("No OHLCV data. Run alphascreener sync first.")
         return
 
     latest_date = ohlcv["dt"].max()
+    click.echo(f"  {note('Latest data:')} {latest_date}")
+
     df = ohlcv.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
 
-    # ── Factors ───────────────────────────────────────────────────────────
     try:
         from alphascreener.factors.engine import compute_factors
         from alphascreener.screening.phase1 import hard_filter_with_fallback
@@ -72,8 +78,6 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         return
 
     factors = compute_factors(df, dt=latest_date)
-
-    # ── Screening ─────────────────────────────────────────────────────────
     filtered, relaxed_used = hard_filter_with_fallback(factors)
     passed = filtered.filter(pl.col("pass_phase1"))
     relax_note = " (relaxed)" if relaxed_used else ""
@@ -90,17 +94,14 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
                f"{note('Passed:')} {result.height}/{filtered.height}{relax_note}  |  "
                f"{note('Data:')} {df['ticker'].n_unique()} tickers\n")
 
-    # ── Results table ─────────────────────────────────────────────────────
     headers = ["#", "Ticker", "Score"]
     rows = []
     tickers = []
     for i, row in enumerate(result.select(["ticker", "breakout_score"]).iter_rows(named=True)):
         rows.append([str(i + 1), str(row["ticker"]), f"{row['breakout_score']:.4f}"])
         tickers.append(str(row["ticker"]))
-
     result_table(headers, rows)
 
-    # ── Auto-backtest ─────────────────────────────────────────────────────
     if no_backtest:
         click.echo(f"\n  {note('Run')} alphascreener backtest TICKER {note('for detailed backtest.')}\n")
         return
@@ -113,8 +114,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         warn_card("Backtrader module not available.")
         return
 
-    # Use a reasonable backtest window
-    s = date.today() - timedelta(days=365 * 2)
+    s = date.today() - timedelta(days=183)  # 6 months
     e = date.today()
 
     try:
@@ -127,8 +127,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
 
     bt_headers = ["Ticker", "Return", "Ann.Ret", "Sharpe", "MaxDD", "Win%"]
     bt_rows = []
-
-    for ticker in tickers[:5]:  # backtest top 5
+    for ticker in tickers[:5]:
         df_t = ticker_dfs.get(ticker)
         if df_t is None or df_t.height == 0:
             continue
@@ -147,12 +146,11 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
             continue
 
     if bt_rows:
-        panel(f"Backtest ({s.isoformat()} → {e.isoformat()})", [])
+        panel(f"Backtest ({s.isoformat()} \u2192 {e.isoformat()})", [])
         result_table(bt_headers, bt_rows)
 
-    # Benchmark
     spy = ticker_dfs.get("SPY")
-    if spy is not None and not spy.height == 0:
+    if spy is not None and spy.height > 0:
         try:
             bench = run_backtest({"SPY": spy}, signals=signals)
             click.echo(f"  {note('SPY benchmark:')} "
@@ -185,7 +183,7 @@ def backtest(ticker: str, start: str | None, end: str | None) -> None:
     _suppress_log_noise()
 
     try:
-        s = date.fromisoformat(start) if start else date.today() - timedelta(days=365 * 2)
+        s = date.fromisoformat(start) if start else date.today() - timedelta(days=183)  # 6 months
         e = date.fromisoformat(end) if end else date.today()
     except ValueError as exc:
         raise click.BadParameter(str(exc)) from exc
@@ -361,7 +359,7 @@ def sync(full: bool) -> None:
 
 @click.group(hidden=True)
 def dev() -> None:
-    """Advanced tools (evolution review)."""
+    """Advanced tools."""
     pass
 
 
@@ -424,7 +422,7 @@ def review(days: int) -> None:
 
 
 @click.group(invoke_without_command=True)
-@click.option("--top", default=10, show_default=True, type=click.IntRange(min=1), help="Number of candidates to show.")
+@click.option("--top", default=10, show_default=True, help="Number of candidates to show.")
 @click.option(
     "--no-backtest",
     is_flag=True,
