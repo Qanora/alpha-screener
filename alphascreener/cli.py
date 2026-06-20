@@ -16,7 +16,10 @@ from datetime import date, timedelta
 
 import click
 
-from alphascreener.display import Color, kv_table, note, panel, result_table, rule, warn_card
+from alphascreener.display import Color, kv_table, panel, result_table, rule, warn_card
+
+def _n(t): return t
+
 
 
 def _suppress_log_noise() -> None:
@@ -204,15 +207,10 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         warn_card("No tickers had enough data for backtest. Run asc sync.")
 
     spy = ticker_dfs.get("SPY")
-    if spy is not None and spy.height > 0:
-        try:
-            bt = run_backtest({"SPY": spy}, signals=signals)
-            m = bt["metrics"]
-            click.echo(f"  {_n('SPY benchmark:')} "
-                       f"return {m['total_return']:.1%}  "
-                       f"sharpe {m['sharpe_ratio']:.2f}")
-        except Exception:
-            pass
+    if spy is not None and spy.height >= 40:
+        spy_close = spy.sort("dt")["close"]
+        spy_ret = (spy_close.tail(1)[0] / spy_close.head(1)[0] - 1) * 100
+        click.echo(f"  {_n('SPY:')} {s.isoformat()} -> {e.isoformat()}  buy+hold {spy_ret:+.1f}%")
 
     click.echo()
 
