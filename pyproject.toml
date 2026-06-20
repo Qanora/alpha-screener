@@ -43,7 +43,7 @@ dependencies = [
 ]
 
 [project.scripts]
-alphascreener = "alphascreener.cli:main"
+alphascreener = "alphascreener.cli:cli"
 
 [project.optional-dependencies]
 dev = [
