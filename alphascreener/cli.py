@@ -31,6 +31,16 @@ def _suppress_log_noise() -> None:
 def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     _suppress_log_noise()
 
+    # Auto-sync if data is stale (>1 day)
+    from alphascreener.data.sync import last_sync_date, sync_ohlcv
+    last = last_sync_date()
+    if last is None or (date.today() - last).days > 1:
+        click.echo(f"  {note('Data stale, auto-updating ...')}")
+        try:
+            sync_ohlcv(progress_callback=None)
+        except Exception:
+            pass  # proceed with existing data if sync fails
+
     try:
         import polars as pl
         from alphascreener.data.io import scan_parquet
