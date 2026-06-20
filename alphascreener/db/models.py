@@ -46,51 +46,6 @@ class FactorVersion(Base):
 
 
 # ============================================================================
-# paper_trades — paper trading / virtual trading records
-# ============================================================================
-
-
-class PaperTrade(Base):
-    __tablename__ = "paper_trades"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["factor_version"],
-            ["factor_versions.version"],
-            name="fk_paper_trades_factor_version",
-        ),
-        Index("idx_paper_trades_signal_date", "signal_date"),
-        {"comment": "Paper Trading / 实盘虚拟交易记录"},
-    )
-
-    id = mapped_column(Integer, primary_key=True, autoincrement=True)
-    signal_date = mapped_column(Date, nullable=False)
-    ticker = mapped_column(Text, nullable=False)
-    rating = mapped_column(Text, nullable=False)  # Strong Buy/Buy/Hold/Avoid
-    breakout_probability = mapped_column(Float, nullable=False)
-    entry_price = mapped_column(Float, nullable=True)  # T+1 open buy price
-    exit_price = mapped_column(Float, nullable=True)  # T+7 close or stop-loss
-    exit_reason = mapped_column(Text, nullable=True)  # 'time' / 'stop_loss' / 'halt'
-    pnl_pct = mapped_column(Float, nullable=True)
-    factor_version = mapped_column(Text, nullable=False)
-    created_at = mapped_column(Text, server_default=text("CURRENT_TIMESTAMP"))
-
-
-# ============================================================================
-# llm_cost_daily — daily LLM cost aggregation
-# ============================================================================
-
-
-class LlmCostDaily(Base):
-    __tablename__ = "llm_cost_daily"
-
-    cost_date = mapped_column(Date, primary_key=True)
-    total_usd = mapped_column(Float, nullable=False)
-    call_count = mapped_column(Integer, nullable=False)
-    by_module_json = mapped_column(Text, nullable=True)
-    # {"refining": 0.05, "evolution": 0.01, ...}
-
-
-# ============================================================================
 # alpha_acceptance_daily — alpha acceptance metrics (PRD 5.7)
 # ============================================================================
 
@@ -115,36 +70,5 @@ class AlphaAcceptanceDaily(Base):
     bootstrap_ci_upper_llm = mapped_column(Float, nullable=True)
     sample_size = mapped_column(Integer, nullable=False)
     threshold = mapped_column(Float, nullable=True)
-
-
-# ============================================================================
-# data_source_diff — fallback OHLCV cross-validation diffs (PRD 7.1)
-# ============================================================================
-
-
-class DataSourceDiff(Base):
-    __tablename__ = "data_source_diff"
-    __table_args__ = (
-        CheckConstraint(
-            "field IN ('open','high','low','close','volume')",
-            name="ck_data_source_diff_field",
-        ),
-        CheckConstraint(
-            "fallback_source IN ('stooq','alpaca','polygon')",
-            name="ck_data_source_diff_fallback",
-        ),
-        Index("idx_data_source_diff_date", "metric_date"),
-        {"comment": "备用 OHLCV 交叉校验差异；保留 365 天后归档至冷备份"},
-    )
-
-    id = mapped_column(Integer, primary_key=True, autoincrement=True)
-    metric_date = mapped_column(Date, nullable=False)
-    ticker = mapped_column(Text, nullable=False)
-    field = mapped_column(Text, nullable=False)  # open/high/low/close/volume
-    yfinance_value = mapped_column(Float, nullable=False)
-    fallback_value = mapped_column(Float, nullable=False)
-    fallback_source = mapped_column(Text, nullable=False)  # stooq/alpaca/polygon
-    diff_pct = mapped_column(Float, nullable=False)
-    alerted = mapped_column(Boolean, server_default=text("0"))
 
 
