@@ -83,11 +83,20 @@ def sync_ohlcv(
     if tickers is None:
         tickers = _default_universe()
 
-    # Determine date range
+    # Determine date range. If existing data is minimal, do full download.
     if start is None:
         last = last_sync_date()
         if last is not None:
-            start = last - timedelta(days=7)  # overlap to fill gaps
+            try:
+                from alphascreener.data.io import scan_parquet
+                existing = scan_parquet("ohlcv").collect()
+                data_span = (last - existing["dt"].min()).days if existing.height > 0 else 0
+            except Exception:
+                data_span = 0
+            if data_span < 180:
+                start = date.today() - timedelta(days=365 * 2)
+            else:
+                start = last - timedelta(days=7)
         else:
             start = date.today() - timedelta(days=365 * 2)
 
@@ -95,8 +104,8 @@ def sync_ohlcv(
 
     _logger.info("Syncing %d tickers from %s to %s", len(tickers), start, end)
 
-    # Download in batches
-    all_rows = 0
+    # Download in batches, collect all records, then write once
+    all_records = []
     total_batches = (len(tickers) + _BATCH_SIZE - 1) // _BATCH_SIZE
 
     for i in range(0, len(tickers), _BATCH_SIZE):
@@ -122,19 +131,16 @@ def sync_ohlcv(
         if data.empty:
             continue
 
-        # yfinance returns MultiIndex columns (Price, Ticker)
-        # Convert to long format: ticker, dt, open, high, low, close, volume
-        records = []
+        is_multi = hasattr(data.columns, "levels") and len(data.columns.levels) > 1
+
         for ticker_str in batch:
             try:
-                if isinstance(data.columns, pl.MultiColumnNameSpace) or hasattr(
-                    data.columns, "levels"
-                ):
-                    # MultiIndex columns
+                if is_multi:
+                    if ticker_str not in data.columns.get_level_values(1):
+                        continue
                     ticker_data = data.xs(ticker_str, level=1, axis=1)
                 else:
-                    # Single ticker batch
-                    ticker_data = data
+                    ticker_data = data.copy()
             except (KeyError, AttributeError):
                 continue
 
@@ -142,22 +148,36 @@ def sync_ohlcv(
             if ticker_data.empty:
                 continue
 
+            col_map = {}
+            for col in ticker_data.columns:
+                cl = str(col).lower()
+                if "open" in cl: col_map[col] = "open"
+                elif "high" in cl: col_map[col] = "high"
+                elif "low" in cl: col_map[col] = "low"
+                elif "close" in cl: col_map[col] = "close"
+                elif "volume" in cl: col_map[col] = "volume"
+            ticker_data = ticker_data.rename(columns=col_map)
+            keep_cols = [c for c in ["open","high","low","close","volume"] if c in col_map.values()]
+            ticker_data = ticker_data[keep_cols]
+            if ticker_data.empty or "close" not in ticker_data.columns:
+                continue
+
             for idx, row in ticker_data.iterrows():
-                records.append({
+                all_records.append({
                     "ticker": ticker_str,
-                    "dt": idx.date(),
-                    "open": float(row.get("Open", 0)),
-                    "high": float(row.get("High", 0)),
-                    "low": float(row.get("Low", 0)),
-                    "close": float(row.get("Close", 0)),
-                    "volume": int(row.get("Volume", 0) or 0),
+                    "dt": idx.date() if hasattr(idx, "date") else idx,
+                    "open": float(row.get("open", 0) or 0),
+                    "high": float(row.get("high", 0) or 0),
+                    "low": float(row.get("low", 0) or 0),
+                    "close": float(row.get("close", 0) or 0),
+                    "volume": int(row.get("volume", 0) or 0),
                 })
 
-        if records:
-            df = pl.DataFrame(records)
-            write_parquet(df, "ohlcv")
-            n = df.height
-            all_rows += n
+    all_rows = 0
+    if all_records:
+        df = pl.DataFrame(all_records)
+        write_parquet(df, "ohlcv")
+        all_rows = df.height
 
     _logger.info("Sync complete: %d new rows", all_rows)
     return all_rows
