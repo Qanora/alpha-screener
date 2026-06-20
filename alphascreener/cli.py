@@ -16,7 +16,11 @@ from datetime import date, timedelta
 
 import click
 
-from alphascreener.display import Color, kv_table, note, panel, result_table, rule, warn_card
+from alphascreener.display import Color, kv_table, panel, result_table, rule, warn_card
+
+def _n(t): return t
+
+def _n(t): return t
 
 
 def _suppress_log_noise() -> None:
