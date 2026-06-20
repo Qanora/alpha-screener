@@ -239,6 +239,33 @@ def backtest(ticker: str, start: str | None, end: str | None) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+@click.command()
+@click.option("--full", is_flag=True, help="Full re-download.")
+def sync(full: bool) -> None:
+    """Update OHLCV data from Yahoo Finance."""
+    _suppress_log_noise()
+    rule("Alpha Screener — Data Sync")
+
+    from alphascreener.data.sync import _default_universe, last_sync_date, sync_ohlcv
+
+    tickers = _default_universe()
+    last = last_sync_date()
+    click.echo(f"  {note('Tickers:')} {len(tickers)}  |  {note('Last sync:')} {last or 'never'}\n")
+
+    def progress(total, batch, batches):
+        pct = min(100, int(batch / max(batches, 1) * 100))
+        click.echo(f"\r  {note(f'[{pct}%]')} batch {batch}/{batches}", nl=False)
+
+    try:
+        n = sync_ohlcv(tickers, progress_callback=progress)
+        click.echo(f"\n  {note('New rows:')} {n}")
+    except Exception as exc:
+        warn_card(f"Sync failed: {exc}")
+        return
+
+    click.echo()
+
+
 @click.group(hidden=True)
 def dev() -> None:
     """Advanced tools."""
@@ -332,6 +359,7 @@ def cli(ctx: click.Context, top: int, no_backtest: bool, market: str) -> None:
 
 
 cli.add_command(backtest)
+cli.add_command(sync)
 cli.add_command(dev)
 
 if __name__ == "__main__":
