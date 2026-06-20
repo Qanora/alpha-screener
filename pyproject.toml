@@ -26,8 +26,11 @@ dependencies = [
     "requests>=2.31",
     "httpx>=0.26",
 
-    # 调度与存储
-    "apscheduler>=3.10",
+    # 终端显示
+    "rich>=13.0",
+    "click>=8.1",
+
+    # 存储
     "sqlalchemy>=2.0",
     "alembic>=1.13",
 
@@ -37,7 +40,6 @@ dependencies = [
     "pydantic>=2.5",
     "pydantic-settings>=2.2",
     "python-dotenv>=1.0",
-    "click>=8.1",
 ]
 
 [project.scripts]
