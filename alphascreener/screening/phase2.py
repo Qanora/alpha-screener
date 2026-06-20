@@ -118,8 +118,8 @@ def compute_breakout_score(df: pl.DataFrame) -> pl.DataFrame:
     score = pl.lit(0.0, dtype=pl.Float64)
 
     for fname in _Z_CAPPED_FACTORS:
-        raw_col = fname
-        if raw_col in df.columns and fname in _Z_CAPPED_FACTORS:
+        z_col = f"z_capped_{fname}"
+        if z_col in df.columns:
             w = MVP_WEIGHTS[fname]
             direction = _SIGNAL_DIRECTION.get(fname, 1)
             # Missing z_capped is neutral (0)
