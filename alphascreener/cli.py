@@ -1,11 +1,11 @@
 """Alpha Screener CLI — US equity breakout screening + backtest.
 
 Usage:
-    alphascreener                    Run full scan + auto-backtest (default)
-    alphascreener --top 20           Show top 20 candidates
-    alphascreener --no-backtest      Skip backtest, show screening only
-    alphascreener backtest TICKER    Backtest a specific ticker
-    alphascreener dev ...            Advanced tools (evolution, case-library)
+    asc                    Run full scan + auto-backtest (default)
+    asc --top 20           Show top 20 candidates
+    asc --no-backtest      Skip backtest, show screening only
+    asc backtest TICKER    Backtest a specific ticker
+    asc dev ...            Advanced tools (evolution, case-library)
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
             click.echo(f"  {note('(sync failed, using existing data)')}")
 
     if ohlcv is None or ohlcv.height == 0:
-        warn_card("No OHLCV data. Run alphascreener sync first.")
+        warn_card("No OHLCV data. Run asc sync first.")
         return
 
     latest_date = ohlcv["dt"].max()
@@ -103,7 +103,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     result_table(headers, rows)
 
     if no_backtest:
-        click.echo(f"\n  {note('Run')} alphascreener backtest TICKER {note('for detailed backtest.')}\n")
+        click.echo(f"\n  {note('Run')} asc backtest TICKER {note('for detailed backtest.')}\n")
         return
 
     click.echo(f"\n  {note('Running backtest on top candidates ...')}\n")
@@ -176,9 +176,9 @@ def backtest(ticker: str, start: str | None, end: str | None) -> None:
 
     Example:
 
-        alphascreener backtest AAPL
+        asc backtest AAPL
 
-        alphascreener backtest AAPL --start 2023-01-01 --end 2024-12-31
+        asc backtest AAPL --start 2023-01-01 --end 2024-12-31
     """
     _suppress_log_noise()
 
@@ -259,9 +259,9 @@ def optimize(rounds: int, train: int) -> None:
 
     Example:
 
-        alphascreener optimize
+        asc optimize
 
-        alphascreener optimize --rounds 100 --train 3
+        asc optimize --rounds 100 --train 3
     """
     _suppress_log_noise()
     rule("Alpha Screener — Weight Optimization")
@@ -274,7 +274,7 @@ def optimize(rounds: int, train: int) -> None:
     try:
         ohlcv = scan_parquet("ohlcv").collect()
     except Exception:
-        warn_card("No OHLCV data. Run alphascreener sync first.")
+        warn_card("No OHLCV data. Run asc sync first.")
         return
 
     if ohlcv.height == 0:
@@ -439,10 +439,10 @@ def cli(ctx: click.Context, top: int, no_backtest: bool, market: str) -> None:
 
     \b
     Examples:
-      alphascreener                  # default: top 10 + backtest
-      alphascreener --top 5           # top 5 + backtest
-      alphascreener --no-backtest     # screening only
-      alphascreener backtest AAPL     # backtest a specific ticker
+      asc                  # default: top 10 + backtest
+      asc --top 5           # top 5 + backtest
+      asc --no-backtest     # screening only
+      asc backtest AAPL     # backtest a specific ticker
     """
     if ctx.invoked_subcommand is not None:
         return
