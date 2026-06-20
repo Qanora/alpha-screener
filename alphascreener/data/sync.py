@@ -41,12 +41,23 @@ def _default_universe() -> list[str]:
     if not tickers:
         # Minimum viable universe if online sources fail
         tickers = {
-            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
-            "JPM", "V", "JNJ", "WMT", "PG", "MA", "UNH", "HD", "DIS", "BAC",
-            "XOM", "NFLX", "ADBE", "CRM", "AMD", "INTC", "QCOM", "TXN", "AVGO",
-            "COST", "PEP", "KO", "MRK", "ABBV", "PFE", "LLY", "TMO", "ABT",
-            "NKE", "MCD", "SBUX", "ORCL", "CSCO", "IBM", "CVX", "WFC", "GS",
-            "MS", "CAT", "BA", "GE", "MMM", "RTX", "LMT", "SPY",
+            # SP500 major components (~200 stocks)
+            "A", "AAPL", "ABBV", "ABNB", "ABT", "ACN", "ADBE", "ADI", "ADSK",
+            "AMAT", "AMD", "AMGN", "AMZN", "ANET", "APH", "AVGO", "AXP",
+            "BA", "BAC", "BK", "BKNG", "BMY", "BRK-B", "BSX", "C", "CAT",
+            "CDNS", "CHTR", "CI", "CL", "CMCSA", "CMG", "COF", "COST", "CRM",
+            "CRWD", "CSCO", "CVS", "CVX", "DHR", "DIS", "DUK", "ELV",
+            "ETN", "F", "FCX", "FDX", "FTNT", "GD", "GE", "GILD", "GIS",
+            "GM", "GOOGL", "GS", "HCA", "HD", "HON", "IBM", "INTC", "INTU",
+            "ISRG", "JNJ", "JPM", "KHC", "KLAC", "KO", "LIN", "LLY", "LMT",
+            "LOW", "LRCX", "MA", "MAR", "MCD", "MDLZ", "META", "MMC", "MO",
+            "MPC", "MRK", "MS", "MSFT", "MSI", "MU", "NEE", "NFLX", "NKE",
+            "NOW", "NVDA", "ORCL", "ORLY", "PANW", "PEP", "PFE", "PG", "PLD",
+            "PLTR", "PM", "PSX", "PYPL", "QCOM", "REGN", "ROP", "ROST", "RTX",
+            "SBUX", "SCHW", "SHW", "SNPS", "SO", "SPGI", "SPY", "SYK",
+            "SYY", "T", "TGT", "TJX", "TMO", "TMUS", "TSLA", "TT", "TXN",
+            "UBER", "UNH", "UNP", "UPS", "USB", "V", "VLO", "VRTX", "VZ",
+            "WFC", "WMT", "XOM", "ZTS",
         }
     return sorted(tickers)
 
