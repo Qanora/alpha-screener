@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from alphascreener.config import Settings
 
 
@@ -11,31 +12,6 @@ class TestSettingsDefaults:
     def test_default_data_source(self):
         s = Settings()
         assert s.primary_data_source == "yfinance"
-        assert s.fallback_ohlcv_source == "stooq"
-        assert s.fmp_api_key == ""
-        assert s.fmp_tier == "free"
-        assert s.fmp_daily_budget == 250
-        assert s.stooq_base_url == "https://stooq.com/q/d/l/"
-
-    def test_default_llm(self):
-        # Construct Settings with explicit values so .env file does not
-        # interfere with default-value assertions in local dev.
-        s = Settings(
-            openai_api_key="",
-            openai_base_url="",
-            llm_model="gpt-4o-mini",
-            llm_provider="openai",
-            llm_rps=5,
-            llm_batch_size=3,
-            llm_max_concurrent_stage1=6,
-        )
-        assert s.openai_api_key == ""
-        assert s.openai_base_url == ""
-        assert s.llm_model == "gpt-4o-mini"
-        assert s.llm_provider == "openai"
-        assert s.llm_rps == 5
-        assert s.llm_batch_size == 3
-        assert s.llm_max_concurrent_stage1 == 6
 
     def test_default_screening_thresholds(self):
         s = Settings()
@@ -69,31 +45,21 @@ class TestSettingsEnvOverride:
     """Verify environment variables override defaults."""
 
     def test_override_via_constructor(self):
-        s = Settings(llm_model="gpt-4-turbo", llm_rps=10)
-        assert s.llm_model == "gpt-4-turbo"
-        assert s.llm_rps == 10
+        s = Settings(mom_5d_min=0.05, sector_cap=5)
+        assert s.mom_5d_min == 0.05
+        assert s.sector_cap == 5
 
     def test_override_via_env(self, monkeypatch):
-        monkeypatch.setenv("LLM_MODEL", "gpt-4o")
-        monkeypatch.setenv("LLM_RPS", "3")
+        monkeypatch.setenv("MOM_5D_MIN", "0.03")
+        monkeypatch.setenv("SECTOR_CAP", "10")
         s = Settings()
-        assert s.llm_model == "gpt-4o"
-        assert s.llm_rps == 3
+        assert s.mom_5d_min == pytest.approx(0.03)
+        assert s.sector_cap == 10
 
     def test_constructor_overrides_env(self, monkeypatch):
-        monkeypatch.setenv("LLM_MODEL", "env-model")
-        s = Settings(llm_model="ctor-model")
-        assert s.llm_model == "ctor-model"
-
-    def test_fmp_api_key_from_env(self, monkeypatch):
-        monkeypatch.setenv("FMP_API_KEY", "test-fmp-key")
-        s = Settings()
-        assert s.fmp_api_key == "test-fmp-key"
-
-    def test_openai_api_key_from_env(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
-        s = Settings()
-        assert s.openai_api_key == "test-openai-key"
+        monkeypatch.setenv("MOM_5D_MIN", "0.01")
+        s = Settings(mom_5d_min=0.02)
+        assert s.mom_5d_min == pytest.approx(0.02)
 
 
     def test_behavior_switches_from_env(self, monkeypatch):
@@ -102,11 +68,6 @@ class TestSettingsEnvOverride:
         s = Settings()
         assert s.evolution_weight_adjust_enabled is True
         assert s.llm_ablation_enabled is False
-
-    def test_daily_budget_from_env(self, monkeypatch):
-        monkeypatch.setenv("FMP_DAILY_BUDGET", "100")
-        s = Settings()
-        assert s.fmp_daily_budget == 100
 
     def test_extra_env_ignored(self, monkeypatch):
         """Unknown env vars should be silently ignored due to extra='ignore'."""
@@ -120,20 +81,20 @@ class TestSettingsEnvFile:
 
     def test_dotenv_file_loading(self, tmp_path, monkeypatch):
         dotenv = tmp_path / ".env"
-        dotenv.write_text("LLM_MODEL=gpt-4o-from-file\nLLM_RPS=8\n")
+        dotenv.write_text("MOM_5D_MIN=0.01\nRSI_RANGE_LOW=20.0\n")
 
         # Clear env vars that may have been leaked by third-party packages
         # (e.g. tradingagents calls load_dotenv() at import time, which writes
         #  the projectʼs .env into os.environ).  Those real env vars take
         #  priority over _env_file in pydantic-settings, so we must remove
         #  them before the assertion.
-        monkeypatch.delenv("LLM_MODEL", raising=False)
-        monkeypatch.delenv("LLM_RPS", raising=False)
+        monkeypatch.delenv("MOM_5D_MIN", raising=False)
+        monkeypatch.delenv("RSI_RANGE_LOW", raising=False)
 
         monkeypatch.chdir(tmp_path)
         s = Settings(_env_file=str(dotenv))
-        assert s.llm_model == "gpt-4o-from-file"
-        assert s.llm_rps == 8
+        assert s.mom_5d_min == pytest.approx(0.01)
+        assert s.rsi_range_low == pytest.approx(20.0)
 
     def test_dotenv_file_with_home_path(self, tmp_path, monkeypatch):
         dotenv = tmp_path / ".env"

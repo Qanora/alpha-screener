@@ -18,22 +18,6 @@ class Settings(BaseSettings):
 
     # ====== 数据源 ======
     primary_data_source: str = "yfinance"
-    fallback_ohlcv_source: str = "stooq"
-    fmp_api_key: str = ""
-    fmp_tier: str = "free"
-    fmp_daily_budget: int = 250
-    stooq_base_url: str = "https://stooq.com/q/d/l/"
-
-    # ====== LLM ======
-    openai_api_key: str = ""
-    openai_base_url: str = ""
-    llm_model: str = "gpt-4o-mini"
-    llm_provider: str = "openai"
-    llm_rps: int = 5
-    llm_batch_size: int = 3
-    llm_max_concurrent_stage1: int = 6
-    llm_max_retries: int = 3
-    llm_retry_base_delay: float = 1.0
 
     # ====== 粗筛阈值 ======
     mom_5d_min: float = 0.0

@@ -9,7 +9,7 @@ Covers:
   - Recall@K: top K hits / total market hits
   - IC: Spearman rank correlation between scores and returns
   - Block-bootstrap 95% CI: block size=5 trading days x 1000 resamples
-  - write_alpha_acceptance: persist metrics to alpha_acceptance_daily table
+  - write_acceptance: persist metrics to alpha_acceptance_daily table
   - Edge cases: empty DataFrame, zero base_rate, NaN/inf values, single ticker
 """
 
@@ -80,7 +80,7 @@ class TestBaseRate:
 
     def test_base_rate_normal(self):
         """10 tickers, 2 hits => base_rate = 0.2."""
-        from alphascreener.alpha_acceptance import compute_base_rate
+        from alphascreener.acceptance import compute_base_rate
 
         returns = pl.Series(
             "t7_return",
@@ -92,7 +92,7 @@ class TestBaseRate:
 
     def test_base_rate_no_hits(self):
         """No ticker reaches 10% => base_rate = 0.0."""
-        from alphascreener.alpha_acceptance import compute_base_rate
+        from alphascreener.acceptance import compute_base_rate
 
         returns = pl.Series("t7_return", [0.05, 0.08, 0.03, -0.02])
         result = compute_base_rate(returns)
@@ -100,7 +100,7 @@ class TestBaseRate:
 
     def test_base_rate_all_hits(self):
         """All tickers reach 10% => base_rate = 1.0."""
-        from alphascreener.alpha_acceptance import compute_base_rate
+        from alphascreener.acceptance import compute_base_rate
 
         returns = pl.Series("t7_return", [0.10, 0.15, 0.20, 0.11])
         result = compute_base_rate(returns)
@@ -108,7 +108,7 @@ class TestBaseRate:
 
     def test_base_rate_empty(self):
         """Empty returns => base_rate = 0.0."""
-        from alphascreener.alpha_acceptance import compute_base_rate
+        from alphascreener.acceptance import compute_base_rate
 
         returns = pl.Series("t7_return", [], dtype=pl.Float64)
         result = compute_base_rate(returns)
@@ -116,7 +116,7 @@ class TestBaseRate:
 
     def test_base_rate_with_nulls(self):
         """Null returns are excluded from denominator."""
-        from alphascreener.alpha_acceptance import compute_base_rate
+        from alphascreener.acceptance import compute_base_rate
 
         returns = pl.Series("t7_return", [0.15, None, 0.05, None, 0.12])
         result = compute_base_rate(returns)
@@ -125,7 +125,7 @@ class TestBaseRate:
 
     def test_base_rate_boundary_at_10_pct(self):
         """T+7 return == 0.10 is a hit (>= threshold)."""
-        from alphascreener.alpha_acceptance import compute_base_rate
+        from alphascreener.acceptance import compute_base_rate
 
         returns = pl.Series("t7_return", [0.10, 0.0999])
         result = compute_base_rate(returns)
@@ -133,7 +133,7 @@ class TestBaseRate:
 
     def test_base_rate_negative_returns(self):
         """Very negative returns still count as non-hits."""
-        from alphascreener.alpha_acceptance import compute_base_rate
+        from alphascreener.acceptance import compute_base_rate
 
         returns = pl.Series("t7_return", [-0.50, -0.30, -0.10])
         result = compute_base_rate(returns)
@@ -150,7 +150,7 @@ class TestPrecisionAtK:
 
     def test_precision_at_10_normal(self):
         """10 tickers in top 10, 4 hits => precision = 0.4."""
-        from alphascreener.alpha_acceptance import compute_precision_at_k
+        from alphascreener.acceptance import compute_precision_at_k
 
         # 10 tickers total, K=10 means all tickers
         hits = pl.Series("hits", [True, True, True, True, False, False, False, False, False, False])
@@ -160,7 +160,7 @@ class TestPrecisionAtK:
 
     def test_precision_at_20_perfect(self):
         """Top 20 all hits => precision = 1.0."""
-        from alphascreener.alpha_acceptance import compute_precision_at_k
+        from alphascreener.acceptance import compute_precision_at_k
 
         hits_vals = [True] * 20 + [False] * 80
         scores = list(range(100, 0, -1))
@@ -171,7 +171,7 @@ class TestPrecisionAtK:
 
     def test_precision_at_10_zero(self):
         """Top 10 are all non-hits => precision = 0.0."""
-        from alphascreener.alpha_acceptance import compute_precision_at_k
+        from alphascreener.acceptance import compute_precision_at_k
 
         hits = pl.Series("hits", [False] * 10 + [True] * 90)
         scores = pl.Series("score", list(range(100, 0, -1)), dtype=pl.Float64)
@@ -180,7 +180,7 @@ class TestPrecisionAtK:
 
     def test_precision_at_k_k_larger_than_n(self):
         """K larger than total tickers => uses all tickers (K = n)."""
-        from alphascreener.alpha_acceptance import compute_precision_at_k
+        from alphascreener.acceptance import compute_precision_at_k
 
         hits = pl.Series("hits", [True, False, True])
         scores = pl.Series("score", [0.9, 0.5, 0.8], dtype=pl.Float64)
@@ -190,7 +190,7 @@ class TestPrecisionAtK:
 
     def test_precision_at_k_empty(self):
         """Empty input => precision = 0.0."""
-        from alphascreener.alpha_acceptance import compute_precision_at_k
+        from alphascreener.acceptance import compute_precision_at_k
 
         hits = pl.Series("hits", [], dtype=pl.Boolean)
         scores = pl.Series("score", [], dtype=pl.Float64)
@@ -199,7 +199,7 @@ class TestPrecisionAtK:
 
     def test_precision_at_k_tie_breaking(self):
         """Tied scores: all tied tickers included (conservative)."""
-        from alphascreener.alpha_acceptance import compute_precision_at_k
+        from alphascreener.acceptance import compute_precision_at_k
 
         # 15 tickers with same score, k=10, 9 hits total
         hits = pl.Series("hits", [True] * 9 + [False] * 6)
@@ -211,7 +211,7 @@ class TestPrecisionAtK:
 
     def test_precision_at_k_with_nulls(self):
         """Null scores are treated as lowest rank."""
-        from alphascreener.alpha_acceptance import compute_precision_at_k
+        from alphascreener.acceptance import compute_precision_at_k
 
         hits = pl.Series("hits", [True, False, True, True, False])
         scores = pl.Series("score", [0.9, None, 0.7, 0.8, None], dtype=pl.Float64)
@@ -230,28 +230,28 @@ class TestLiftAtK:
 
     def test_lift_normal(self):
         """Precision=0.4, base_rate=0.2 => lift=2.0."""
-        from alphascreener.alpha_acceptance import compute_lift_at_k
+        from alphascreener.acceptance import compute_lift_at_k
 
         result = compute_lift_at_k(precision=0.4, base_rate=0.2)
         assert result == pytest.approx(2.0)
 
     def test_lift_equal_one(self):
         """Precision = base_rate => lift = 1.0 (random)."""
-        from alphascreener.alpha_acceptance import compute_lift_at_k
+        from alphascreener.acceptance import compute_lift_at_k
 
         result = compute_lift_at_k(precision=0.3, base_rate=0.3)
         assert result == pytest.approx(1.0)
 
     def test_lift_less_than_one(self):
         """Precision < base_rate => lift < 1.0."""
-        from alphascreener.alpha_acceptance import compute_lift_at_k
+        from alphascreener.acceptance import compute_lift_at_k
 
         result = compute_lift_at_k(precision=0.1, base_rate=0.3)
         assert result < 1.0
 
     def test_lift_zero_base_rate(self):
         """base_rate = 0 => lift = inf, handled gracefully as None."""
-        from alphascreener.alpha_acceptance import compute_lift_at_k
+        from alphascreener.acceptance import compute_lift_at_k
 
         result = compute_lift_at_k(precision=0.1, base_rate=0.0)
         assert result is None
@@ -267,7 +267,7 @@ class TestRecallAtK:
 
     def test_recall_normal(self):
         """20 total hits, top 10 has 8 => recall = 0.4."""
-        from alphascreener.alpha_acceptance import compute_recall_at_k
+        from alphascreener.acceptance import compute_recall_at_k
 
         hits = pl.Series("hits", [True] * 8 + [False] * 2 + [True] * 12 + [False] * 78)
         scores = pl.Series("score", list(range(100, 0, -1)), dtype=pl.Float64)
@@ -277,7 +277,7 @@ class TestRecallAtK:
 
     def test_recall_perfect(self):
         """All market hits are in top K => recall = 1.0."""
-        from alphascreener.alpha_acceptance import compute_recall_at_k
+        from alphascreener.acceptance import compute_recall_at_k
 
         hits = pl.Series("hits", [True] * 5 + [False] * 95)
         scores = pl.Series("score", list(range(100, 0, -1)), dtype=pl.Float64)
@@ -287,7 +287,7 @@ class TestRecallAtK:
 
     def test_recall_zero(self):
         """No hits in top K => recall = 0.0."""
-        from alphascreener.alpha_acceptance import compute_recall_at_k
+        from alphascreener.acceptance import compute_recall_at_k
 
         hits = pl.Series("hits", [False] * 10 + [True] * 90)
         scores = pl.Series("score", list(range(100, 0, -1)), dtype=pl.Float64)
@@ -296,7 +296,7 @@ class TestRecallAtK:
 
     def test_recall_no_hits_anywhere(self):
         """No hits in the entire market => recall = 0.0."""
-        from alphascreener.alpha_acceptance import compute_recall_at_k
+        from alphascreener.acceptance import compute_recall_at_k
 
         hits = pl.Series("hits", [False] * 100)
         scores = pl.Series("score", list(range(100, 0, -1)), dtype=pl.Float64)
@@ -305,7 +305,7 @@ class TestRecallAtK:
 
     def test_recall_empty(self):
         """Empty input => recall = 0.0."""
-        from alphascreener.alpha_acceptance import compute_recall_at_k
+        from alphascreener.acceptance import compute_recall_at_k
 
         hits = pl.Series("hits", [], dtype=pl.Boolean)
         scores = pl.Series("score", [], dtype=pl.Float64)
@@ -323,7 +323,7 @@ class TestInformationCoefficient:
 
     def test_ic_perfect_positive(self):
         """Perfectly monotonic => IC = 1.0."""
-        from alphascreener.alpha_acceptance import compute_ic
+        from alphascreener.acceptance import compute_ic
 
         scores = pl.Series("score", [0.1, 0.2, 0.3, 0.4, 0.5], dtype=pl.Float64)
         returns = pl.Series("t7_return", [0.01, 0.02, 0.03, 0.04, 0.05], dtype=pl.Float64)
@@ -332,7 +332,7 @@ class TestInformationCoefficient:
 
     def test_ic_perfect_negative(self):
         """Perfectly inverse monotonic => IC = -1.0."""
-        from alphascreener.alpha_acceptance import compute_ic
+        from alphascreener.acceptance import compute_ic
 
         scores = pl.Series("score", [0.5, 0.4, 0.3, 0.2, 0.1], dtype=pl.Float64)
         returns = pl.Series("t7_return", [0.01, 0.02, 0.03, 0.04, 0.05], dtype=pl.Float64)
@@ -341,7 +341,7 @@ class TestInformationCoefficient:
 
     def test_ic_zero(self):
         """No rank correlation => IC ~ 0."""
-        from alphascreener.alpha_acceptance import compute_ic
+        from alphascreener.acceptance import compute_ic
 
         scores = pl.Series(
             "score",
@@ -359,7 +359,7 @@ class TestInformationCoefficient:
 
     def test_ic_tied_ranks(self):
         """Tied values use average rank (handled by scipy)."""
-        from alphascreener.alpha_acceptance import compute_ic
+        from alphascreener.acceptance import compute_ic
 
         scores = pl.Series("score", [0.5, 0.5, 0.5, 0.1, 0.9], dtype=pl.Float64)
         returns = pl.Series("t7_return", [0.01, 0.01, 0.01, 0.00, 0.05], dtype=pl.Float64)
@@ -368,7 +368,7 @@ class TestInformationCoefficient:
 
     def test_ic_too_few_points(self):
         """Less than 3 data points => IC = 0.0 (not enough for rank correlation)."""
-        from alphascreener.alpha_acceptance import compute_ic
+        from alphascreener.acceptance import compute_ic
 
         scores = pl.Series("score", [0.5, 0.6], dtype=pl.Float64)
         returns = pl.Series("t7_return", [0.01, 0.02], dtype=pl.Float64)
@@ -377,7 +377,7 @@ class TestInformationCoefficient:
 
     def test_ic_with_nulls(self):
         """Null pairs are dropped before computing IC."""
-        from alphascreener.alpha_acceptance import compute_ic
+        from alphascreener.acceptance import compute_ic
 
         scores = pl.Series("score", [0.1, 0.2, None, 0.4, 0.5], dtype=pl.Float64)
         returns = pl.Series("t7_return", [0.01, 0.02, 0.03, None, 0.05], dtype=pl.Float64)
@@ -386,7 +386,7 @@ class TestInformationCoefficient:
 
     def test_ic_all_nulls(self):
         """All null => IC = 0.0."""
-        from alphascreener.alpha_acceptance import compute_ic
+        from alphascreener.acceptance import compute_ic
 
         scores = pl.Series("score", [None, None, None], dtype=pl.Float64)
         returns = pl.Series("t7_return", [0.01, 0.02, 0.03], dtype=pl.Float64)
@@ -395,7 +395,7 @@ class TestInformationCoefficient:
 
     def test_ic_constant_returns(self):
         """All returns equal => no variance => IC = 0.0 (or nan handled)."""
-        from alphascreener.alpha_acceptance import compute_ic
+        from alphascreener.acceptance import compute_ic
 
         scores = pl.Series("score", [0.1, 0.2, 0.3, 0.4, 0.5], dtype=pl.Float64)
         returns = pl.Series("t7_return", [0.05, 0.05, 0.05, 0.05, 0.05], dtype=pl.Float64)
@@ -414,7 +414,7 @@ class TestBlockBootstrapCI:
 
     def test_bootstrap_ci_bounds(self):
         """CI lower < CI upper and both are finite."""
-        from alphascreener.alpha_acceptance import block_bootstrap_ci
+        from alphascreener.acceptance import block_bootstrap_ci
 
         data = np.random.default_rng(42).normal(0.0, 1.0, 100)
         lower, upper = block_bootstrap_ci(data, np.mean, block_size=5, n_samples=500, ci=95.0)
@@ -424,7 +424,7 @@ class TestBlockBootstrapCI:
 
     def test_bootstrap_ci_with_block_structure(self):
         """CI computation handles block_size > 1 correctly."""
-        from alphascreener.alpha_acceptance import block_bootstrap_ci
+        from alphascreener.acceptance import block_bootstrap_ci
 
         data = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
         lower, upper = block_bootstrap_ci(data, np.mean, block_size=3, n_samples=500, ci=95.0)
@@ -434,7 +434,7 @@ class TestBlockBootstrapCI:
 
     def test_bootstrap_ci_negative_data(self):
         """CI works with negative values."""
-        from alphascreener.alpha_acceptance import block_bootstrap_ci
+        from alphascreener.acceptance import block_bootstrap_ci
 
         data = np.random.default_rng(42).normal(-0.05, 0.15, 100)
         lower, upper = block_bootstrap_ci(data, np.mean, block_size=5, n_samples=500, ci=95.0)
@@ -443,7 +443,7 @@ class TestBlockBootstrapCI:
 
     def test_bootstrap_ci_small_data(self):
         """Very small data (< 2 * block_size) still produces results."""
-        from alphascreener.alpha_acceptance import block_bootstrap_ci
+        from alphascreener.acceptance import block_bootstrap_ci
 
         data = np.array([1.0, 2.0, 3.0])
         lower, upper = block_bootstrap_ci(data, np.mean, block_size=5, n_samples=100, ci=95.0)
@@ -451,7 +451,7 @@ class TestBlockBootstrapCI:
 
     def test_bootstrap_ci_empty_data(self):
         """Empty data returns (0.0, 0.0)."""
-        from alphascreener.alpha_acceptance import block_bootstrap_ci
+        from alphascreener.acceptance import block_bootstrap_ci
 
         data = np.array([])
         lower, upper = block_bootstrap_ci(data, np.mean, block_size=5, n_samples=100, ci=95.0)
@@ -459,7 +459,7 @@ class TestBlockBootstrapCI:
 
     def test_bootstrap_ci_constant_data(self):
         """Constant data: all bootstrap samples give same statistic => CI narrow."""
-        from alphascreener.alpha_acceptance import block_bootstrap_ci
+        from alphascreener.acceptance import block_bootstrap_ci
 
         data = np.array([5.0] * 50)
         lower, upper = block_bootstrap_ci(data, np.mean, block_size=5, n_samples=200, ci=95.0)
@@ -469,7 +469,7 @@ class TestBlockBootstrapCI:
 
     def test_bootstrap_ci_custom_statistic(self):
         """Works with a custom statistic function (e.g., precision)."""
-        from alphascreener.alpha_acceptance import block_bootstrap_ci
+        from alphascreener.acceptance import block_bootstrap_ci
 
         data = np.array([1, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1])
         lower, upper = block_bootstrap_ci(data, np.mean, block_size=5, n_samples=500, ci=95.0)
@@ -487,7 +487,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_returns_all_expected_keys(self):
         """Result dict contains all expected metric keys."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = _make_random_alpha_df(100)
         metrics = compute_all_alpha_metrics(df)
@@ -520,7 +520,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_sample_size_matches_input(self):
         """sample_size equals number of tickers in input."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = _make_random_alpha_df(73)
         metrics = compute_all_alpha_metrics(df)
@@ -528,7 +528,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_metrics_in_range(self):
         """All ratio and lift metrics are in valid ranges."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = _make_random_alpha_df(200)
         metrics = compute_all_alpha_metrics(df)
@@ -562,7 +562,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_ic_in_range(self):
         """IC values are in [-1, 1]."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = _make_random_alpha_df(200)
         metrics = compute_all_alpha_metrics(df)
@@ -571,7 +571,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_bootstrap_ci_ordering(self):
         """CI lower <= CI upper."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = _make_random_alpha_df(200)
         metrics = compute_all_alpha_metrics(df)
@@ -580,7 +580,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_empty_dataframe(self):
         """Empty DataFrame returns zero-valued metrics."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = pl.DataFrame(
             schema={
@@ -596,7 +596,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_missing_score_column(self):
         """Missing score column => raises ValueError."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = pl.DataFrame(
             {
@@ -609,7 +609,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_missing_return_column(self):
         """Missing return column => raises ValueError."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = pl.DataFrame(
             {
@@ -623,7 +623,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_single_ticker(self):
         """Single ticker: metrics computed without crashing."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = _make_alpha_df(["A"], [1.0], [2.0], [0.15])
         metrics = compute_all_alpha_metrics(df)
@@ -635,7 +635,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_custom_k_values(self):
         """Custom K values are supported."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = _make_random_alpha_df(100)
         metrics = compute_all_alpha_metrics(df, k_values=(5, 15))
@@ -645,7 +645,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_lift_zero_base_rate_handling(self):
         """When base_rate=0, lift values are None."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         df = _make_alpha_df(
             ["A", "B", "C", "D", "E"],
@@ -660,7 +660,7 @@ class TestComputeAllAlphaMetrics:
 
     def test_pure_and_llm_tracks_independent(self):
         """Pure and LLM scores produce different metrics (two tracks)."""
-        from alphascreener.alpha_acceptance import compute_all_alpha_metrics
+        from alphascreener.acceptance import compute_all_alpha_metrics
 
         # Pure scores rank T1 highest, LLM scores rank T2 highest
         df = _make_alpha_df(
@@ -720,9 +720,9 @@ class TestWriteAlphaAcceptance:
 
     def test_write_single_record(self, fresh_db, sample_metrics):
         """Write a single metrics record and verify it can be read back."""
-        from alphascreener.alpha_acceptance import write_alpha_acceptance
+        from alphascreener.acceptance import write_acceptance
 
-        write_alpha_acceptance(sample_metrics, fresh_db)
+        write_acceptance(sample_metrics, fresh_db)
 
         from sqlalchemy import select
         from sqlalchemy.orm import Session
@@ -741,7 +741,7 @@ class TestWriteAlphaAcceptance:
 
     def test_write_nullable_fields_handled(self, fresh_db):
         """Nullable fields (lift, precision) can be None."""
-        from alphascreener.alpha_acceptance import write_alpha_acceptance
+        from alphascreener.acceptance import write_acceptance
 
         metrics = {
             "metric_date": date(2025, 3, 16),
@@ -764,7 +764,7 @@ class TestWriteAlphaAcceptance:
             "bootstrap_ci_upper_llm": None,
             "sample_size": 0,
         }
-        write_alpha_acceptance(metrics, fresh_db)
+        write_acceptance(metrics, fresh_db)
 
         from sqlalchemy import select
         from sqlalchemy.orm import Session
@@ -780,15 +780,15 @@ class TestWriteAlphaAcceptance:
 
     def test_write_upsert_overwrites_existing(self, fresh_db, sample_metrics):
         """Writing to the same date twice upserts (replaces) the record."""
-        from alphascreener.alpha_acceptance import write_alpha_acceptance
+        from alphascreener.acceptance import write_acceptance
 
-        write_alpha_acceptance(sample_metrics, fresh_db)
+        write_acceptance(sample_metrics, fresh_db)
 
         # Write again with different values for the same date
         updated = dict(sample_metrics)
         updated["base_rate"] = 0.20
         updated["sample_size"] = 600
-        write_alpha_acceptance(updated, fresh_db)
+        write_acceptance(updated, fresh_db)
 
         from sqlalchemy import select
         from sqlalchemy.orm import Session
@@ -801,7 +801,7 @@ class TestWriteAlphaAcceptance:
 
     def test_write_missing_metric_date_raises(self, fresh_db):
         """Missing metric_date in metrics dict raises KeyError."""
-        from alphascreener.alpha_acceptance import write_alpha_acceptance
+        from alphascreener.acceptance import write_acceptance
 
         with pytest.raises(KeyError):
-            write_alpha_acceptance({"base_rate": 0.1, "sample_size": 10}, fresh_db)
+            write_acceptance({"base_rate": 0.1, "sample_size": 10}, fresh_db)
