@@ -250,6 +250,89 @@ def backtest(ticker: str, start: str | None, end: str | None) -> None:
 
 
 @click.command()
+@click.option("--rounds", default=50, show_default=True, help="Max optimization windows.")
+@click.option("--train", default=2, show_default=True, help="Training window (years).")
+def optimize(rounds: int, train: int) -> None:
+    """Optimize factor weights via walk-forward backtesting.
+
+    Iteratively perturbs weights and measures out-of-sample performance
+    on rolling train/test windows. Outputs convergence report with
+    Precision@20, Lift@20, Sharpe, and Max Drawdown per window.
+
+    Example:
+
+        alphascreener optimize
+
+        alphascreener optimize --rounds 100 --train 3
+    """
+    _suppress_log_noise()
+    rule("Alpha Screener — Weight Optimization")
+
+    from alphascreener.data.io import scan_parquet
+    from alphascreener.screening.phase2 import MVP_WEIGHTS
+    from alphascreener.optimize import optimize_weights
+
+    click.echo(f"  {note('Loading OHLCV data ...')}")
+    try:
+        ohlcv = scan_parquet("ohlcv").collect()
+    except Exception:
+        warn_card("No OHLCV data. Run alphascreener sync first.")
+        return
+
+    if ohlcv.height == 0:
+        warn_card("No OHLCV data found.")
+        return
+
+    # Dedup and sort
+    ohlcv = ohlcv.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
+    data_start = ohlcv["dt"].min()
+    data_end = ohlcv["dt"].max()
+    n_tickers = ohlcv["ticker"].n_unique()
+
+    click.echo(f"  {note('Data:')} {n_tickers} tickers, {data_start} → {data_end}")
+    click.echo(f"  {note('Initial weights:')} {len(MVP_WEIGHTS)} factors, train={train}y\n")
+
+    report = optimize_weights(
+        ohlcv,
+        MVP_WEIGHTS,
+        train_years=train,
+        test_months=6,
+        step_months=6,
+        max_windows=rounds,
+    )
+
+    # ── Output ──
+    click.echo(f"  {note('Windows evaluated:')} {report.iterations}  |  {note('Converged:')} {report.converged}\n")
+
+    # Weight changes
+    if report.weight_changes:
+        click.echo(f"  {note('Factor Weight Evolution:')}")
+        sorted_changes = sorted(report.weight_changes.items(), key=lambda x: abs(x[1]), reverse=True)
+        for factor, delta in sorted_changes:
+            direction = "↑" if delta > 0 else "↓" if delta < 0 else "—"
+            click.echo(f"    {factor:20s}  {report.initial_weights.get(factor,0):.3f} → {report.final_weights.get(factor,0):.3f}  {delta:+.3f} {direction}")
+        click.echo()
+
+    # Window results
+    if report.windows:
+        headers = ["Window", "Train→Test", "P@20", "Lift", "Sharpe", "MaxDD"]
+        rows = []
+        for i, w in enumerate(report.windows):
+            rows.append([
+                str(i + 1),
+                f"{w.test_start}→{w.test_end}",
+                f"{w.precision_at_20:.3f}",
+                f"{w.lift_at_20:.2f}",
+                f"{w.sharpe:.2f}",
+                f"{w.max_drawdown:.1%}",
+            ])
+        result_table(headers, rows)
+        click.echo()
+
+    click.echo(f"  {note('Usage: copy final weights into screening/phase2.py MVP_WEIGHTS')}\n")
+
+
+@click.command()
 @click.option("--full", is_flag=True, help="Full re-download.")
 def sync(full: bool) -> None:
     """Update OHLCV data from Yahoo Finance."""
@@ -369,6 +452,7 @@ def cli(ctx: click.Context, top: int, no_backtest: bool, market: str) -> None:
 
 
 cli.add_command(backtest)
+cli.add_command(optimize)
 cli.add_command(sync)
 cli.add_command(dev)
 
