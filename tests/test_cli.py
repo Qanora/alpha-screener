@@ -6,7 +6,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from alphascreener.cli import cli as main
+from asc.cli import cli as main
 
 
 @pytest.fixture
