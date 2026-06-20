@@ -121,7 +121,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         return
 
     result = phase2_pipeline(passed, n_final=top)
-    result = result.sort("breakout_score", descending=True).unique(subset=["ticker"], keep="first").sort("breakout_score", descending=True).head(top)
+    result = result.group_by("ticker").agg(pl.col("breakout_score").max()).sort("breakout_score", descending=True).head(top)
 
     rule("Alpha Screener")
     click.echo(f"  {_n('Date:')} {latest_date}  |  "
