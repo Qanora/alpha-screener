@@ -55,19 +55,38 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     if needs_sync:
         click.echo(f"  {note('Updating data ...')}")
         try:
-            sync_ohlcv(progress_callback=None)
+            n = sync_ohlcv(progress_callback=None)
             ohlcv = scan_parquet("ohlcv").collect()
+            if n == 0:
+                warn_card("Sync returned 0 new rows. Results may be based on stale data.")
         except Exception:
-            click.echo(f"  {note('(sync failed, using existing data)')}")
+            warn_card("Sync failed. Results based on existing data — may be unreliable.")
 
     if ohlcv is None or ohlcv.height == 0:
         warn_card("No OHLCV data. Run asc sync first.")
         return
 
     latest_date = ohlcv["dt"].max()
-    click.echo(f"  {note('Latest data:')} {latest_date}")
+    n_tickers = ohlcv["ticker"].n_unique()
+    data_start = ohlcv["dt"].min()
+    data_days = (latest_date - data_start).days
+
+    click.echo(f"  {note('Data:')} {n_tickers} tickers, {data_start} -> {latest_date} ({data_days}d)")
 
     df = ohlcv.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
+
+    # Filter tickers with insufficient data
+    ticker_counts = df.group_by("ticker").len()
+    good_tickers = ticker_counts.filter(pl.col("len") >= 40)["ticker"].to_list()
+    bad_count = n_tickers - len(good_tickers)
+    if len(good_tickers) < 10:
+        warn_card(f"Only {len(good_tickers)} tickers have >=40 trading days "
+                  f"({bad_count} filtered out). Run asc sync for more data.")
+        return
+    if bad_count > 0:
+        click.echo("  " + note("Filtered:") + f" {bad_count}/{n_tickers} tickers with <40 days")
+    df = df.filter(pl.col("ticker").is_in(good_tickers))
+    n_tickers = len(good_tickers)
 
     try:
         from alphascreener.factors.engine import compute_factors
@@ -78,6 +97,20 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         return
 
     factors = compute_factors(df, dt=latest_date)
+
+    # Report factor quality
+    factor_cols = [c for c in factors.columns if c not in ("ticker", "dt", "sector", "industry")]
+    bad_factors = 0
+    for col in factor_cols:
+        if factors[col].null_count() > factors.height * 0.5:
+            bad_factors += 1
+    if bad_factors > 0:
+        good_n = len(factor_cols) - bad_factors
+        click.echo(f"  {note('Factors:')} {good_n}/{len(factor_cols)} usable ({bad_factors} have >50% nulls)")
+        if good_n < 4:
+            warn_card("Too few usable factors. Run asc sync to get more historical data.")
+            return
+
     filtered, relaxed_used = hard_filter_with_fallback(factors)
     passed = filtered.filter(pl.col("pass_phase1"))
     relax_note = " (relaxed)" if relaxed_used else ""
@@ -146,6 +179,8 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
             continue
         try:
             bt = run_backtest({ticker: df_t}, signals=signals)
+            if bt["n_trades"] == 0:
+                continue
             m = bt["metrics"]
             bt_rows.append([
                 ticker,
@@ -158,9 +193,13 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         except Exception:
             continue
 
+    if skipped > 0:
+        click.echo(f"  {note('Skipped:')} {skipped} tickers with insufficient data")
     if bt_rows:
         panel(f"Backtest ({s.isoformat()} \u2192 {e.isoformat()})", [])
         result_table(bt_headers, bt_rows)
+    else:
+        warn_card("No tickers had enough data for backtest. Run asc sync.")
 
     spy = ticker_dfs.get("SPY")
     if spy is not None and spy.height > 0:
