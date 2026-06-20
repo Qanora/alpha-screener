@@ -44,7 +44,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     except Exception:
         pass
 
-    # Auto-sync if stale or insufficient data
+    # ── Data quality gate ─────────────────────────────────────────────────
     from alphascreener.data.sync import last_sync_date, sync_ohlcv
     last = last_sync_date()
     needs_sync = last is None or (date.today() - last).days > 1
@@ -55,19 +55,31 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     if needs_sync:
         click.echo(f"  {note('Updating data ...')}")
         try:
-            sync_ohlcv(progress_callback=None)
+            n = sync_ohlcv(progress_callback=None)
             ohlcv = scan_parquet("ohlcv").collect()
+            if n == 0:
+                warn_card("Sync returned 0 new rows. Results may be based on stale/incomplete data.")
         except Exception:
-            click.echo(f"  {note('(sync failed, using existing data)')}")
+            warn_card("Sync failed. Results based on existing data — may be unreliable.")
 
     if ohlcv is None or ohlcv.height == 0:
         warn_card("No OHLCV data. Run asc sync first.")
         return
 
-    latest_date = ohlcv["dt"].max()
-    click.echo(f"  {note('Latest data:')} {latest_date}")
+    # Check data sufficiency
+    n_tickers = ohlcv["ticker"].n_unique()
+    data_start = ohlcv["dt"].min()
+    data_end = ohlcv["dt"].max()
+    data_days = (data_end - data_start).days
 
+    # Check minimum trading data: need >= 40 bars/ticker for meaningful factors
     df = ohlcv.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
+
+    min_rows_per_ticker = df.group_by("ticker").len()["len"].min()
+    if min_rows_per_ticker < 40:
+        warn_card(f"Insufficient data: min {min_rows_per_ticker} trading days/ticker. "
+                  f"Need >=40 for reliable screening. Run asc sync.")
+        return
 
     try:
         from alphascreener.factors.engine import compute_factors
@@ -78,6 +90,24 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         return
 
     factors = compute_factors(df, dt=latest_date)
+
+    # ── Factor quality check ──────────────────────────────────────────────
+    factor_cols = [c for c in factors.columns if c not in ("ticker", "dt", "sector", "industry")]
+    null_rates = {}
+    for col in factor_cols:
+        null_count = factors[col].null_count()
+        if null_count > 0:
+            null_rates[col] = null_count / factors.height
+    bad_factors = {k: v for k, v in null_rates.items() if v > 0.5}
+    if bad_factors:
+        good_count = len(factor_cols) - len(bad_factors)
+        click.echo(f"  {note('Factors:')} {good_count}/{len(factor_cols)} computable "
+                   f"({len(bad_factors)} have >50% missing)")
+        if good_count < 4:
+            warn_card("Too few computable factors (<4). Results are unreliable. "
+                      "Run asc sync to get more historical data.")
+            return
+
     filtered, relaxed_used = hard_filter_with_fallback(factors)
     passed = filtered.filter(pl.col("pass_phase1"))
     relax_note = " (relaxed)" if relaxed_used else ""
@@ -90,22 +120,25 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     result = phase2_pipeline(passed, n_final=top)
 
     rule("Alpha Screener")
+    pass_rate = f"{result.height}/{filtered.height}" if filtered.height > 0 else "0"
     click.echo(f"  {note('Date:')} {latest_date}  |  "
-               f"{note('Passed:')} {result.height}/{filtered.height}{relax_note}  |  "
-               f"{note('Data:')} {df['ticker'].n_unique()} tickers\n")
+               f"{note('Passed:')} {pass_rate}{relax_note}  |  "
+               f"{note('Data:')} {n_tickers} tickers\n")
+
+    tickers: list[str] = []
+    for row in result.select(["ticker", "breakout_score"]).iter_rows(named=True):
+        tickers.append(str(row["ticker"]))
 
     headers = ["#", "Ticker", "Score"]
-    rows = []
-    tickers = []
-    for i, row in enumerate(result.select(["ticker", "breakout_score"]).iter_rows(named=True)):
-        rows.append([str(i + 1), str(row["ticker"]), f"{row['breakout_score']:.4f}"])
-        tickers.append(str(row["ticker"]))
+    rows = [[str(i+1), t, f"{s:.4f}"] for i, (t, s) in enumerate(
+        zip(tickers, result["breakout_score"].to_list()), start=1)]
     result_table(headers, rows)
 
     if no_backtest:
         click.echo(f"\n  {note('Run')} asc backtest TICKER {note('for detailed backtest.')}\n")
         return
 
+    # ── Backtest ──────────────────────────────────────────────────────────
     click.echo(f"\n  {note('Running backtest on top candidates ...')}\n")
 
     try:
@@ -114,38 +147,40 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         warn_card("Backtrader module not available.")
         return
 
-    s = date.today() - timedelta(days=183)  # 6 months
+    s = date.today() - timedelta(days=183)
     e = date.today()
 
     try:
         ticker_dfs = _load_ohlcv_data(start_date=s, end_date=e)
     except Exception:
-        warn_card("Not enough OHLCV history for backtest.")
+        warn_card("Cannot load OHLCV for backtest period.")
         return
 
-    signals = _load_signals_data(start_date=s, end_date=e)
-
-    # If no signal data exists, create a minimal signal so the backtest
-    # measures raw price action (buy on first available date)
-    if signals is None or signals.height == 0:
-        import pandas as pd
-        rows = []
-        for t in tickers[:5]:
-            df_t = ticker_dfs.get(t)
-            if df_t is not None and df_t.height > 0:
-                first_date = df_t["dt"].min()
-                rows.append({"ticker": t, "dt": first_date, "refined_score": 1.0})
-        if rows:
-            signals = pl.DataFrame(rows)
-
+    # Minimum data for meaningful backtest: at least 40 trading days
+    min_trading_days = 40
     bt_headers = ["Ticker", "Return", "Ann.Ret", "Sharpe", "MaxDD", "Win%"]
     bt_rows = []
+    skipped = 0
     for ticker in tickers[:5]:
         df_t = ticker_dfs.get(ticker)
         if df_t is None or df_t.height == 0:
+            skipped += 1
             continue
+        if df_t.height < min_trading_days:
+            skipped += 1
+            continue
+
+        # Auto-generate signal if missing
+        signals = _load_signals_data(start_date=s, end_date=e)
+        if signals is None or signals.height == 0:
+            import pandas as pd
+            first_date = df_t["dt"].min()
+            signals = pl.DataFrame([{"ticker": ticker, "dt": first_date, "refined_score": 1.0}])
+
         try:
             bt = run_backtest({ticker: df_t}, signals=signals)
+            if bt["n_trades"] == 0:
+                continue
             m = bt["metrics"]
             bt_rows.append([
                 ticker,
@@ -158,18 +193,25 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         except Exception:
             continue
 
+    if skipped > 0:
+        click.echo(f"  {note(f'Skipped {skipped} tickers (< {min_trading_days} trading days)')}")
+
     if bt_rows:
         panel(f"Backtest ({s.isoformat()} \u2192 {e.isoformat()})", [])
         result_table(bt_headers, bt_rows)
+    else:
+        warn_card("No tickers had sufficient data for backtest. "
+                  "Run asc sync to get more historical data.")
 
     spy = ticker_dfs.get("SPY")
-    if spy is not None and spy.height > 0:
+    if spy is not None and spy.height >= min_trading_days:
         try:
-            bt = run_backtest({"SPY": spy}, signals=signals)
-            m = bt["metrics"]
-            click.echo(f"  {note('SPY benchmark:')} "
-                       f"return {m['total_return']:.1%}  "
-                       f"sharpe {m['sharpe_ratio']:.2f}")
+            sig = _load_signals_data(start_date=s, end_date=e)
+            if sig is None or sig.height == 0:
+                sig = pl.DataFrame([{"ticker": "SPY", "dt": spy["dt"].min(), "refined_score": 1.0}])
+            bench = run_backtest({"SPY": spy}, signals=sig)
+            click.echo(f"  {note('SPY:')} return {bench['metrics']['total_return']:.1%}  "
+                       f"sharpe {bench['metrics']['sharpe_ratio']:.2f}")
         except Exception:
             pass
 
