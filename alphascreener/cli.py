@@ -31,6 +31,16 @@ def _suppress_log_noise() -> None:
 def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     _suppress_log_noise()
 
+    # Auto-sync if data is stale (>1 day)
+    from alphascreener.data.sync import last_sync_date, sync_ohlcv
+    last = last_sync_date()
+    if last is None or (date.today() - last).days > 1:
+        click.echo(f"  {note('Data stale, auto-updating ...')}")
+        try:
+            sync_ohlcv(progress_callback=None)
+        except Exception:
+            pass  # proceed with existing data if sync fails
+
     try:
         import polars as pl
         from alphascreener.data.io import scan_parquet
@@ -351,7 +361,7 @@ def sync(full: bool) -> None:
 
 @click.group(hidden=True)
 def dev() -> None:
-    """Advanced tools: evolution, case-library, walk-forward."""
+    """Advanced tools."""
     pass
 
 
@@ -409,42 +419,6 @@ def review(days: int) -> None:
     click.echo()
 
 
-@dev.command()
-@click.option("--score-pct", default=0.75, show_default=True)
-@click.option("--min-return", default=0.10, show_default=True)
-def build_cases(score_pct: float, min_return: float) -> None:
-    """Build breakout case library."""
-    _suppress_log_noise()
-    rule("Case Library Init")
-
-    try:
-        from alphascreener.tradingagents.case_library import rebuild_case_library
-        n = rebuild_case_library(breakout_score_pct=score_pct, min_return=min_return)
-    except Exception as exc:
-        raise click.ClickException(f"Error: {exc}") from exc
-
-    click.echo(f"  {note('Cases built:')} {n}\n")
-
-
-@dev.command()
-@click.option("--version", required=True, metavar="VERSION")
-def validate(version: str) -> None:
-    """Walk-forward validation for a factor version."""
-    _suppress_log_noise()
-    rule(f"Walk-Forward — {version}")
-
-    try:
-        from alphascreener.cross_validation.health_monitor import YFinanceHealthMonitor
-    except ImportError:
-        warn_card("Cross-validation module not available.")
-        return
-
-    monitor = YFinanceHealthMonitor()
-    click.echo(f"  {note('Data health:')} {'OK' if not monitor.fallback_activated else 'DEGRADED'}")
-    click.echo(f"  {note('Result:')} pending\n")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # CLI assembly
 # ═══════════════════════════════════════════════════════════════════════════════
 
