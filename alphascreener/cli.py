@@ -20,6 +20,8 @@ from alphascreener.display import Color, kv_table, panel, result_table, rule, wa
 
 def _n(t): return t
 
+def _n(t): return t
+
 
 
 def _suppress_log_noise() -> None:
