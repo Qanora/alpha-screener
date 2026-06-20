@@ -1,13 +1,13 @@
-"""Click-based CLI for Alpha Screener (Issue #106).
+"""Click-based CLI for Alpha Screener — rich terminal output.
 
 Commands:
-  screen      Full-market coarse scan
-  backtest    Historical backtesting
-  evolve      Factor evolution review / proposal
-  walk-forward Factor version upgrade validation
+  screen         Full-market coarse scan
+  backtest       Historical backtesting
+  evolve         Factor evolution review / proposal
+  walk-forward   Factor version upgrade validation
+  case-library   Breakout case library management
 
 Entry point: ``alphascreener`` (registered in pyproject.toml).
-Reference: PRD 8.5.
 """
 
 from __future__ import annotations
@@ -16,6 +16,19 @@ import sys
 from datetime import date, timedelta
 
 import click
+
+from alphascreener.display import (
+    Color,
+    empty_state,
+    kv,
+    kv_table,
+    note,
+    panel,
+    result_table,
+    rule,
+    success_banner,
+    warn_card,
+)
 
 # ---------------------------------------------------------------------------
 # Shared utilities
@@ -28,7 +41,6 @@ _TOP_RANGE = click.IntRange(min=1, max=100)
 def _validate_date_range(
     start: str | None, end: str | None, ctx: click.Context | None = None
 ) -> None:
-    """Validate that start <= end when both are provided."""
     if start and end:
         try:
             s = date.fromisoformat(start)
@@ -39,22 +51,6 @@ def _validate_date_range(
             raise click.BadParameter(
                 f"start ({start}) must be before end ({end})", param_hint="--start"
             )
-
-
-def _echo_table(headers: list[str], rows: list[list[str]]) -> None:
-    """Print a simple aligned table to stdout."""
-    if not rows:
-        click.echo("  (no data)")
-        return
-    col_widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            col_widths[i] = max(col_widths[i], len(str(cell)))
-    fmt = "  " + "  ".join(f"{{:<{w}}}" for w in col_widths)
-    click.echo(fmt.format(*headers))
-    click.echo("  " + "  ".join("-" * w for w in col_widths))
-    for row in rows:
-        click.echo(fmt.format(*[str(c) for c in row]))
 
 
 # ---------------------------------------------------------------------------
@@ -80,58 +76,47 @@ def _echo_table(headers: list[str], rows: list[list[str]]) -> None:
 def screen(market: str, top: int) -> None:
     """Run a full-market coarse screening scan.
 
-    Loads the most recent OHLCV data, computes technical factors, applies
-    Phase 1 hard filters and Phase 2 weighted scoring + industry dedup,
-    then prints the top candidates.
-
     Example:
 
         alphascreener screen --market US --top 20
     """
-    click.echo("\nAlpha Screener — Full-Market Scan")
-    click.echo(f"  Market : {market.upper()}")
-    click.echo(f"  Top N  : {top}")
-    click.echo()
+    rule("Alpha Screener — Full-Market Scan")
+
+    kv_table([
+        ("Market", market.upper()),
+        ("Top N", str(top)),
+    ])
 
     try:
         import polars as pl
 
         from alphascreener.data.io import scan_parquet
     except ImportError:
-        click.echo("Error: Data I/O layer not available.", err=True)
+        warn_card("Data I/O layer not available")
         sys.exit(1)
 
-    # Find the most recent OHLCV date
     try:
         lf = scan_parquet("ohlcv")
         ohlcv = lf.collect()
     except Exception:
-        click.echo(
-            "No OHLCV data found or data format incompatible. Run data sync first.",
-            err=True,
-        )
+        warn_card("No OHLCV data found or format incompatible. Run data sync first.")
         return
 
     if ohlcv.height == 0:
-        click.echo("No OHLCV data found. Run data sync first.", err=True)
+        warn_card("No OHLCV data found. Run data sync first.")
         return
 
     latest_date = ohlcv["dt"].max()
-    click.echo(f"  Latest data: {latest_date}")
+    click.echo(f"  {note('Latest data:')} {latest_date}")
 
-    # Load universe metadata for sector/industry (for Phase 2 dedup)
     meta = None
     try:
         from alphascreener.universe.meta import read_meta_cache
-
         meta = read_meta_cache().collect()
     except Exception:
         pass
 
-    # Filter to latest date, dedup, compute factors, run screening
     df = ohlcv.filter(pl.col("dt") == latest_date)
-    # Defensive dedup: keep last occurrence of duplicate (ticker, dt) rows,
-    # then sort so downstream factor computation sees correct time-series order.
     df = df.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
     n_tickers = df["ticker"].n_unique()
 
@@ -140,40 +125,35 @@ def screen(market: str, top: int) -> None:
         from alphascreener.screening.phase1 import hard_filter_with_fallback
         from alphascreener.screening.phase2 import phase2_pipeline
 
-        # Compute factors
-        click.echo(f"  Computing factors for {n_tickers} tickers ...")
+        click.echo(f"  {note('Computing factors for')} {n_tickers} {note('tickers ...')}")
         factors = compute_factors(df, dt=latest_date)
 
-        # Join sector/industry from universe meta if available
         if meta is not None and meta.height > 0:
             meta_subset = meta.select(["ticker", "sector", "industry"])
             factors = factors.join(meta_subset, on="ticker", how="left")
 
-        # Phase 1 hard filter (with auto-relaxation fallback, Issue #219)
         filtered, relaxed_used = hard_filter_with_fallback(factors)
         passed = filtered.filter(pl.col("pass_phase1"))
         relax_note = " (relaxed thresholds)" if relaxed_used else ""
-        click.echo(f"  Phase 1 pass: {passed.height} / {filtered.height}{relax_note}")
+        click.echo(f"  {note('Phase 1 pass:')} {passed.height} / {filtered.height}{relax_note}")
 
         if passed.height == 0:
-            click.echo("  No tickers passed Phase 1 hard filters (even after relaxation).")
+            warn_card("No tickers passed Phase 1 hard filters (even after relaxation).")
             return
 
-        # Phase 2 weighted scoring + dedup
         result = phase2_pipeline(passed, n_final=top)
-        click.echo(f"  Phase 2 output: {result.height} candidates\n")
+        click.echo(f"  {note('Phase 2 output:')} {result.height} candidates\n")
 
-        # Print results
         headers = ["#", "Ticker", "Breakout Score"]
         rows = []
         for i, row in enumerate(result.select(["ticker", "breakout_score"]).iter_rows(named=True)):
             rows.append([str(i + 1), str(row["ticker"]), f"{row['breakout_score']:.4f}"])
 
-        _echo_table(headers, rows)
+        result_table(headers, rows)
         click.echo()
 
     except Exception as e:
-        click.echo(f"Error during screening: {e}", err=True)
+        warn_card(f"Error during screening: {e}")
         return
 
 
@@ -195,9 +175,6 @@ def screen(market: str, top: int) -> None:
 def backtest(start: str, end: str | None) -> None:
     """Run a historical backtest using the SevenDayBreakoutStrategy.
 
-    Loads OHLCV data and signal data for the given date range and runs
-    a backtrader backtest with SPY benchmark comparison.
-
     Example:
 
         alphascreener backtest --start 2023-01-01 --end 2023-12-31
@@ -210,56 +187,62 @@ def backtest(start: str, end: str | None) -> None:
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--start/--end") from exc
 
-    click.echo("\nAlpha Screener — Backtest")
-    click.echo(f"  Start : {s.isoformat()}")
-    click.echo(f"  End   : {e.isoformat()}")
-    click.echo()
+    rule("Alpha Screener — Backtest")
+    kv_table([
+        ("Start", s.isoformat()),
+        ("End", e.isoformat()),
+    ])
 
     try:
         from alphascreener.backtrader import _load_ohlcv_data, _load_signals_data, run_backtest
     except ImportError:
-        click.echo("Error: Backtrader module not available.", err=True)
+        warn_card("Backtrader module not available.")
         return
 
     try:
         ticker_dfs = _load_ohlcv_data(start_date=s, end_date=e)
     except Exception as exc:
-        click.echo(f"No OHLCV data available: {exc}", err=True)
+        warn_card(f"No OHLCV data available: {exc}")
         return
 
     if not ticker_dfs:
-        click.echo("No OHLCV data available for the given period.", err=True)
+        warn_card("No OHLCV data available for the given period.")
         return
 
     signals = _load_signals_data(start_date=s, end_date=e)
     spy_data = ticker_dfs.get("SPY")
 
-    click.echo(f"  Tickers loaded : {len(ticker_dfs)}")
-    click.echo("  Running backtest ...\n")
+    click.echo(f"  {note('Tickers loaded:')} {len(ticker_dfs)}")
+    click.echo(f"  {note('Running backtest ...')}\n")
 
     try:
         result = run_backtest(ticker_dfs, signals=signals, spy_data=spy_data)
     except Exception as exc:
-        click.echo(f"Error during backtest: {exc}", err=True)
+        warn_card(f"Error during backtest: {exc}")
         return
 
     metrics = result["metrics"]
-    click.echo("  Results:")
-    click.echo(f"    Total Return      : {metrics['total_return']:.2%}")
-    click.echo(f"    Annualized Return : {metrics['annualized_return']:.2%}")
-    click.echo(f"    Sharpe Ratio      : {metrics['sharpe_ratio']:.2f}")
-    click.echo(f"    Max Drawdown      : {metrics['max_drawdown']:.2%}")
-    click.echo(f"    Win Rate          : {metrics['win_rate']:.2%}")
-    click.echo(f"    Volatility        : {metrics['volatility']:.2%}")
-    click.echo(f"    Trades            : {result['n_trades']}")
-    click.echo(f"    Final Value       : ${result['final_value']:,.0f}")
 
+    panel("Backtest Results", [
+        kv("Total Return", f"{metrics['total_return']:.2%}"),
+        kv("Annualized Return", f"{metrics['annualized_return']:.2%}"),
+        kv("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}"),
+        kv("Max Drawdown", f"{metrics['max_drawdown']:.2%}"),
+        kv("Win Rate", f"{metrics['win_rate']:.2%}"),
+        kv("Volatility", f"{metrics['volatility']:.2%}"),
+        kv("Trades", str(result["n_trades"])),
+        kv("Final Value", f"${result['final_value']:,.0f}"),
+    ])
+
+    extras = []
     if "benchmark_total_return" in metrics:
-        click.echo(f"    Benchmark Return  : {metrics['benchmark_total_return']:.2%}")
+        extras.append(kv("Benchmark Return", f"{metrics['benchmark_total_return']:.2%}"))
     if "excess_return" in metrics:
-        click.echo(f"    Excess Return     : {metrics['excess_return']:.2%}")
+        extras.append(kv("Excess Return", f"{metrics['excess_return']:.2%}"))
     if "information_ratio" in metrics:
-        click.echo(f"    Information Ratio : {metrics['information_ratio']:.2f}")
+        extras.append(kv("Information Ratio", f"{metrics['information_ratio']:.2f}"))
+    if extras:
+        panel("Benchmarks", extras, border=Color.border_dim)
     click.echo()
 
 
@@ -280,9 +263,6 @@ def evolve() -> None:
     pass
 
 
-# -- review-last --------------------------------------------------------------
-
-
 @evolve.command(name="review-last")
 @click.option(
     "--days",
@@ -294,17 +274,13 @@ def evolve() -> None:
 def evolve_review_last(days: int) -> None:
     """Review the last N days of alpha acceptance metrics.
 
-    Fetches alpha_acceptance_daily records from the database and displays
-    the key metrics (base_rate, precision, lift, IC) over the selected window.
-
     Example:
 
         alphascreener evolve review-last --days 30
     """
     from datetime import date as date_type
 
-    click.echo(f"\nAlpha Screener — Evolution Review (last {days} days)")
-    click.echo()
+    rule(f"Alpha Screener — Evolution Review (last {days} days)")
 
     try:
         from sqlalchemy import select
@@ -314,14 +290,14 @@ def evolve_review_last(days: int) -> None:
         from alphascreener.db.engine import create_db_engine
         from alphascreener.db.models import AlphaAcceptanceDaily
     except ImportError as exc:
-        click.echo(f"Error: Required module not available ({exc})", err=True)
+        warn_card(f"Required module not available ({exc})")
         sys.exit(1)
 
     try:
         settings = Settings()
         engine = create_db_engine(settings.get_db_url())
     except Exception as exc:
-        click.echo(f"Error: Failed to initialize database: {exc}", err=True)
+        warn_card(f"Failed to initialize database: {exc}")
         return
 
     try:
@@ -336,58 +312,44 @@ def evolve_review_last(days: int) -> None:
     except Exception as exc:
         from sqlalchemy.exc import OperationalError
 
-        err_msg = str(exc)
         if isinstance(exc, OperationalError) and (
-            "no such table" in err_msg or "no such column" in err_msg
+            "no such table" in str(exc) or "no such column" in str(exc)
         ):
-            click.echo(
-                "Error: Database schema not ready. Run:\n"
+            warn_card(
+                "Database schema not ready. Run:\n"
                 "  alembic upgrade head\n"
-                "to create/migrate the database tables, then retry.",
-                err=True,
+                "to create/migrate the database tables, then retry."
             )
             return
-        click.echo(f"No acceptance metrics available: {exc}", err=True)
+        warn_card(f"No acceptance metrics available: {exc}")
         return
     finally:
         engine.dispose()
 
     if not records:
-        click.echo(f"  No acceptance metrics found in the last {days} days.")
-        click.echo()
+        empty_state(f"No acceptance metrics found in the last {days} days.")
         return
 
-    click.echo(f"  Found {len(records)} record(s) in the last {days} days\n")
+    click.echo(f"  {note('Found')} {len(records)} {note('record(s) in the last')} {days} {note('days')}\n")
 
     headers = [
-        "Date",
-        "Base Rate",
-        "P@20 Pure",
-        "P@20 LLM",
-        "IC Pure",
-        "IC LLM",
-        "Lift Pure",
-        "N",
+        "Date", "Base Rate", "P@20 Pure", "P@20 LLM",
+        "IC Pure", "IC LLM", "Lift Pure", "N",
     ]
     rows = []
     for r in records:
-        rows.append(
-            [
-                r.metric_date.isoformat(),
-                f"{r.base_rate:.3f}" if r.base_rate is not None else "-",
-                f"{r.precision_at_20_pure:.3f}" if r.precision_at_20_pure is not None else "-",
-                f"{r.precision_at_20_llm:.3f}" if r.precision_at_20_llm is not None else "-",
-                f"{r.ic_pure:.3f}" if r.ic_pure is not None else "-",
-                f"{r.ic_llm:.3f}" if r.ic_llm is not None else "-",
-                f"{r.lift_at_20_pure:.2f}" if r.lift_at_20_pure is not None else "-",
-                str(r.sample_size) if r.sample_size is not None else "-",
-            ]
-        )
-    _echo_table(headers, rows)
+        rows.append([
+            r.metric_date.isoformat(),
+            f"{r.base_rate:.3f}" if r.base_rate is not None else "-",
+            f"{r.precision_at_20_pure:.3f}" if r.precision_at_20_pure is not None else "-",
+            f"{r.precision_at_20_llm:.3f}" if r.precision_at_20_llm is not None else "-",
+            f"{r.ic_pure:.3f}" if r.ic_pure is not None else "-",
+            f"{r.ic_llm:.3f}" if r.ic_llm is not None else "-",
+            f"{r.lift_at_20_pure:.2f}" if r.lift_at_20_pure is not None else "-",
+            str(r.sample_size) if r.sample_size is not None else "-",
+        ])
+    result_table(headers, rows)
     click.echo()
-
-
-# -- propose-factor ------------------------------------------------------------
 
 
 @evolve.command(name="propose-factor")
@@ -400,9 +362,6 @@ def evolve_review_last(days: int) -> None:
 def evolve_propose_factor(formula: str) -> None:
     """Propose a new factor formula for evaluation.
 
-    Validates the formula syntax and records it for backtesting.
-    The formula is parsed against the known factor namespace.
-
     Example:
 
         alphascreener evolve propose-factor --formula "MOM_5D > 0.02"
@@ -412,26 +371,21 @@ def evolve_propose_factor(formula: str) -> None:
 
     from alphascreener.factors.formulas import FACTOR_NAMES
 
-    click.echo("\nAlpha Screener — Factor Proposal")
-    click.echo(f"  Formula : {formula}")
-    click.echo()
+    rule("Alpha Screener — Factor Proposal")
+    kv_table([("Formula", formula)])
 
-    # Validate that tokens in the formula reference known factor names
-    # Extract identifiers from the formula (naive tokenization)
     import re
-
     tokens = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", formula))
     known = set(FACTOR_NAMES)
     unknown = tokens - known - {"and", "or", "not", "True", "False", "None", "is", "in"}
 
     if unknown:
-        click.echo(f"  Warning: Unrecognized tokens: {', '.join(sorted(unknown))}")
-        click.echo(f"  Known factors: {', '.join(sorted(known))}")
+        warn_card(f"Unrecognized tokens: {', '.join(sorted(unknown))}")
+        click.echo(f"  {note('Known factors:')} {', '.join(sorted(known))}")
     else:
-        click.echo("  All tokens recognized in the factor namespace.")
+        success_banner("All tokens recognized in the factor namespace.")
 
-    click.echo("  Proposal recorded (stub — full evaluation pipeline pending).")
-    click.echo()
+    click.echo(f"  {note('Proposal recorded (stub — full evaluation pipeline pending).')}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -449,10 +403,6 @@ def evolve_propose_factor(formula: str) -> None:
 def walk_forward(version: str) -> None:
     """Validate a factor version upgrade via walk-forward cross-validation.
 
-    Compares the new factor version's predictions against the current
-    production version on out-of-sample data, reporting stability and
-    predictive performance metrics.
-
     Example:
 
         alphascreener walk-forward --version v2.0.0
@@ -460,25 +410,21 @@ def walk_forward(version: str) -> None:
     if not version.strip():
         raise click.BadParameter("Version must not be empty.", param_hint="--version")
 
-    click.echo("\nAlpha Screener — Walk-Forward Validation")
-    click.echo(f"  Version : {version}")
-    click.echo()
+    rule("Alpha Screener — Walk-Forward Validation")
+    kv_table([("Version", version)])
 
     try:
         from alphascreener.cross_validation.health_monitor import YFinanceHealthMonitor
     except ImportError:
-        click.echo("Error: Cross-validation module not available.", err=True)
+        warn_card("Cross-validation module not available.")
         sys.exit(1)
 
-    # Walk-forward checks data source health via cross-validation
     monitor = YFinanceHealthMonitor()
     healthy = not monitor.fallback_activated
-    click.echo(f"  Data source health : {'OK' if healthy else 'DEGRADED'}")
+    click.echo(f"  {note('Data source health:')} {'OK' if healthy else 'DEGRADED'}")
 
-    # Stub: load factor data for the proposed version and compare
-    click.echo("  Validation result  : pending (full pipeline not yet implemented)")
-    click.echo("  Recommendation     : hold for manual review")
-    click.echo()
+    click.echo(f"  {note('Validation result:')} pending (full pipeline not yet implemented)")
+    click.echo(f"  {note('Recommendation:')} hold for manual review\n")
 
 
 # ---------------------------------------------------------------------------
@@ -494,9 +440,6 @@ def case_library() -> None:
 
         init     Build or rebuild the case library from historical data
         status   Show current case library status
-
-    The case library is used by the Breakout Analyst to find similar
-    historical breakout patterns when evaluating new candidates.
     """
     pass
 
@@ -519,21 +462,16 @@ def case_library() -> None:
 def case_library_init(score_pct: float, min_return: float) -> None:
     """Build or rebuild the breakout case library from historical data.
 
-    Scans all available factor data in the Parquet store, computes T+7
-    forward returns from OHLCV data, identifies positive breakout cases
-    (high breakout score + strong forward return), and writes them to
-    ~/.alphascreener/data/case_library/cases.parquet.
-
     Example:
 
         alphascreener case-library init
-
         alphascreener case-library init --score-pct 0.80 --min-return 0.15
     """
-    click.echo("\nAlpha Screener — Case Library Init")
-    click.echo(f"  Score percentile : {score_pct}")
-    click.echo(f"  Min return       : {min_return}")
-    click.echo()
+    rule("Alpha Screener — Case Library Init")
+    kv_table([
+        ("Score percentile", str(score_pct)),
+        ("Min return", str(min_return)),
+    ])
 
     try:
         from alphascreener.tradingagents.case_library import rebuild_case_library
@@ -546,13 +484,13 @@ def case_library_init(score_pct: float, min_return: float) -> None:
         raise click.ClickException(f"Error building case library: {exc}") from exc
 
     if n > 0:
-        click.echo(f"  Case library built with {n} positive cases.")
+        success_banner(f"Case library built with {n} positive cases.")
     else:
-        click.echo(
-            "  No positive cases found. This may be expected if:\n"
-            "    - No historical factor/OHLCV data exists yet\n"
-            "    - Threshold is too strict\n"
-            "    - Forward returns are not yet available (need OHLCV data T+7 later)"
+        warn_card(
+            "No positive cases found. This may be expected if:\n"
+            "  - No historical factor/OHLCV data exists yet\n"
+            "  - Threshold is too strict\n"
+            "  - Forward returns are not yet available"
         )
     click.echo()
 
@@ -561,15 +499,11 @@ def case_library_init(score_pct: float, min_return: float) -> None:
 def case_library_status_cmd() -> None:
     """Show the current breakout case library status.
 
-    Displays the number of cases, unique tickers, and date range
-    of the cases.parquet file.
-
     Example:
 
         alphascreener case-library status
     """
-    click.echo("\nAlpha Screener — Case Library Status")
-    click.echo()
+    rule("Alpha Screener — Case Library Status")
 
     try:
         from alphascreener.tradingagents.case_library import case_library_status
@@ -578,12 +512,16 @@ def case_library_status_cmd() -> None:
     except Exception as exc:
         raise click.ClickException(f"Error reading case library: {exc}") from exc
 
-    click.echo(f"  Path       : {info['path']}")
-    click.echo(f"  Exists     : {info['exists']}")
-    click.echo(f"  Cases      : {info['n_cases']}")
-    click.echo(f"  Tickers    : {info['n_unique_tickers']}")
+    pairs = [
+        ("Path", info["path"]),
+        ("Exists", str(info["exists"])),
+        ("Cases", str(info["n_cases"])),
+        ("Tickers", str(info["n_unique_tickers"])),
+    ]
     if info["date_range"] is not None:
-        click.echo(f"  Date range : {info['date_range'][0]} ~ {info['date_range'][1]}")
+        pairs.append(("Date range", f"{info['date_range'][0]} ~ {info['date_range'][1]}"))
+
+    kv_table(pairs)
     click.echo()
 
 
@@ -603,7 +541,6 @@ def main() -> None:
     Run 'alphascreener COMMAND --help' for detailed usage of each command.
     """
     # Ensure DB schema exists before any subcommand writes data (Issue #214).
-    # Best-effort: commands that don't touch the DB still work if this fails.
     try:
         from alphascreener.config import Settings
         from alphascreener.db.engine import create_db_engine
