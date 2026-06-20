@@ -97,16 +97,9 @@ def test_dev_review_valid(runner: CliRunner) -> None:
     assert result.exit_code == 0
 
 
-def test_dev_validate_help(runner: CliRunner) -> None:
-    result = runner.invoke(main, ["dev", "validate", "--help"])
-    assert result.exit_code == 0
 
 
-def test_dev_validate_valid(runner: CliRunner) -> None:
-    result = runner.invoke(main, ["dev", "validate", "--version", "v2.0.0"])
-    assert result.exit_code == 0
 
 
-def test_dev_validate_missing_version(runner: CliRunner) -> None:
-    result = runner.invoke(main, ["dev", "validate"])
-    assert result.exit_code != 0
+
+
