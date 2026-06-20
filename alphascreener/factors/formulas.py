@@ -96,7 +96,7 @@ def compute_mom_5d(df: pl.DataFrame) -> pl.DataFrame:
     """
     prev_close5 = pl.col("close").shift(5).over("ticker")
     return df.with_columns(
-        ((pl.col("close") - prev_close5) / prev_close5).alias("MOM_5D")
+        ((pl.col("close") - prev_close5) / prev_close5.replace(0, None)).alias("MOM_5D")
     )
 
 

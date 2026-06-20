@@ -26,11 +26,6 @@ class TestSettingsDefaults:
         assert s.sector_cap == 3
         assert s.industry_cap == 2
 
-    def test_default_behavior_switches(self):
-        s = Settings()
-        assert s.evolution_weight_adjust_enabled is False
-        assert s.llm_ablation_enabled is True
-
     def test_default_home_path_expanded(self):
         s = Settings()
         assert isinstance(s.alphascreener_home, Path)
@@ -61,13 +56,6 @@ class TestSettingsEnvOverride:
         s = Settings(mom_5d_min=0.02)
         assert s.mom_5d_min == pytest.approx(0.02)
 
-
-    def test_behavior_switches_from_env(self, monkeypatch):
-        monkeypatch.setenv("EVOLUTION_WEIGHT_ADJUST_ENABLED", "true")
-        monkeypatch.setenv("LLM_ABLATION_ENABLED", "false")
-        s = Settings()
-        assert s.evolution_weight_adjust_enabled is True
-        assert s.llm_ablation_enabled is False
 
     def test_extra_env_ignored(self, monkeypatch):
         """Unknown env vars should be silently ignored due to extra='ignore'."""

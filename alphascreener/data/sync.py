@@ -17,15 +17,15 @@ from alphascreener.data.io import scan_parquet, write_parquet
 _logger = logging.getLogger(__name__)
 
 # SP500 + Russell 1000 composite (major US equities, ~1500 after dedup)
-_DEFAULT_TICKERS: list[str] = []
+_DEFAULT_TICKERS: list[str] | None = None
 
 _BATCH_SIZE = 50  # yfinance download batch size
 
 
 def _default_universe() -> list[str]:
     """Return a composite US large-cap ticker list."""
-    if _DEFAULT_TICKERS:
-        return _DEFAULT_TICKERS
+    if _DEFAULT_TICKERS is not None:
+        return _DEFAULT_TICKERS  # type: ignore[return-value]
 
     tickers: set[str] = set()
     try:
