@@ -361,7 +361,7 @@ def sync(full: bool) -> None:
 
 @click.group(hidden=True)
 def dev() -> None:
-    """Advanced tools."""
+    """Advanced tools (evolution review)."""
     pass
 
 
@@ -424,7 +424,7 @@ def review(days: int) -> None:
 
 
 @click.group(invoke_without_command=True)
-@click.option("--top", default=10, show_default=True, help="Number of candidates to show.")
+@click.option("--top", default=10, show_default=True, type=click.IntRange(min=1), help="Number of candidates to show.")
 @click.option(
     "--no-backtest",
     is_flag=True,

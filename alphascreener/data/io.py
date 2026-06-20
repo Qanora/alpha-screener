@@ -123,14 +123,14 @@ def scan_parquet(category: str, *, date_filter: date | str | None = None) -> pl.
     else:
         glob_pattern = str(get_data_dir(category) / "**" / "*.parquet")
 
-    # If no files match, polars will raise; let the caller handle it.
     import glob as _glob
-
     matches = _glob.glob(glob_pattern, recursive=True)
     if not matches:
         raise FileNotFoundError(f"No Parquet files found matching: {glob_pattern}")
-
-    return pl.scan_parquet(glob_pattern)
+    try:
+        return pl.scan_parquet(glob_pattern)
+    except Exception:
+        raise FileNotFoundError(f"No Parquet files found matching: {glob_pattern}")
 
 
 def read_parquet(category: str) -> pl.LazyFrame:

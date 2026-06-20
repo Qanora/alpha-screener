@@ -14,6 +14,13 @@ from rich.table import Table
 console = Console()
 
 
+def get_console(file=None):
+    """Return a Console instance — injectable for testing."""
+    if file is not None:
+        from rich.console import Console
+        return Console(file=file)
+    return console
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Design Tokens
 # ═══════════════════════════════════════════════════════════════════════════════
