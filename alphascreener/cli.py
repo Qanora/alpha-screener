@@ -19,6 +19,10 @@ import click
 from alphascreener.display import Color, kv_table, note, panel, result_table, rule, warn_card
 
 
+def _n(text: str) -> str:
+    return text
+
+
 def _suppress_log_noise() -> None:
     logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
 
@@ -53,7 +57,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         if data_span < 180:
             needs_sync = True
     if needs_sync:
-        click.echo(f"  {note('Updating data ...')}")
+        click.echo(f"  {_n('Updating data ...')}")
         try:
             n = sync_ohlcv(progress_callback=None)
             ohlcv = scan_parquet("ohlcv").collect()
@@ -71,7 +75,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     data_start = ohlcv["dt"].min()
     data_days = (latest_date - data_start).days
 
-    click.echo(f"  {note('Data:')} {n_tickers} tickers, {data_start} -> {latest_date} ({data_days}d)")
+    click.echo(f"  {_n('Data:')} {n_tickers} tickers, {data_start} -> {latest_date} ({data_days}d)")
 
     df = ohlcv.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
 
@@ -84,7 +88,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
                   f"({bad_count} filtered out). Run asc sync for more data.")
         return
     if bad_count > 0:
-        click.echo("  " + note("Filtered:") + f" {bad_count}/{n_tickers} tickers with <40 days")
+        click.echo("  " + _n("Filtered:") + f" {bad_count}/{n_tickers} tickers with <40 days")
     df = df.filter(pl.col("ticker").is_in(good_tickers))
     n_tickers = len(good_tickers)
 
@@ -106,7 +110,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
             bad_factors += 1
     if bad_factors > 0:
         good_n = len(factor_cols) - bad_factors
-        click.echo(f"  {note('Factors:')} {good_n}/{len(factor_cols)} usable ({bad_factors} have >50% nulls)")
+        click.echo(f"  {_n('Factors:')} {good_n}/{len(factor_cols)} usable ({bad_factors} have >50% nulls)")
         if good_n < 4:
             warn_card("Too few usable factors. Run asc sync to get more historical data.")
             return
@@ -124,9 +128,9 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     result = result.unique(subset=["ticker"], keep="first").head(top)
 
     rule("Alpha Screener")
-    click.echo(f"  {note('Date:')} {latest_date}  |  "
-               f"{note('Passed:')} {result.height}/{filtered.height}{relax_note}  |  "
-               f"{note('Data:')} {df['ticker'].n_unique()} tickers\n")
+    click.echo(f"  {_n('Date:')} {latest_date}  |  "
+               f"{_n('Passed:')} {result.height}/{filtered.height}{relax_note}  |  "
+               f"{_n('Data:')} {df['ticker'].n_unique()} tickers\n")
 
     headers = ["#", "Ticker", "Score"]
     rows = []
@@ -137,10 +141,10 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     result_table(headers, rows)
 
     if no_backtest:
-        click.echo(f"\n  {note('Run')} asc backtest TICKER {note('for detailed backtest.')}\n")
+        click.echo(f"\n  {_n('Run')} asc backtest TICKER {_n('for detailed backtest.')}\n")
         return
 
-    click.echo(f"\n  {note('Running backtest on top candidates ...')}\n")
+    click.echo(f"\n  {_n('Running backtest on top candidates ...')}\n")
 
     try:
         from alphascreener.backtrader import _load_ohlcv_data, _load_signals_data, run_backtest
@@ -196,7 +200,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
             continue
 
     if skipped > 0:
-        click.echo(f"  {note('Skipped:')} {skipped} tickers with insufficient data")
+        click.echo(f"  {_n('Skipped:')} {skipped} tickers with insufficient data")
     if bt_rows:
         panel(f"Backtest ({s.isoformat()} \u2192 {e.isoformat()})", [])
         result_table(bt_headers, bt_rows)
@@ -208,7 +212,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         try:
             bt = run_backtest({"SPY": spy}, signals=signals)
             m = bt["metrics"]
-            click.echo(f"  {note('SPY benchmark:')} "
+            click.echo(f"  {_n('SPY benchmark:')} "
                        f"return {m['total_return']:.1%}  "
                        f"sharpe {m['sharpe_ratio']:.2f}")
         except Exception:
@@ -273,22 +277,23 @@ def backtest(ticker: str, start: str | None, end: str | None) -> None:
 
     m = bt["metrics"]
     panel(f"Backtest — {ticker.upper()}  ({s.isoformat()} → {e.isoformat()})", [
-        f"{note('Total Return:')}      {m['total_return']:.2%}",
-        f"{note('Annualized Return:')} {m['annualized_return']:.2%}",
-        f"{note('Sharpe Ratio:')}      {m['sharpe_ratio']:.2f}",
-        f"{note('Max Drawdown:')}      {m['max_drawdown']:.2%}",
-        f"{note('Win Rate:')}          {m['win_rate']:.2%}",
-        f"{note('Volatility:')}        {m['volatility']:.2%}",
-        f"{note('Trades:')}            {bt['n_trades']}",
+        f"{_n('Total Return:')}      {m['total_return']:.2%}",
+        f"{_n('Annualized Return:')} {m['annualized_return']:.2%}",
+        f"{_n('Sharpe Ratio:')}      {m['sharpe_ratio']:.2f}",
+        f"{_n('Max Drawdown:')}      {m['max_drawdown']:.2%}",
+        f"{_n('Win Rate:')}          {m['win_rate']:.2%}",
+        f"{_n('Volatility:')}        {m['volatility']:.2%}",
+        f"{_n('Trades:')}            {bt['n_trades']}",
     ])
 
     # Benchmark
     spy = ticker_dfs.get("SPY")
     if spy is not None and not spy.height == 0:
         try:
-            bench = run_backtest({"SPY": spy}, signals=signals)
+            spy_sig = signals if signals is not None and signals.height > 0 else __import__("polars").DataFrame([{"ticker": "SPY", "dt": spy["dt"].min(), "refined_score": 1.0}])
+            bench = run_backtest({"SPY": spy}, signals=spy_sig)
             bm = bench["metrics"]
-            click.echo(f"  {note('SPY:')} return {bm['total_return']:.1%}  "
+            click.echo(f"  {_n('SPY:')} return {bm['total_return']:.1%}  "
                        f"sharpe {bm['sharpe_ratio']:.2f}  "
                        f"excess {m.get('excess_return', 0):.1%}")
         except Exception:
@@ -325,7 +330,7 @@ def optimize(rounds: int, train: int) -> None:
     from alphascreener.screening.phase2 import MVP_WEIGHTS
     from alphascreener.optimize import optimize_weights
 
-    click.echo(f"  {note('Loading OHLCV data ...')}")
+    click.echo(f"  {_n('Loading OHLCV data ...')}")
     try:
         ohlcv = scan_parquet("ohlcv").collect()
     except Exception:
@@ -342,8 +347,8 @@ def optimize(rounds: int, train: int) -> None:
     data_end = ohlcv["dt"].max()
     n_tickers = ohlcv["ticker"].n_unique()
 
-    click.echo(f"  {note('Data:')} {n_tickers} tickers, {data_start} → {data_end}")
-    click.echo(f"  {note('Initial weights:')} {len(MVP_WEIGHTS)} factors, train={train}y\n")
+    click.echo(f"  {_n('Data:')} {n_tickers} tickers, {data_start} → {data_end}")
+    click.echo(f"  {_n('Initial weights:')} {len(MVP_WEIGHTS)} factors, train={train}y\n")
 
     report = optimize_weights(
         ohlcv,
@@ -355,11 +360,11 @@ def optimize(rounds: int, train: int) -> None:
     )
 
     # ── Output ──
-    click.echo(f"  {note('Windows evaluated:')} {report.iterations}  |  {note('Converged:')} {report.converged}\n")
+    click.echo(f"  {_n('Windows evaluated:')} {report.iterations}  |  {_n('Converged:')} {report.converged}\n")
 
     # Weight changes
     if report.weight_changes:
-        click.echo(f"  {note('Factor Weight Evolution:')}")
+        click.echo(f"  {_n('Factor Weight Evolution:')}")
         sorted_changes = sorted(report.weight_changes.items(), key=lambda x: abs(x[1]), reverse=True)
         for factor, delta in sorted_changes:
             direction = "↑" if delta > 0 else "↓" if delta < 0 else "—"
@@ -382,7 +387,7 @@ def optimize(rounds: int, train: int) -> None:
         result_table(headers, rows)
         click.echo()
 
-    click.echo(f"  {note('Usage: copy final weights into screening/phase2.py MVP_WEIGHTS')}\n")
+    click.echo(f"  {_n('Usage: copy final weights into screening/phase2.py MVP_WEIGHTS')}\n")
 
 
 @click.command()
@@ -396,15 +401,15 @@ def sync(full: bool) -> None:
 
     tickers = _default_universe()
     last = last_sync_date()
-    click.echo(f"  {note('Tickers:')} {len(tickers)}  |  {note('Last sync:')} {last or 'never'}\n")
+    click.echo(f"  {_n('Tickers:')} {len(tickers)}  |  {_n('Last sync:')} {last or 'never'}\n")
 
     def progress(total, batch, batches):
         pct = min(100, int(batch / max(batches, 1) * 100))
-        click.echo(f"\r  {note(f'[{pct}%]')} batch {batch}/{batches}", nl=False)
+        click.echo(f"\r  {_n(f'[{pct}%]')} batch {batch}/{batches}", nl=False)
 
     try:
         n = sync_ohlcv(tickers, progress_callback=progress)
-        click.echo(f"\n  {note('New rows:')} {n}")
+        click.echo(f"\n  {_n('New rows:')} {n}")
     except Exception as exc:
         warn_card(f"Sync failed: {exc}")
         return
@@ -453,7 +458,7 @@ def review(days: int) -> None:
         engine.dispose()
 
     if not records:
-        click.echo(f"  {note('No metrics in last')} {days} {note('days.')}\n")
+        click.echo(f"  {_n('No metrics in last')} {days} {_n('days.')}\n")
         return
 
     headers = ["Date", "Base Rate", "P@20 Pure", "P@20 LLM", "IC Pure", "IC LLM", "N"]
