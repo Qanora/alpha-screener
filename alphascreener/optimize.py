@@ -30,8 +30,9 @@ DEFAULT_TEST_MONTHS = 6
 DEFAULT_STEP_MONTHS = 6
 DEFAULT_MAX_WINDOWS = 50
 DEFAULT_CONVERGENCE_THRESHOLD = 0.01  # 1% weight change
-DEFAULT_LEARNING_RATE = 0.1
-DEFAULT_LR_DECAY = 0.95  # per window
+FORWARD_RETURN_DAYS = 7  # T+N forward-return horizon (drives purge default)
+DEFAULT_PURGE_DAYS = FORWARD_RETURN_DAYS
+DEFAULT_EMBARGO_DAYS = 0
 
 
 @dataclass
@@ -93,31 +94,65 @@ def _build_rolling_windows(
     test_months: int = DEFAULT_TEST_MONTHS,
     step_months: int = DEFAULT_STEP_MONTHS,
     max_windows: int = DEFAULT_MAX_WINDOWS,
+    purge_days: int = DEFAULT_PURGE_DAYS,
+    embargo_days: int = DEFAULT_EMBARGO_DAYS,
 ) -> list[tuple[date, date, date, date]]:
-    """Generate rolling train/test windows.
+    """Generate purged walk-forward train/test windows.
+
+    Each window's training period ends *purge_days* before the test period
+    to prevent label overlap (e.g. T+7 forward returns leaking into test).
+    An *embargo_days* gap after each test period ensures consecutive
+    windows are statistically independent, mitigating the overfitting
+    inherent in naive rolling windows.
 
     When the data span is too short for the requested ``train_years``, the
     function progressively shortens the training period (by 0.5-year steps,
     down to a minimum of 0.5 years) until at least one valid window can be
     produced.
+
+    References
+    ----------
+    Marcos López de Prado, *Advances in Financial ML* (2018), Chapter 7:
+    Cross-Validation in Finance.
     """
     windows: list[tuple[date, date, date, date]] = []
-    test_days = test_months * 30
-    step_days = step_months * 30
+    test_delta = timedelta(days=test_months * 30)
+    step_delta = timedelta(days=step_months * 30)
     min_train_years = 0.5
+
+    # Precompute invariant timedelta offsets to avoid repeated construction
+    purge_delta = timedelta(days=purge_days)
+    total_gap_delta = timedelta(days=embargo_days + purge_days + 1)
 
     current_train_years = float(train_years)
     while current_train_years >= min_train_years and len(windows) == 0:
         train_days = int(current_train_years * 365)
+        train_delta = timedelta(days=train_days)
 
-        cursor = data_start + timedelta(days=train_days)
-        while cursor + timedelta(days=test_days) <= data_end and len(windows) < max_windows:
-            train_start = cursor - timedelta(days=train_days)
-            train_end = cursor
+        # First test_start: need train_days + purge_days of preceding data
+        cursor = data_start + timedelta(days=train_days + purge_days)
+        while cursor + test_delta <= data_end and len(windows) < max_windows:
             test_start = cursor
-            test_end = cursor + timedelta(days=test_days)
+            test_end = cursor + test_delta
+
+            # Purge: training ends purge_days before test to avoid label overlap
+            train_end = test_start - purge_delta
+            train_start = train_end - train_delta
+
+            if train_start < data_start:
+                # Not enough data for this window, skip forward
+                cursor += step_delta
+                continue
+
             windows.append((train_start, train_end, test_start, test_end))
-            cursor += timedelta(days=step_days)
+
+            # Next cursor: advance by at least step_days, with embargo
+            # spacing after previous test (Lopez de Prado section 7.5).
+            # The +purge_days ensures that the next training period does
+            # not include any dates from the previous test period.
+            min_next_test_start = test_end + total_gap_delta
+            step_cursor = cursor + step_delta
+            cursor = max(min_next_test_start, step_cursor)
 
         if len(windows) == 0:
             _logger.warning(
@@ -223,7 +258,7 @@ def _evaluate_window(
             )
             deduped = scored_all
 
-    # ── T+7 forward returns for DEDUPED tickers ──
+    # ── Forward returns for DEDUPED tickers (horizon = FORWARD_RETURN_DAYS) ──
     t7_map: dict[str, float] = {}
     hit_map: dict[str, int] = {}
     deduped_tickers = set(deduped["ticker"].to_list())
@@ -245,7 +280,7 @@ def _evaluate_window(
             hit_map[t] = 0
             continue
         entry_close = t_closes[entry_idx]
-        fwd_idx = min(entry_idx + 7, len(t_closes) - 1)
+        fwd_idx = min(entry_idx + FORWARD_RETURN_DAYS, len(t_closes) - 1)
         fwd_close = t_closes[fwd_idx] if fwd_idx > entry_idx else entry_close
         if entry_close > 0:
             t7_map[t] = fwd_close / entry_close - 1.0
@@ -471,6 +506,8 @@ def optimize_weights(
     max_windows: int = DEFAULT_MAX_WINDOWS,
     convergence: float = DEFAULT_CONVERGENCE_THRESHOLD,
     universe_meta: pl.DataFrame | None = None,
+    purge_days: int = DEFAULT_PURGE_DAYS,
+    embargo_days: int = DEFAULT_EMBARGO_DAYS,
 ) -> OptimizeReport:
     """Run walk-forward weight optimization.
 
@@ -488,6 +525,14 @@ def optimize_weights(
         Industry≤2) is applied in each evaluation window so the
         optimisation metrics reflect the real Phase 2 pipeline
         constraints.
+    purge_days : int
+        Purge gap in days between training end and test start (default 7).
+        Prevents label overlap from forward-looking returns (e.g. T+7)
+        leaking into the test period.
+    embargo_days : int
+        Minimum days between previous test end and next test start
+        (default 0).  Reduces serial correlation between consecutive
+        windows.
     """
     if strategy not in ("tpe", "grid_search"):
         raise ValueError(
@@ -497,7 +542,8 @@ def optimize_weights(
     data_start = ohlcv_df["dt"].min()
     data_end = ohlcv_df["dt"].max()
     windows = _build_rolling_windows(
-        data_start, data_end, train_years, test_months, step_months, max_windows
+        data_start, data_end, train_years, test_months, step_months, max_windows,
+        purge_days=purge_days, embargo_days=embargo_days,
     )
 
     # Pre-select universe_meta columns once (avoid per-window .select() overhead)
@@ -531,6 +577,7 @@ def optimize_weights(
     report.final_weights = dict(best_weights)
     report.iterations = len(windows)
     report.converged = any(
-        abs(best_weights.get(k, 0) - initial_weights.get(k, 0)) > 0.001 for k in initial_weights
+        abs(best_weights.get(k, 0) - initial_weights.get(k, 0)) > convergence
+        for k in initial_weights
     )
     return report
