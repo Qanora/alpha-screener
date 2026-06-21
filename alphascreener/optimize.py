@@ -33,6 +33,55 @@ DEFAULT_CONVERGENCE_THRESHOLD = 0.01  # 1% weight change
 FORWARD_RETURN_DAYS = 7  # T+N forward-return horizon (drives purge default)
 DEFAULT_PURGE_DAYS = FORWARD_RETURN_DAYS
 DEFAULT_EMBARGO_DAYS = 0
+REGIME_LOOKBACK_DAYS = 63  # calendar days for drift regime detection
+
+
+def _detect_regime(
+    ohlcv_df: pl.DataFrame,
+    lookback_start: date,
+    lookback_end: date,
+    *,
+    proxy_ticker: str = "SPY",
+) -> str:
+    """Classify market regime by up-day percentage (Singha 2025, arXiv:2511.12490).
+
+    Drift regime: >60% up-days in a ~63-day lookback → ``"bull"``
+    (favorable for the long-only breakout strategy).  Below 40% → ``"bear"``.
+    Between 40% and 60% → ``"sideways"``.
+
+    When *proxy_ticker* is not present in *ohlcv_df*, the cross-sectional
+    median close across all tickers is used as a market proxy.
+    """
+    data = ohlcv_df.filter(
+        (pl.col("dt") >= lookback_start) & (pl.col("dt") <= lookback_end)
+    )
+    if data.height < 5:
+        return "sideways"
+
+    proxy_data = data.filter(pl.col("ticker") == proxy_ticker)
+    if proxy_data.height > 0:
+        proxy_data = proxy_data.sort("dt")
+    else:
+        # Fallback: cross-sectional median close per day
+        proxy_data = (
+            data.group_by("dt")
+            .agg(pl.col("close").median().alias("close"))
+            .sort("dt")
+        )
+
+    closes = proxy_data["close"].to_list()
+    if len(closes) < 2:
+        return "sideways"
+
+    up_days = sum(1 for i in range(1, len(closes)) if closes[i] > closes[i - 1])
+    total_days = len(closes) - 1
+    up_ratio = up_days / total_days if total_days > 0 else 0.0
+
+    if up_ratio > 0.6:
+        return "bull"
+    elif up_ratio < 0.4:
+        return "bear"
+    return "sideways"
 
 
 @dataclass
@@ -55,6 +104,31 @@ class WindowResult:
     sharpe: float
     max_drawdown: float
     weights: dict[str, float]
+
+    @classmethod
+    def zero(
+        cls,
+        train_start: date,
+        train_end: date,
+        test_start: date,
+        test_end: date,
+        weights: dict[str, float],
+    ) -> WindowResult:
+        """Construct a zero-metric result (strategy paused / inactive window)."""
+        return cls(
+            train_start=train_start,
+            train_end=train_end,
+            test_start=test_start,
+            test_end=test_end,
+            precision_at_20=0.0,
+            lift_at_20=0.0,
+            base_rate=0.0,
+            ic=0.0,
+            quantile_spread=0.0,
+            sharpe=0.0,
+            max_drawdown=0.0,
+            weights=dict(weights),
+        )
 
     @property
     def score(self) -> float:
@@ -186,6 +260,7 @@ def _evaluate_window(
     test_end: date,
     *,
     universe_meta: pl.DataFrame | None = None,
+    regime_filter: bool = False,
 ) -> WindowResult | None:
     """Run screening + evaluation on one window with given weights.
 
@@ -203,7 +278,24 @@ def _evaluate_window(
     optimisation metrics reflect the real Phase 2 pipeline constraints
     instead of overestimating performance on an unconstrained candidate
     pool.
+
+    When *regime_filter* is True, the strategy is only activated in
+    ``"bull"`` regime (>60% up-days in a 63-calendar-day lookback
+    preceding *test_start*; Singha 2025).  In ``"bear"`` or ``"sideways"``
+    regimes the function returns a zero-metric ``WindowResult``,
+    effectively pausing the strategy when it is unlikely to outperform.
     """
+    # ── Regime gate (Issue #327): pause strategy in unfavorable markets ──
+    if regime_filter:
+        regime_lookback = timedelta(days=REGIME_LOOKBACK_DAYS)
+        regime_start = test_start - regime_lookback
+        regime_end = test_start - timedelta(days=1)
+        regime = _detect_regime(ohlcv_df, regime_start, regime_end)
+        if regime != "bull":
+            return WindowResult.zero(
+                train_start, train_end, test_start, test_end, weights,
+            )
+
     try:
         from alphascreener.factors.engine import compute_factors
         from alphascreener.screening.phase1 import hard_filter_with_fallback
@@ -413,21 +505,41 @@ def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
     return {k: v / total for k, v in weights.items()}
 
 
+def _evaluate_all_windows(
+    ohlcv_df: pl.DataFrame,
+    weights: dict[str, float],
+    windows: list[tuple[date, date, date, date]],
+    *,
+    universe_meta: pl.DataFrame | None = None,
+    regime_filter: bool = False,
+) -> list[WindowResult]:
+    """Evaluate *weights* across all *windows*, dropping failed windows."""
+    results: list[WindowResult] = []
+    for tr_s, tr_e, te_s, te_e in windows:
+        r = _evaluate_window(
+            ohlcv_df, weights, tr_s, tr_e, te_s, te_e,
+            universe_meta=universe_meta,
+            regime_filter=regime_filter,
+        )
+        if r is not None:
+            results.append(r)
+    return results
+
+
 def _score_one(
     ohlcv_df: pl.DataFrame,
     weights: dict[str, float],
     windows: list[tuple[date, date, date, date]],
     *,
     universe_meta: pl.DataFrame | None = None,
+    regime_filter: bool = False,
 ) -> float:
     """Compute average composite score across all windows for given weights."""
-    vals = []
-    for tr_s, tr_e, te_s, te_e in windows:
-        r = _evaluate_window(
-            ohlcv_df, weights, tr_s, tr_e, te_s, te_e, universe_meta=universe_meta
-        )
-        if r is not None:
-            vals.append(r.score)
+    results = _evaluate_all_windows(
+        ohlcv_df, weights, windows,
+        universe_meta=universe_meta, regime_filter=regime_filter,
+    )
+    vals = [r.score for r in results]
     return sum(vals) / len(vals) if vals else 0.0
 
 
@@ -437,6 +549,7 @@ def _optimize_grid_search(
     windows: list[tuple[date, date, date, date]],
     *,
     universe_meta: pl.DataFrame | None = None,
+    regime_filter: bool = False,
 ) -> dict[str, float]:
     """Exhaustive per-factor multiplier grid search (baseline strategy)."""
     best_weights = dict(initial_weights)
@@ -444,12 +557,14 @@ def _optimize_grid_search(
 
     for factor in list(initial_weights.keys()):
         best_w = initial_weights[factor]
-        best_score = _score_one(ohlcv_df, best_weights, windows, universe_meta=universe_meta)
+        best_score = _score_one(ohlcv_df, best_weights, windows,
+                                universe_meta=universe_meta, regime_filter=regime_filter)
         for m in multipliers:
             test_w = dict(best_weights)
             test_w[factor] = initial_weights[factor] * m
             test_w = _normalize_weights(test_w)
-            s = _score_one(ohlcv_df, test_w, windows, universe_meta=universe_meta)
+            s = _score_one(ohlcv_df, test_w, windows,
+                           universe_meta=universe_meta, regime_filter=regime_filter)
             if s > best_score:
                 best_score = s
                 best_w = test_w[factor]
@@ -466,6 +581,7 @@ def _optimize_tpe(
     n_trials: int,
     *,
     universe_meta: pl.DataFrame | None = None,
+    regime_filter: bool = False,
 ) -> dict[str, float]:
     """Bayesian optimization via Optuna TPESampler.
 
@@ -481,7 +597,8 @@ def _optimize_tpe(
     def objective(trial: optuna.Trial) -> float:
         raw = {name: trial.suggest_float(f"w_{name}", 0.01, 1.0) for name in factor_names}
         w = _normalize_weights(raw)
-        return _score_one(ohlcv_df, w, windows, universe_meta=universe_meta)
+        return _score_one(ohlcv_df, w, windows,
+                          universe_meta=universe_meta, regime_filter=regime_filter)
 
     sampler = optuna.samplers.TPESampler(seed=42)
     study = optuna.create_study(direction="maximize", sampler=sampler)
@@ -508,6 +625,7 @@ def optimize_weights(
     universe_meta: pl.DataFrame | None = None,
     purge_days: int = DEFAULT_PURGE_DAYS,
     embargo_days: int = DEFAULT_EMBARGO_DAYS,
+    regime_filter: bool = False,
 ) -> OptimizeReport:
     """Run walk-forward weight optimization.
 
@@ -533,6 +651,12 @@ def optimize_weights(
         Minimum days between previous test end and next test start
         (default 0).  Reduces serial correlation between consecutive
         windows.
+    regime_filter : bool
+        When True, only activate the strategy in ``"bull"`` regime
+        (>60% up-days in a 63-day lookback; Singha 2025).  Windows
+        in bear or sideways markets return zero-score results,
+        effectively pausing the strategy when it is unlikely to
+        outperform (Issue #327).
     """
     if strategy not in ("tpe", "grid_search"):
         raise ValueError(
@@ -558,20 +682,22 @@ def optimize_weights(
         return report
 
     weights = dict(initial_weights)
-    for tr_s, tr_e, te_s, te_e in windows:
-        r = _evaluate_window(
-            ohlcv_df, weights, tr_s, tr_e, te_s, te_e, universe_meta=universe_meta
-        )
-        if r is not None:
-            report.windows.append(r)
+    report.windows = _evaluate_all_windows(
+        ohlcv_df, weights, windows,
+        universe_meta=universe_meta, regime_filter=regime_filter,
+    )
 
     if strategy == "tpe":
         best_weights = _optimize_tpe(
-            ohlcv_df, initial_weights, windows, n_trials, universe_meta=universe_meta
+            ohlcv_df, initial_weights, windows, n_trials,
+            universe_meta=universe_meta,
+            regime_filter=regime_filter,
         )
     else:
         best_weights = _optimize_grid_search(
-            ohlcv_df, initial_weights, windows, universe_meta=universe_meta
+            ohlcv_df, initial_weights, windows,
+            universe_meta=universe_meta,
+            regime_filter=regime_filter,
         )
 
     report.final_weights = dict(best_weights)
