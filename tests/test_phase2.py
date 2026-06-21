@@ -147,8 +147,6 @@ class TestComputeBreakoutScore:
 
     def test_null_z_capped_treated_as_zero(self):
         """Null raw factor values contribute 0 to the score (z-score = 0 for null)."""
-        from alphascreener.screening.phase2 import MVP_WEIGHTS
-
         df = _scored_df(
             [
                 _make_row("A", mom_z=1.0),
@@ -216,8 +214,6 @@ class TestComputeBreakoutScore:
 
     def test_max_z_capped_contribution(self):
         """Higher raw factor values produce higher z-scores and thus higher breakout_score."""
-        from alphascreener.screening.phase2 import MVP_WEIGHTS
-
         df = _scored_df(
             [
                 _make_row("HIGH", mom_z=3.0),
@@ -238,8 +234,6 @@ class TestComputeBreakoutScore:
 
     def test_min_z_capped_contribution(self):
         """Lower raw factor values produce lower z-scores and thus lower breakout_score."""
-        from alphascreener.screening.phase2 import MVP_WEIGHTS, _SIGNAL_DIRECTION
-
         df = _scored_df(
             [
                 _make_row("HIGH", mom_z=5.0),
@@ -557,7 +551,7 @@ class TestPhase2EdgeCases:
                 "INSIDER_BUY": [0, 0],
             }
         )
-        from alphascreener.screening.phase2 import MVP_WEIGHTS, compute_breakout_score
+        from alphascreener.screening.phase2 import compute_breakout_score
 
         result = compute_breakout_score(df).sort("ticker")
         score_a = result.filter(pl.col("ticker") == "A")["breakout_score"][0]
@@ -575,7 +569,7 @@ class TestPhase2EdgeCases:
                 "MOM_5D": [1.0, -1.0],
             }
         )
-        from alphascreener.screening.phase2 import MVP_WEIGHTS, compute_breakout_score
+        from alphascreener.screening.phase2 import compute_breakout_score
 
         result = compute_breakout_score(df).sort("ticker")
         # MOM_5D z-scores are non-zero (2 rows with different values)

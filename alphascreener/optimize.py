@@ -110,7 +110,8 @@ def _build_rolling_windows(
 
         if len(windows) == 0:
             _logger.warning(
-                "No rolling windows for train_years=%.1f (span %s → %s); retrying with shorter training",
+                "No rolling windows for train_years=%.1f"
+                " (span %s → %s); retrying with shorter training",
                 current_train_years,
                 data_start,
                 data_end,
@@ -260,13 +261,7 @@ def _perturb_weights(
         variants.append((f"{factor}-", down))
 
     # Normalize each variant to sum to ~1.0
-    for name, w in variants:
-        total = sum(w.values())
-        if total > 0:
-            for k in w:
-                w[k] /= total
-
-    return variants
+    return [(name, _normalize_weights(w)) for name, w in variants]
 
 
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
@@ -297,16 +292,15 @@ def _optimize_grid_search(
     windows: list[tuple[date, date, date, date]],
 ) -> dict[str, float]:
     """Exhaustive per-factor multiplier grid search (baseline strategy)."""
-    weights = dict(initial_weights)
-    best_weights = dict(weights)
+    best_weights = dict(initial_weights)
     multipliers = [0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0]
 
-    for factor in list(weights.keys()):
-        best_w = weights[factor]
+    for factor in list(initial_weights.keys()):
+        best_w = initial_weights[factor]
         best_score = _score_one(ohlcv_df, best_weights, windows)
         for m in multipliers:
             test_w = dict(best_weights)
-            test_w[factor] = weights[factor] * m
+            test_w[factor] = initial_weights[factor] * m
             test_w = _normalize_weights(test_w)
             s = _score_one(ohlcv_df, test_w, windows)
             if s > best_score:
