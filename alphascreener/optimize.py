@@ -151,11 +151,12 @@ def _evaluate_window(
 ) -> WindowResult | None:
     """Run screening + evaluation on one window with given weights.
 
-    Screening is anchored to *test_start*: factors are computed on the
-    full train→test range, then filtered to the latest row per ticker
-    on or before *test_start*.  Custom *weights* are passed through to
-    ``compute_breakout_score`` so the optimiser can measure their true
-    impact on ranking quality.
+    Factors are computed strictly on train-only data
+    (``train_start..train_end``) to avoid look-ahead bias from EMA and
+    rolling windows.  The result is then snapped to the latest row per
+    ticker on or before *test_start*.  Custom *weights* are passed
+    through to ``compute_breakout_score`` so the optimiser can measure
+    their true impact on ranking quality.
     """
     try:
         from alphascreener.factors.engine import compute_factors
@@ -164,12 +165,12 @@ def _evaluate_window(
     except ImportError:
         return None
 
-    # ── Factor computation on the full range ──
-    range_data = ohlcv_df.filter((pl.col("dt") >= train_start) & (pl.col("dt") <= test_end))
+    # ── Factor computation on train-only range (avoid look-ahead bias) ──
+    range_data = ohlcv_df.filter((pl.col("dt") >= train_start) & (pl.col("dt") <= train_end))
     if range_data.height < 100:
         return None
 
-    factors_all = compute_factors(range_data, dt=test_end)
+    factors_all = compute_factors(range_data, dt=train_end)
 
     # ── Snap to test_start: one row per ticker (latest ≤ test_start) ──
     snap = (
@@ -282,7 +283,7 @@ def _evaluate_window(
             if t_data.height >= 7:  # need at least enough bars for T+7
                 ticker_dfs[t] = t_data
 
-        if len(ticker_dfs) >= 2:
+        if len(ticker_dfs) >= 1:
             # Single signal per ticker at test_start so the strategy enters
             # at T+1 and holds for the full test window.
             signal_rows = [
@@ -290,13 +291,6 @@ def _evaluate_window(
             ]
             signals_df = pl.DataFrame(signal_rows)
             bt = run_backtest(ticker_dfs, signals=signals_df)
-            sharpe = bt["metrics"]["sharpe_ratio"]
-            max_dd = abs(bt["metrics"]["max_drawdown"])
-        elif len(ticker_dfs) == 1:
-            t = next(iter(ticker_dfs))
-            signal_rows = [{"ticker": t, "dt": test_start, "refined_score": 1.0}]
-            signals_df = pl.DataFrame(signal_rows)
-            bt = run_backtest({t: ticker_dfs[t]}, signals=signals_df)
             sharpe = bt["metrics"]["sharpe_ratio"]
             max_dd = abs(bt["metrics"]["max_drawdown"])
     except Exception:
