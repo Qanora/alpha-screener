@@ -111,7 +111,9 @@ def _build_rolling_windows(
         if len(windows) == 0:
             _logger.warning(
                 "No rolling windows for train_years=%.1f (span %s → %s); retrying with shorter training",
-                current_train_years, data_start, data_end,
+                current_train_years,
+                data_start,
+                data_end,
             )
             current_train_years -= 0.5
 
@@ -119,7 +121,10 @@ def _build_rolling_windows(
         _logger.error(
             "Cannot generate any rolling window with data span %s → %s "
             "(need at least %.1f years + %d months)",
-            data_start, data_end, min_train_years, test_months,
+            data_start,
+            data_end,
+            min_train_years,
+            test_months,
         )
 
     return windows
@@ -142,16 +147,12 @@ def _evaluate_window(
         return None
 
     # ── Factor computation on test data ──
-    test_data = ohlcv_df.filter(
-        (pl.col("dt") >= test_start) & (pl.col("dt") <= test_end)
-    )
+    test_data = ohlcv_df.filter((pl.col("dt") >= test_start) & (pl.col("dt") <= test_end))
     if test_data.height < 100:
         return None
 
     # Compute factors on the full range (need train history for rolling windows)
-    range_data = ohlcv_df.filter(
-        (pl.col("dt") >= train_start) & (pl.col("dt") <= test_end)
-    )
+    range_data = ohlcv_df.filter((pl.col("dt") >= train_start) & (pl.col("dt") <= test_end))
     factors = compute_factors(range_data, dt=test_end)
 
     # ── Screening ──
@@ -375,8 +376,7 @@ def optimize_weights(
     """
     if strategy not in ("tpe", "grid_search"):
         raise ValueError(
-            f"Unknown optimization strategy: {strategy!r}. "
-            f"Expected 'tpe' or 'grid_search'."
+            f"Unknown optimization strategy: {strategy!r}. Expected 'tpe' or 'grid_search'."
         )
 
     data_start = ohlcv_df["dt"].min()
@@ -385,9 +385,7 @@ def optimize_weights(
         data_start, data_end, train_years, test_months, step_months, max_windows
     )
 
-    report = OptimizeReport(
-        initial_weights=dict(initial_weights), final_weights={}
-    )
+    report = OptimizeReport(initial_weights=dict(initial_weights), final_weights={})
 
     if not initial_weights:
         report.converged = False
@@ -401,20 +399,13 @@ def optimize_weights(
             report.windows.append(r)
 
     if strategy == "tpe":
-        best_weights = _optimize_tpe(
-            ohlcv_df, initial_weights, windows, n_trials
-        )
+        best_weights = _optimize_tpe(ohlcv_df, initial_weights, windows, n_trials)
     else:
-        best_weights = _optimize_grid_search(
-            ohlcv_df, initial_weights, windows
-        )
+        best_weights = _optimize_grid_search(ohlcv_df, initial_weights, windows)
 
     report.final_weights = dict(best_weights)
     report.iterations = len(windows)
     report.converged = any(
-        abs(best_weights.get(k, 0) - initial_weights.get(k, 0)) > 0.001
-        for k in initial_weights
+        abs(best_weights.get(k, 0) - initial_weights.get(k, 0)) > 0.001 for k in initial_weights
     )
     return report
-
-
