@@ -1,7 +1,8 @@
 """Factor weight optimization via rolling walk-forward backtest.
 
-Uses Information Coefficient (IC), quantile return spread, Precision@20,
-Lift@20, and Sharpe ratio as optimization targets.
+Uses portfolio-level Sharpe ratio from multi-ticker backtrader runs as the
+optimization target, eliminating the proxy-objective bias of the previous
+composite score (IC + Lift + QuantileSpread + single-stock Sharpe).
 """
 
 from __future__ import annotations
@@ -55,18 +56,15 @@ class WindowResult:
 
     @property
     def score(self) -> float:
-        """Composite optimization score (higher = better).
+        """Portfolio-level Sharpe ratio as the optimization target.
 
-        IC (50 %) + Lift (25 %) + Quantile spread (15 %) + Sharpe (10 %).
-        IC uses the full score/return distribution — most sensitive to
-        weight changes.
+        Replaces the previous composite proxy (IC+Lift+QuantileSpread+
+        single-stock Sharpe) with the true portfolio Sharpe from a
+        multi-ticker backtrader run.  This eliminates proxy-objective bias:
+        the optimiser now maximises the same risk-adjusted return that the
+        strategy will actually deliver.
         """
-        ic_norm = max(0.0, (self.ic + 1.0) / 2.0)
-        lift_score = math.tanh(max(0.0, self.lift_at_20 - 1.0))
-        qs_clamped = max(0.0, min(0.5, self.quantile_spread))
-        qs_score = qs_clamped / 0.5
-        sharpe_score = math.tanh(max(0.0, self.sharpe) / 2.0)
-        return 0.50 * ic_norm + 0.25 * lift_score + 0.15 * qs_score + 0.10 * sharpe_score
+        return self.sharpe
 
 
 @dataclass
@@ -167,9 +165,7 @@ def _evaluate_window(
         return None
 
     # ── Factor computation on the full range ──
-    range_data = ohlcv_df.filter(
-        (pl.col("dt") >= train_start) & (pl.col("dt") <= test_end)
-    )
+    range_data = ohlcv_df.filter((pl.col("dt") >= train_start) & (pl.col("dt") <= test_end))
     if range_data.height < 100:
         return None
 
@@ -262,30 +258,53 @@ def _evaluate_window(
     if math.isnan(lift):
         lift = 0.0
 
-    # ── Backtest for Sharpe/MaxDD ──
-    from alphascreener.backtrader import _load_ohlcv_data, _load_signals_data, run_backtest
+    # ── Portfolio-level backtest for Sharpe/MaxDD ──
+    from alphascreener.backtrader import run_backtest
 
     sharpe = 0.0
     max_dd = 0.0
     try:
-        ticker_dfs = _load_ohlcv_data(start_date=test_start, end_date=test_end)
-        signals = _load_signals_data(start_date=test_start, end_date=test_end)
-        bt_results = []
-        top5 = sorted(
+        # Select top N tickers by breakout_score for portfolio construction
+        n_positions = min(20, n_total)
+        top = sorted(
             zip(score_vals, scored_all["ticker"].to_list()),
-            key=lambda x: x[0], reverse=True,
-        )[:5]
-        for _, t in top5:
-            df_t = ticker_dfs.get(t)
-            if df_t is None or df_t.height == 0:
-                continue
-            bt = run_backtest({t: df_t}, signals=signals)
-            bt_results.append(bt["metrics"]["sharpe_ratio"])
-            max_dd = max(max_dd, abs(bt["metrics"]["max_drawdown"]))
-        if bt_results:
-            sharpe = sum(bt_results) / len(bt_results)
+            key=lambda x: x[0],
+            reverse=True,
+        )[:n_positions]
+        top_names = [t for _, t in top]
+
+        # Build ticker_dfs from ohlcv_df for the test period
+        ticker_dfs: dict[str, pl.DataFrame] = {}
+        for t in top_names:
+            t_data = ohlcv_df.filter(
+                (pl.col("ticker") == t) & (pl.col("dt") >= test_start) & (pl.col("dt") <= test_end)
+            ).sort("dt")
+            if t_data.height >= 7:  # need at least enough bars for T+7
+                ticker_dfs[t] = t_data
+
+        if len(ticker_dfs) >= 2:
+            # Single signal per ticker at test_start so the strategy enters
+            # at T+1 and holds for the full test window.
+            signal_rows = [
+                {"ticker": t, "dt": test_start, "refined_score": 1.0} for t in ticker_dfs
+            ]
+            signals_df = pl.DataFrame(signal_rows)
+            bt = run_backtest(ticker_dfs, signals=signals_df)
+            sharpe = bt["metrics"]["sharpe_ratio"]
+            max_dd = abs(bt["metrics"]["max_drawdown"])
+        elif len(ticker_dfs) == 1:
+            t = next(iter(ticker_dfs))
+            signal_rows = [{"ticker": t, "dt": test_start, "refined_score": 1.0}]
+            signals_df = pl.DataFrame(signal_rows)
+            bt = run_backtest({t: ticker_dfs[t]}, signals=signals_df)
+            sharpe = bt["metrics"]["sharpe_ratio"]
+            max_dd = abs(bt["metrics"]["max_drawdown"])
     except Exception:
-        pass
+        _logger.warning(
+            "Portfolio backtest failed for window %s→%s; Sharpe set to 0",
+            test_start,
+            test_end,
+        )
 
     return WindowResult(
         train_start=train_start,
