@@ -252,91 +252,48 @@ def optimize_weights(
     max_windows: int = DEFAULT_MAX_WINDOWS,
     convergence: float = DEFAULT_CONVERGENCE_THRESHOLD,
 ) -> OptimizeReport:
-    """Run walk-forward weight optimization.
-
-    Args:
-        ohlcv_df: Full OHLCV DataFrame with columns ticker, dt, open, high, low, close, volume.
-        initial_weights: Starting factor weights (e.g. MVP_WEIGHTS).
-        train_years: Training window length in years.
-        test_months: Test window length in months.
-        step_months: Step size between windows in months.
-        max_windows: Maximum number of windows.
-        convergence: Stop when max weight change < this threshold.
-
-    Returns:
-        OptimizeReport with final weights and window-by-window results.
-    """
-    weights = dict(initial_weights)
+    """Run walk-forward weight optimization via grid search."""
     data_start = ohlcv_df["dt"].min()
     data_end = ohlcv_df["dt"].max()
-
-    _logger.info(
-        "optimize: data=%s→%s, train=%dy, test=%dm, step=%dm",
-        data_start, data_end, train_years, test_months, step_months,
-    )
-
-    windows = _build_rolling_windows(
-        data_start, data_end, train_years, test_months, step_months, max_windows
-    )
-
-    if len(windows) < 2:
-        _logger.warning("optimize: insufficient data for rolling windows (need >= 2)")
-        return OptimizeReport(
-            initial_weights=initial_weights,
-            final_weights=weights,
-            converged=False,
-            iterations=0,
-        )
+    windows = _build_rolling_windows(data_start, data_end, train_years, test_months, step_months, max_windows)
 
     report = OptimizeReport(initial_weights=dict(initial_weights), final_weights={})
-    lr = DEFAULT_LEARNING_RATE
+    weights = dict(initial_weights)
+    for tr_s, tr_e, te_s, te_e in windows:
+        r = _evaluate_window(ohlcv_df, weights, tr_s, tr_e, te_s, te_e)
+        if r is not None:
+            report.windows.append(r)
 
-    prev_weights = dict(weights)
+    # Grid search per factor
+    best_weights = dict(weights)
+    multipliers = [0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0]
+    
+    for factor in list(weights.keys()):
+        best_w = weights[factor]
+        best_score = _score_one(ohlcv_df, best_weights, windows)
+        for m in multipliers:
+            test_w = dict(best_weights)
+            test_w[factor] = weights[factor] * m
+            test_w = _normalize_weights(test_w)
+            s = _score_one(ohlcv_df, test_w, windows)
+            if s > best_score:
+                best_score = s
+                best_w = test_w[factor]
+        best_weights[factor] = best_w
+        best_weights = _normalize_weights(best_weights)
 
-    for wi, (tr_s, tr_e, te_s, te_e) in enumerate(windows):
-        # Evaluate current weights
-        baseline = _evaluate_window(ohlcv_df, weights, tr_s, tr_e, te_s, te_e)
-        if baseline is None:
-            continue
-
-        # Generate perturbed variants and test them
-        variants = _perturb_weights(weights, step_size=lr)
-        best_variant = None
-        best_score = baseline.score
-
-        for vname, vw in variants:
-            result = _evaluate_window(ohlcv_df, vw, tr_s, tr_e, te_s, te_e)
-            if result is None:
-                continue
-            if result.score > best_score:
-                best_score = result.score
-                best_variant = vw
-
-        # Update weights toward best variant
-        if best_variant is not None:
-            # Interpolate between current and best variant
-            for k in weights:
-                weights[k] = (1 - lr) * weights[k] + lr * best_variant[k]
-            weights = _normalize_weights(weights)
-
-        # Re-evaluate with updated weights for the report
-        final_eval = _evaluate_window(ohlcv_df, weights, tr_s, tr_e, te_s, te_e)
-        if final_eval is not None:
-            report.windows.append(final_eval)
-
-        # Check convergence
-        max_delta = max(abs(weights.get(k, 0) - prev_weights.get(k, 0)) for k in weights)
-        if max_delta < convergence and wi > 1:
-            report.converged = True
-            break
-
-        prev_weights = dict(weights)
-        lr *= DEFAULT_LR_DECAY  # decay learning rate
-        report.iterations = wi + 1
-
-    report.final_weights = dict(weights)
-
-    if not report.converged and report.iterations >= len(windows) - 1:
-        report.iterations = len(windows)
-
+    report.final_weights = dict(best_weights)
+    report.iterations = len(windows)
+    report.converged = any(abs(best_weights.get(k, 0) - initial_weights.get(k, 0)) > 0.001 for k in initial_weights)
     return report
+
+
+def _score_one(ohlcv_df, weights, windows):
+    vals = []
+    for tr_s, tr_e, te_s, te_e in windows:
+        r = _evaluate_window(ohlcv_df, weights, tr_s, tr_e, te_s, te_e)
+        if r is not None:
+            vals.append(r.score)
+    return sum(vals) / len(vals) if vals else 0.0
+
+
