@@ -11,12 +11,14 @@ Usage:
 from __future__ import annotations
 
 import logging
-import sys
 from datetime import date, timedelta
 
 import click
+import polars as pl
 
-from alphascreener.display import Color, kv_table, panel, result_table, rule, warn_card
+from alphascreener.data.paths import get_data_home
+from alphascreener.display import panel, result_table, rule, warn_card
+
 
 def _n(t): return t
 
@@ -38,6 +40,7 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
 
     try:
         import polars as pl
+
         from alphascreener.data.io import scan_parquet
     except ImportError:
         warn_card("Data I/O layer not available.")
@@ -125,6 +128,19 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         warn_card("No tickers passed screening. Try again with more data.")
         return
 
+    # ── Join sector/industry from universe_meta (Issue #325) ──
+    universe_meta_path = get_data_home() / "universe_meta.parquet"
+    if universe_meta_path.exists():
+        try:
+            umeta = pl.read_parquet(universe_meta_path)
+            passed = passed.join(
+                umeta.select(["ticker", "sector", "industry"]),
+                on="ticker",
+                how="left",
+            )
+        except Exception:
+            pass
+
     result = phase2_pipeline(passed, n_final=top)
     result = result.group_by("ticker").agg(pl.col("breakout_score").max()).sort("breakout_score", descending=True).head(top)
 
@@ -167,7 +183,6 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     # If no signal data exists, create a minimal signal so the backtest
     # measures raw price action (buy on first available date)
     if signals is None or signals.height == 0:
-        import pandas as pd
         rows = []
         for t in tickers[:5]:
             df_t = ticker_dfs.get(t)
@@ -322,8 +337,8 @@ def optimize(rounds: int, train: int) -> None:
     rule("Alpha Screener — Weight Optimization")
 
     from alphascreener.data.io import scan_parquet
-    from alphascreener.screening.phase2 import MVP_WEIGHTS
     from alphascreener.optimize import optimize_weights
+    from alphascreener.screening.phase2 import MVP_WEIGHTS
 
     click.echo(f"  {_n('Loading OHLCV data ...')}")
     try:
@@ -336,8 +351,25 @@ def optimize(rounds: int, train: int) -> None:
         warn_card("No OHLCV data found.")
         return
 
+    # ── Load universe metadata (Issue #325) ──
+    universe_meta = None
+    universe_path = get_data_home() / "universe_meta.parquet"
+    umeta_label = f"  {_n('Universe meta:')}"
+    if universe_path.exists():
+        try:
+            universe_meta = pl.read_parquet(universe_path)
+            click.echo(f"{umeta_label} {universe_meta.height} tickers with sector/industry")
+        except Exception:
+            click.echo(f"{umeta_label} failed to load, proceeding without industry dedup")
+    else:
+        click.echo(f"{umeta_label} not found, proceeding without industry dedup")
+
     # Dedup and sort
-    ohlcv = ohlcv.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
+    ohlcv = (
+        ohlcv
+        .unique(subset=["ticker", "dt"], keep="last", maintain_order=True)
+        .sort(["ticker", "dt"])
+    )
     data_start = ohlcv["dt"].min()
     data_end = ohlcv["dt"].max()
     n_tickers = ohlcv["ticker"].n_unique()
@@ -352,6 +384,7 @@ def optimize(rounds: int, train: int) -> None:
         test_months=6,
         step_months=6,
         max_windows=rounds,
+        universe_meta=universe_meta,
     )
 
     # ── Output ──
@@ -428,6 +461,7 @@ def review(days: int) -> None:
     try:
         from sqlalchemy import select
         from sqlalchemy.orm import Session
+
         from alphascreener.config import Settings
         from alphascreener.db.engine import create_db_engine
         from alphascreener.db.models import AlphaAcceptanceDaily

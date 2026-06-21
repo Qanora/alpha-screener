@@ -20,6 +20,7 @@ from alphascreener.acceptance import (
     compute_precision_at_k,
 )
 from alphascreener.logging import get_logger
+from alphascreener.screening.phase2 import apply_industry_dedup
 
 _logger = get_logger("screening")
 
@@ -148,6 +149,8 @@ def _evaluate_window(
     train_end: date,
     test_start: date,
     test_end: date,
+    *,
+    universe_meta: pl.DataFrame | None = None,
 ) -> WindowResult | None:
     """Run screening + evaluation on one window with given weights.
 
@@ -157,6 +160,14 @@ def _evaluate_window(
     ticker on or before *test_start*.  Custom *weights* are passed
     through to ``compute_breakout_score`` so the optimiser can measure
     their true impact on ranking quality.
+
+    When *universe_meta* is provided (DataFrame with ``ticker``,
+    ``sector``, ``industry`` columns), industry deduplication
+    (Sector≤3, Industry≤2) is applied to the scored candidates before
+    computing IC, Precision, Lift, and QuantileSpread.  This makes the
+    optimisation metrics reflect the real Phase 2 pipeline constraints
+    instead of overestimating performance on an unconstrained candidate
+    pool.
     """
     try:
         from alphascreener.factors.engine import compute_factors
@@ -189,12 +200,34 @@ def _evaluate_window(
 
     # ── Phase 2: score ALL passed tickers with custom weights ──
     scored_all = _cbs(passed, weights=weights)
-    n_total = scored_all.height
 
-    # ── T+7 forward returns for ALL passed tickers ──
+    # ── Industry dedup (Issue #325): apply real Phase 2 constraints ──
+    deduped = scored_all
+    if universe_meta is not None and universe_meta.height > 0:
+        try:
+            # Pre-selected columns avoid per-window .select() overhead
+            joined = scored_all.join(
+                universe_meta, on="ticker", how="left"
+            )
+            deduped = (
+                joined
+                .sort("breakout_score", descending=True)
+                .pipe(apply_industry_dedup)
+            )
+        except pl.PolarsError:
+            _logger.warning(
+                "Industry dedup failed for window %s→%s; falling back to undeduped set",
+                test_start,
+                test_end,
+                exc_info=True,
+            )
+            deduped = scored_all
+
+    # ── T+7 forward returns for DEDUPED tickers ──
     t7_map: dict[str, float] = {}
     hit_map: dict[str, int] = {}
-    for t in scored_all["ticker"].to_list():
+    deduped_tickers = set(deduped["ticker"].to_list())
+    for t in deduped_tickers:
         t_data = ohlcv_df.filter(pl.col("ticker") == t).sort("dt")
         t_dates = t_data["dt"].to_list()
         t_closes = t_data["close"].to_list()
@@ -220,11 +253,11 @@ def _evaluate_window(
             t7_map[t] = 0.0
         hit_map[t] = 1 if t7_map[t] >= 0.10 else 0
 
-    # ── Build score / return arrays ──
+    # ── Build score / return arrays (from deduped set) ──
     score_vals: list[float] = []
     return_vals: list[float] = []
     hit_vals: list[int] = []
-    for row in scored_all.iter_rows(named=True):
+    for row in deduped.iter_rows(named=True):
         t = row["ticker"]
         score_vals.append(float(row["breakout_score"]))
         return_vals.append(t7_map.get(t, 0.0))
@@ -241,8 +274,9 @@ def _evaluate_window(
 
     # ── Quantile spread ──
     quantile_spread = 0.0
-    if n_total >= 10:
-        n_q = max(1, n_total // 5)
+    n_effective = deduped.height
+    if n_effective >= 10:
+        n_q = max(1, n_effective // 5)
         order = np.argsort(score_vals)[::-1]
         top_r = [return_vals[i] for i in order[:n_q]]
         bot_r = [return_vals[i] for i in order[-n_q:]]
@@ -266,9 +300,9 @@ def _evaluate_window(
     max_dd = 0.0
     try:
         # Select top N tickers by breakout_score for portfolio construction
-        n_positions = min(20, n_total)
+        n_positions = min(20, n_effective)
         top = sorted(
-            zip(score_vals, scored_all["ticker"].to_list()),
+            zip(score_vals, deduped["ticker"].to_list()),
             key=lambda x: x[0],
             reverse=True,
         )[:n_positions]
@@ -348,11 +382,15 @@ def _score_one(
     ohlcv_df: pl.DataFrame,
     weights: dict[str, float],
     windows: list[tuple[date, date, date, date]],
+    *,
+    universe_meta: pl.DataFrame | None = None,
 ) -> float:
     """Compute average composite score across all windows for given weights."""
     vals = []
     for tr_s, tr_e, te_s, te_e in windows:
-        r = _evaluate_window(ohlcv_df, weights, tr_s, tr_e, te_s, te_e)
+        r = _evaluate_window(
+            ohlcv_df, weights, tr_s, tr_e, te_s, te_e, universe_meta=universe_meta
+        )
         if r is not None:
             vals.append(r.score)
     return sum(vals) / len(vals) if vals else 0.0
@@ -362,6 +400,8 @@ def _optimize_grid_search(
     ohlcv_df: pl.DataFrame,
     initial_weights: dict[str, float],
     windows: list[tuple[date, date, date, date]],
+    *,
+    universe_meta: pl.DataFrame | None = None,
 ) -> dict[str, float]:
     """Exhaustive per-factor multiplier grid search (baseline strategy)."""
     best_weights = dict(initial_weights)
@@ -369,12 +409,12 @@ def _optimize_grid_search(
 
     for factor in list(initial_weights.keys()):
         best_w = initial_weights[factor]
-        best_score = _score_one(ohlcv_df, best_weights, windows)
+        best_score = _score_one(ohlcv_df, best_weights, windows, universe_meta=universe_meta)
         for m in multipliers:
             test_w = dict(best_weights)
             test_w[factor] = initial_weights[factor] * m
             test_w = _normalize_weights(test_w)
-            s = _score_one(ohlcv_df, test_w, windows)
+            s = _score_one(ohlcv_df, test_w, windows, universe_meta=universe_meta)
             if s > best_score:
                 best_score = s
                 best_w = test_w[factor]
@@ -389,6 +429,8 @@ def _optimize_tpe(
     initial_weights: dict[str, float],
     windows: list[tuple[date, date, date, date]],
     n_trials: int,
+    *,
+    universe_meta: pl.DataFrame | None = None,
 ) -> dict[str, float]:
     """Bayesian optimization via Optuna TPESampler.
 
@@ -404,7 +446,7 @@ def _optimize_tpe(
     def objective(trial: optuna.Trial) -> float:
         raw = {name: trial.suggest_float(f"w_{name}", 0.01, 1.0) for name in factor_names}
         w = _normalize_weights(raw)
-        return _score_one(ohlcv_df, w, windows)
+        return _score_one(ohlcv_df, w, windows, universe_meta=universe_meta)
 
     sampler = optuna.samplers.TPESampler(seed=42)
     study = optuna.create_study(direction="maximize", sampler=sampler)
@@ -428,6 +470,7 @@ def optimize_weights(
     step_months: int = DEFAULT_STEP_MONTHS,
     max_windows: int = DEFAULT_MAX_WINDOWS,
     convergence: float = DEFAULT_CONVERGENCE_THRESHOLD,
+    universe_meta: pl.DataFrame | None = None,
 ) -> OptimizeReport:
     """Run walk-forward weight optimization.
 
@@ -439,6 +482,12 @@ def optimize_weights(
         multiplier search.
     n_trials : int
         Number of Optuna trials (TPE only, default 30).
+    universe_meta : DataFrame or None
+        Optional DataFrame with ``ticker``, ``sector``, ``industry``
+        columns.  When provided, industry deduplication (Sector≤3,
+        Industry≤2) is applied in each evaluation window so the
+        optimisation metrics reflect the real Phase 2 pipeline
+        constraints.
     """
     if strategy not in ("tpe", "grid_search"):
         raise ValueError(
@@ -451,6 +500,10 @@ def optimize_weights(
         data_start, data_end, train_years, test_months, step_months, max_windows
     )
 
+    # Pre-select universe_meta columns once (avoid per-window .select() overhead)
+    if universe_meta is not None and universe_meta.height > 0:
+        universe_meta = universe_meta.select(["ticker", "sector", "industry"])
+
     report = OptimizeReport(initial_weights=dict(initial_weights), final_weights={})
 
     if not initial_weights:
@@ -460,14 +513,20 @@ def optimize_weights(
 
     weights = dict(initial_weights)
     for tr_s, tr_e, te_s, te_e in windows:
-        r = _evaluate_window(ohlcv_df, weights, tr_s, tr_e, te_s, te_e)
+        r = _evaluate_window(
+            ohlcv_df, weights, tr_s, tr_e, te_s, te_e, universe_meta=universe_meta
+        )
         if r is not None:
             report.windows.append(r)
 
     if strategy == "tpe":
-        best_weights = _optimize_tpe(ohlcv_df, initial_weights, windows, n_trials)
+        best_weights = _optimize_tpe(
+            ohlcv_df, initial_weights, windows, n_trials, universe_meta=universe_meta
+        )
     else:
-        best_weights = _optimize_grid_search(ohlcv_df, initial_weights, windows)
+        best_weights = _optimize_grid_search(
+            ohlcv_df, initial_weights, windows, universe_meta=universe_meta
+        )
 
     report.final_weights = dict(best_weights)
     report.iterations = len(windows)
