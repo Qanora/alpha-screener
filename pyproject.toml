@@ -18,6 +18,9 @@ dependencies = [
     "hdbscan>=0.8.33",
     "faiss-cpu>=1.7",
 
+    # 超参数优化
+    "optuna>=3.0",
+
     # 回测
     "backtrader>=1.9.78",
 
