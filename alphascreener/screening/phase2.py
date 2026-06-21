@@ -117,17 +117,19 @@ def compute_breakout_score(df: pl.DataFrame) -> pl.DataFrame:
 
     score = pl.lit(0.0, dtype=pl.Float64)
 
-    n = df.height
     for fname in _Z_CAPPED_FACTORS:
         raw_col = fname
         if raw_col in df.columns:
             w = MVP_WEIGHTS[fname]
             direction = _SIGNAL_DIRECTION.get(fname, 1)
-            # Cross-sectional rank normalization [0,1]
-            rank_expr = pl.col(raw_col).rank().cast(pl.Float64)
-            score = score + pl.when(pl.col(raw_col).is_null()).then(0.0).otherwise(
-                (rank_expr / max(n, 1)) * w * direction
-            )
+            # Cross-sectional z-score normalization (mean 0, std 1)
+            # Clipped to [-3, +3] for outlier robustness
+            mu = pl.col(raw_col).mean()
+            sigma = pl.col(raw_col).std(ddof=1)
+            z_score = pl.when(sigma > 1e-12).then((pl.col(raw_col) - mu) / sigma).otherwise(0.0)
+            z_score = pl.when(pl.col(raw_col).is_null()).then(0.0).otherwise(z_score)
+            z_capped = z_score.clip(-3.0, 3.0)
+            score = score + z_capped * w * direction
 
     for fname in _BINARY_FACTORS:
         if fname in df.columns:

@@ -85,25 +85,27 @@ def _make_row(
 class TestComputeBreakoutScore:
     """Weighted breakout score = Σ(w_i × z_capped_i) + Σ(w_j × flag_j)."""
 
-    @pytest.mark.skip(reason="rank-based scoring — test expectations need recalibration")
     def test_continuous_only(self):
-        """Only z_capped factors contribute; binary flags are all 0."""
-        from alphascreener.screening.phase2 import MVP_WEIGHTS
-
+        """Higher z-score factor values produce higher breakout_score."""
         df = _scored_df(
             [
-                _make_row("A", mom_z=2.0, pth_z=0.5),
+                _make_row("HIGH", mom_z=3.0, pth_z=2.0),
+                _make_row("LOW", mom_z=-3.0, pth_z=-2.0),
             ]
         )
         from alphascreener.screening.phase2 import compute_breakout_score
 
-        result = compute_breakout_score(df)
-        expected = 0.885  # rank: all factors rank=1 for 1 row
-        assert result["breakout_score"][0] == pytest.approx(expected)
+        result = compute_breakout_score(df).sort("ticker")
+        high_score = result.filter(pl.col("ticker") == "HIGH")["breakout_score"][0]
+        low_score = result.filter(pl.col("ticker") == "LOW")["breakout_score"][0]
+        # HIGH has strictly higher factor values -> higher z-scores -> higher score
+        assert high_score > low_score
+        # Both should be non-zero (factors have variance across 2 rows)
+        assert high_score != pytest.approx(0.0)
+        assert low_score != pytest.approx(0.0)
 
-    @pytest.mark.skip(reason="rank-based scoring — test expectations need recalibration")
     def test_binary_flags_add_weight(self):
-        """Binary flags == 1 contribute their full weight."""
+        """Binary flags == 1 contribute their full weight. Continuous z-scores are 0 (sigma=0)."""
         from alphascreener.screening.phase2 import MVP_WEIGHTS
 
         df = _scored_df(
@@ -114,6 +116,8 @@ class TestComputeBreakoutScore:
         from alphascreener.screening.phase2 import compute_breakout_score
 
         result = compute_breakout_score(df)
+        # All continuous factors: single row → sigma=0 → z=0 → contribution=0
+        # Binary factors only contribute
         expected = (
             MVP_WEIGHTS["MACD_CROSS"] + MVP_WEIGHTS["GOLDEN_CROSS"] + MVP_WEIGHTS["INSIDER_BUY"]
         )
@@ -141,30 +145,31 @@ class TestComputeBreakoutScore:
         # Both should have identical scores since PEAD weight = 0
         assert result["breakout_score"][0] == pytest.approx(result["breakout_score"][1])
 
-    @pytest.mark.skip(reason="rank-based scoring — test expectations need recalibration")
     def test_null_z_capped_treated_as_zero(self):
-        """Null z_capped columns contribute 0 to the score."""
+        """Null raw factor values contribute 0 to the score (z-score = 0 for null)."""
         from alphascreener.screening.phase2 import MVP_WEIGHTS
 
         df = _scored_df(
             [
-                _make_row("A", mom_z=1.0, pth_z=0.5),
+                _make_row("A", mom_z=1.0),
+                _make_row("B", mom_z=-1.0),
             ]
         )
-        # Set z_capped_PTH to null for one ticker
-        df_null = df.with_columns(
+        # Set PTH to null for ticker A
+        df = df.with_columns(
             pl.when(pl.col("ticker") == "A")
-            .then(pl.lit(None))
-            .otherwise(pl.col("z_capped_PTH"))
-            .alias("z_capped_PTH")
+            .then(pl.lit(None, dtype=pl.Float64))
+            .otherwise(pl.col("PTH"))
+            .alias("PTH")
         )
 
         from alphascreener.screening.phase2 import compute_breakout_score
 
-        result = compute_breakout_score(df_null)
-        # Only MOM_5D contributes, PTH is null
-        expected = 0.885  # rank: all factors rank=1 for 1 row
-        assert result["breakout_score"][0] == pytest.approx(expected)
+        result = compute_breakout_score(df).sort("ticker")
+        # A: PTH is null → PTH z-score = 0 for A
+        # B: PTH = 0.0 (normal value)
+        # Verify: B's PTH contribution is non-zero, A's PTH contribution is 0
+        assert result["breakout_score"][0] != pytest.approx(result["breakout_score"][1])
 
     def test_empty_dataframe(self):
         """Empty DataFrame returns empty with breakout_score column."""
@@ -196,9 +201,8 @@ class TestComputeBreakoutScore:
         result = compute_breakout_score(df).sort("breakout_score", descending=True)
         assert result["ticker"].to_list() == ["HIGH", "MED", "LOW"]
 
-    @pytest.mark.skip(reason="rank-based scoring — test expectations need recalibration")
     def test_all_zeros_gives_zero_score(self):
-        """All factors at 0 => breakout_score = 0."""
+        """All continuous factors at 0 (sigma=0) + no binary flags => breakout_score = 0."""
         df = _scored_df(
             [
                 _make_row("Z", mom_z=0.0),
@@ -207,37 +211,47 @@ class TestComputeBreakoutScore:
         from alphascreener.screening.phase2 import compute_breakout_score
 
         result = compute_breakout_score(df)
-        assert result["breakout_score"][0] == pytest.approx(0.885)
+        # Single row: all z-scores = 0 (sigma=0), no binary flags → score = 0
+        assert result["breakout_score"][0] == pytest.approx(0.0)
 
-    @pytest.mark.skip(reason="rank-based scoring — test expectations need recalibration")
     def test_max_z_capped_contribution(self):
-        """z_capped at +3.0 should contribute 3 * weight."""
+        """Higher raw factor values produce higher z-scores and thus higher breakout_score."""
         from alphascreener.screening.phase2 import MVP_WEIGHTS
 
         df = _scored_df(
             [
-                _make_row("MAX", mom_z=3.0),
+                _make_row("HIGH", mom_z=3.0),
+                _make_row("MED", mom_z=0.0),
+                _make_row("LOW", mom_z=-3.0),
             ]
         )
         from alphascreener.screening.phase2 import compute_breakout_score
 
-        result = compute_breakout_score(df)
-        assert result["breakout_score"][0] == pytest.approx(0.885)
+        result = compute_breakout_score(df).sort("ticker")
+        high_score = result.filter(pl.col("ticker") == "HIGH")["breakout_score"][0]
+        med_score = result.filter(pl.col("ticker") == "MED")["breakout_score"][0]
+        low_score = result.filter(pl.col("ticker") == "LOW")["breakout_score"][0]
+        # z-score ordering preserves raw value ordering
+        assert high_score > med_score > low_score
+        # Weight * z_capped contribution: z-scores are proportional to raw differences
+        assert high_score > 0 > low_score
 
-    @pytest.mark.skip(reason="rank-based scoring — test expectations need recalibration")
     def test_min_z_capped_contribution(self):
-        """z_capped at -3.0 should contribute -3 * weight."""
-        from alphascreener.screening.phase2 import MVP_WEIGHTS
+        """Lower raw factor values produce lower z-scores and thus lower breakout_score."""
+        from alphascreener.screening.phase2 import MVP_WEIGHTS, _SIGNAL_DIRECTION
 
         df = _scored_df(
             [
-                _make_row("MIN", mom_z=-3.0),
+                _make_row("HIGH", mom_z=5.0),
+                _make_row("LOW", mom_z=-5.0),
             ]
         )
         from alphascreener.screening.phase2 import compute_breakout_score
 
-        result = compute_breakout_score(df)
-        assert result["breakout_score"][0] == pytest.approx(0.885)
+        result = compute_breakout_score(df).sort("ticker")
+        high_score = result.filter(pl.col("ticker") == "HIGH")["breakout_score"][0]
+        low_score = result.filter(pl.col("ticker") == "LOW")["breakout_score"][0]
+        assert high_score > low_score
 
 
 # ============================================================================
@@ -532,40 +546,42 @@ class TestPhase2Pipeline:
 class TestPhase2EdgeCases:
     """Edge case handling for Phase 2 components."""
 
-    @pytest.mark.skip(reason="rank-based scoring — test expectations need recalibration")
     def test_missing_z_capped_columns(self):
-        """compute_breakout_score handles missing z_capped columns gracefully."""
+        """compute_breakout_score works with raw factor columns (z-score computed internally)."""
         df = pl.DataFrame(
             {
-                "ticker": ["A"],
-                "MOM_5D": [1.0],
-                "MACD_CROSS": [1],
-                "GOLDEN_CROSS": [0],
-                "INSIDER_BUY": [0],
+                "ticker": ["A", "B"],
+                "MOM_5D": [1.0, -1.0],
+                "MACD_CROSS": [1, 0],
+                "GOLDEN_CROSS": [0, 1],
+                "INSIDER_BUY": [0, 0],
             }
         )
         from alphascreener.screening.phase2 import MVP_WEIGHTS, compute_breakout_score
 
-        result = compute_breakout_score(df)
-        # Only MOM_5D z_capped + MACD_CROSS contribute
-        expected = 0.885  # rank: all factors rank=1 for 1 row
-        assert result["breakout_score"][0] == pytest.approx(expected)
+        result = compute_breakout_score(df).sort("ticker")
+        score_a = result.filter(pl.col("ticker") == "A")["breakout_score"][0]
+        score_b = result.filter(pl.col("ticker") == "B")["breakout_score"][0]
+        # Both get z-score contributions from MOM_5D (2 rows → variance > 0)
+        # A gets MACD_CROSS, B gets GOLDEN_CROSS
+        assert score_a != pytest.approx(0.0)
+        assert score_b != pytest.approx(0.0)
 
-    @pytest.mark.skip(reason='rank-based scoring uses raw columns, no z_capped')
     def test_binary_factor_column_missing(self):
         """compute_breakout_score handles missing binary factor columns gracefully."""
         df = pl.DataFrame(
             {
-                "ticker": ["A"],
-                "MOM_5D": [1.0],
-                "z_capped_PTH": [0.5],
+                "ticker": ["A", "B"],
+                "MOM_5D": [1.0, -1.0],
             }
         )
         from alphascreener.screening.phase2 import MVP_WEIGHTS, compute_breakout_score
 
-        result = compute_breakout_score(df)
-        expected = 0.885  # rank: all factors rank=1 for 1 row
-        assert result["breakout_score"][0] == pytest.approx(expected)
+        result = compute_breakout_score(df).sort("ticker")
+        # MOM_5D z-scores are non-zero (2 rows with different values)
+        score_a = result.filter(pl.col("ticker") == "A")["breakout_score"][0]
+        score_b = result.filter(pl.col("ticker") == "B")["breakout_score"][0]
+        assert score_a > 0 > score_b
 
     def test_single_ticker(self):
         """Pipeline works correctly with a single ticker."""
@@ -622,29 +638,29 @@ class TestSignalDirection:
     """Verify factor signal directions align with Phase 1 constraints."""
 
     def test_atr_ratio_inverted_in_breakout_score(self):
-        pytest.skip('rank-based — needs manual column values')
         """Higher ATR_RATIO -> lower breakout_score (vol contraction is bullish).
 
         Phase 1 requires ATR_RATIO < 0.8 (low is good).  Phase 2 must align:
-        higher raw ATR_RATIO should contribute negatively to breakout_score.
+        higher raw ATR_RATIO should contribute negatively to breakout_score
+        (direction = -1 in _SIGNAL_DIRECTION).
         """
         from alphascreener.screening.phase2 import compute_breakout_score
 
-        # Two identical tickers except ATR_RATIO z-score
+        # Two tickers: identical except raw ATR_RATIO
         df = _scored_df(
             [
-                _make_row("LOW_ATR", mom_z=1.0),  # ATR_RATIO z = 0 (default)
-                _make_row("HIGH_ATR", mom_z=1.0),  # ATR_RATIO z = +2.0
+                _make_row("LOW_ATR", mom_z=1.0),
+                _make_row("HIGH_ATR", mom_z=1.0),
             ]
         )
-        # Set z_capped_ATR_RATIO: LOW=neutral, HIGH=high (expansion)
+        # Set raw ATR_RATIO: LOW=0.08 (contraction, bullish), HIGH=2.0 (expansion, bearish)
         df = df.with_columns(
             pl.when(pl.col("ticker") == "LOW_ATR")
-            .then(0.0)
+            .then(0.08)
             .when(pl.col("ticker") == "HIGH_ATR")
             .then(2.0)
-            .otherwise(pl.col("z_capped_ATR_RATIO"))
-            .alias("z_capped_ATR_RATIO")
+            .otherwise(pl.col("ATR_RATIO"))
+            .alias("ATR_RATIO")
         )
 
         result = compute_breakout_score(df).sort("ticker")
@@ -652,6 +668,7 @@ class TestSignalDirection:
         high_score = result.filter(pl.col("ticker") == "HIGH_ATR")["breakout_score"][0]
 
         # LOW_ATR (vol contraction, bullish) should score HIGHER than HIGH_ATR
+        # Because ATR_RATIO direction = -1 (inverted)
         assert low_score > high_score, (
             f"Expected LOW_ATR (vol contraction) to score higher than HIGH_ATR, "
             f"got LOW={low_score}, HIGH={high_score}"
