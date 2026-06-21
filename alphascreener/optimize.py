@@ -1,9 +1,7 @@
 """Factor weight optimization via rolling walk-forward backtest.
 
-Iteratively perturbs factor weights and measures out-of-sample performance
-on rolling train/test windows. Converges when weight changes drop below 1%.
-
-Uses Precision@20, Lift@20, and Sharpe ratio as optimization targets.
+Uses Information Coefficient (IC), quantile return spread, Precision@20,
+Lift@20, and Sharpe ratio as optimization targets.
 """
 
 from __future__ import annotations
@@ -12,10 +10,12 @@ import math
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+import numpy as np
 import polars as pl
 
 from alphascreener.acceptance import (
     compute_base_rate,
+    compute_ic,
     compute_precision_at_k,
 )
 from alphascreener.logging import get_logger
@@ -34,7 +34,11 @@ DEFAULT_LR_DECAY = 0.95  # per window
 
 @dataclass
 class WindowResult:
-    """Performance metrics for a single train/test window."""
+    """Performance metrics for a single train/test window.
+
+    ic : Spearman rank IC between breakout_score and T+7 returns.
+    quantile_spread : Mean T+7 return of top vs bottom quintile.
+    """
 
     train_start: date
     train_end: date
@@ -43,18 +47,26 @@ class WindowResult:
     precision_at_20: float
     lift_at_20: float
     base_rate: float
+    ic: float
+    quantile_spread: float
     sharpe: float
     max_drawdown: float
     weights: dict[str, float]
 
     @property
     def score(self) -> float:
-        """Composite optimization score (higher = better)."""
-        # Lift > 1 means we beat random; scale to [0, 1] via tanh
-        lift_score = math.tanh(max(0, self.lift_at_20 - 1.0))
-        sharpe_score = math.tanh(max(0, self.sharpe) / 2.0)
-        precision_score = min(1.0, self.precision_at_20 / 0.5)
-        return 0.4 * lift_score + 0.3 * sharpe_score + 0.3 * precision_score
+        """Composite optimization score (higher = better).
+
+        IC (50 %) + Lift (25 %) + Quantile spread (15 %) + Sharpe (10 %).
+        IC uses the full score/return distribution — most sensitive to
+        weight changes.
+        """
+        ic_norm = max(0.0, (self.ic + 1.0) / 2.0)
+        lift_score = math.tanh(max(0.0, self.lift_at_20 - 1.0))
+        qs_clamped = max(0.0, min(0.5, self.quantile_spread))
+        qs_score = qs_clamped / 0.5
+        sharpe_score = math.tanh(max(0.0, self.sharpe) / 2.0)
+        return 0.50 * ic_norm + 0.25 * lift_score + 0.15 * qs_score + 0.10 * sharpe_score
 
 
 @dataclass
@@ -139,68 +151,109 @@ def _evaluate_window(
     test_start: date,
     test_end: date,
 ) -> WindowResult | None:
-    """Run screening + evaluation on one window with given weights."""
+    """Run screening + evaluation on one window with given weights.
+
+    Screening is anchored to *test_start*: factors are computed on the
+    full train→test range, then filtered to the latest row per ticker
+    on or before *test_start*.  Custom *weights* are passed through to
+    ``compute_breakout_score`` so the optimiser can measure their true
+    impact on ranking quality.
+    """
     try:
         from alphascreener.factors.engine import compute_factors
         from alphascreener.screening.phase1 import hard_filter_with_fallback
-        from alphascreener.screening.phase2 import phase2_pipeline
+        from alphascreener.screening.phase2 import compute_breakout_score as _cbs
     except ImportError:
         return None
 
-    # ── Factor computation on test data ──
-    test_data = ohlcv_df.filter((pl.col("dt") >= test_start) & (pl.col("dt") <= test_end))
-    if test_data.height < 100:
+    # ── Factor computation on the full range ──
+    range_data = ohlcv_df.filter(
+        (pl.col("dt") >= train_start) & (pl.col("dt") <= test_end)
+    )
+    if range_data.height < 100:
         return None
 
-    # Compute factors on the full range (need train history for rolling windows)
-    range_data = ohlcv_df.filter((pl.col("dt") >= train_start) & (pl.col("dt") <= test_end))
-    factors = compute_factors(range_data, dt=test_end)
+    factors_all = compute_factors(range_data, dt=test_end)
 
-    # ── Screening ──
-    filtered, _ = hard_filter_with_fallback(factors)
+    # ── Snap to test_start: one row per ticker (latest ≤ test_start) ──
+    snap = (
+        factors_all.filter(pl.col("dt") <= test_start)
+        .sort("dt", descending=True)
+        .unique(subset=["ticker"], keep="first")
+    )
+    if snap.height < 10:
+        return None
+
+    # ── Phase 1 hard filter ──
+    filtered, _ = hard_filter_with_fallback(snap)
     passed = filtered.filter(pl.col("pass_phase1"))
-    if passed.height == 0:
+    if passed.height < 5:
         return None
 
-    result = phase2_pipeline(passed, n_final=20)
+    # ── Phase 2: score ALL passed tickers with custom weights ──
+    scored_all = _cbs(passed, weights=weights)
+    n_total = scored_all.height
 
-    # ── Outcomes from OHLCV (T+7 forward return) ──
-    # Entry at test_start; hold for 7 trading days; hit if return >= 10%.
-    tickers = result["ticker"].to_list()
-    hits = []
-    for t in tickers:
+    # ── T+7 forward returns for ALL passed tickers ──
+    t7_map: dict[str, float] = {}
+    hit_map: dict[str, int] = {}
+    for t in scored_all["ticker"].to_list():
         t_data = ohlcv_df.filter(pl.col("ticker") == t).sort("dt")
         t_dates = t_data["dt"].to_list()
         t_closes = t_data["close"].to_list()
-
         if len(t_closes) == 0:
-            hits.append(0)
+            t7_map[t] = 0.0
+            hit_map[t] = 0
             continue
-
-        # Find entry index: first trading day ≥ test_start
         entry_idx = None
         for i, d in enumerate(t_dates):
             if d >= test_start:
                 entry_idx = i
                 break
         if entry_idx is None:
-            hits.append(0)
+            t7_map[t] = 0.0
+            hit_map[t] = 0
             continue
-
         entry_close = t_closes[entry_idx]
         fwd_idx = min(entry_idx + 7, len(t_closes) - 1)
         fwd_close = t_closes[fwd_idx] if fwd_idx > entry_idx else entry_close
-        hit = 1 if entry_close > 0 and (fwd_close / entry_close - 1) >= 0.10 else 0
-        hits.append(hit)
+        if entry_close > 0:
+            t7_map[t] = fwd_close / entry_close - 1.0
+        else:
+            t7_map[t] = 0.0
+        hit_map[t] = 1 if t7_map[t] >= 0.10 else 0
 
-    # ── Metrics ──
-    breakout_vals = result["breakout_score"].to_list()
-    if len(breakout_vals) != len(tickers):
-        # Safety: if column lengths diverge, fall back to equal weights
-        breakout_vals = [1.0] * len(tickers)
+    # ── Build score / return arrays ──
+    score_vals: list[float] = []
+    return_vals: list[float] = []
+    hit_vals: list[int] = []
+    for row in scored_all.iter_rows(named=True):
+        t = row["ticker"]
+        score_vals.append(float(row["breakout_score"]))
+        return_vals.append(t7_map.get(t, 0.0))
+        hit_vals.append(hit_map.get(t, 0))
 
-    scores_s = pl.Series("score", breakout_vals, dtype=pl.Float64)
-    hits_s = pl.Series("hit", hits, dtype=pl.Int64)
+    scores_s = pl.Series("score", score_vals, dtype=pl.Float64)
+    returns_s = pl.Series("t7_return", return_vals, dtype=pl.Float64)
+    hits_s = pl.Series("hit", hit_vals, dtype=pl.Int64)
+
+    # ── IC: Spearman rank correlation (primary metric) ──
+    ic = compute_ic(scores_s, returns_s)
+    if math.isnan(ic):
+        ic = 0.0
+
+    # ── Quantile spread ──
+    quantile_spread = 0.0
+    if n_total >= 10:
+        n_q = max(1, n_total // 5)
+        order = np.argsort(score_vals)[::-1]
+        top_r = [return_vals[i] for i in order[:n_q]]
+        bot_r = [return_vals[i] for i in order[-n_q:]]
+        top_mean = float(np.mean(top_r)) if top_r else 0.0
+        bot_mean = float(np.mean(bot_r)) if bot_r else 0.0
+        quantile_spread = top_mean - bot_mean
+
+    # ── Precision@20 / Lift@20 ──
     precision = compute_precision_at_k(scores_s, hits_s, 20)
     base_rate = compute_base_rate(hits_s.cast(pl.Float64))
     if math.isnan(precision):
@@ -218,7 +271,11 @@ def _evaluate_window(
         ticker_dfs = _load_ohlcv_data(start_date=test_start, end_date=test_end)
         signals = _load_signals_data(start_date=test_start, end_date=test_end)
         bt_results = []
-        for t in tickers[:5]:
+        top5 = sorted(
+            zip(score_vals, scored_all["ticker"].to_list()),
+            key=lambda x: x[0], reverse=True,
+        )[:5]
+        for _, t in top5:
             df_t = ticker_dfs.get(t)
             if df_t is None or df_t.height == 0:
                 continue
@@ -238,6 +295,8 @@ def _evaluate_window(
         precision_at_20=precision,
         lift_at_20=lift,
         base_rate=base_rate,
+        ic=ic,
+        quantile_spread=quantile_spread,
         sharpe=sharpe,
         max_drawdown=max_dd,
         weights=dict(weights),
