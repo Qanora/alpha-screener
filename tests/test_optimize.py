@@ -17,6 +17,8 @@ from alphascreener.optimize import (
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+_DEFAULT_WEIGHTS = {"mom_5d": 0.25, "rsi_oversold": 0.25, "vol_anomaly": 0.25, "rev_accel": 0.25}
+
 
 def _make_synthetic_ohlcv(
     n_days: int = 200,
@@ -195,39 +197,33 @@ class TestPerturbWeights:
 # ── integration tests ────────────────────────────────────────────────────────
 
 
-class TestOptimizeWeightsGridSearch:
-    """Tests for the grid search optimization strategy."""
+class TestOptimizeWeights:
+    """Tests for the weight optimization strategies (grid_search + TPE)."""
 
-    def test_returns_optimize_report(self):
+    @pytest.mark.parametrize(
+        ("strategy", "n_trials"),
+        [("grid_search", None), ("tpe", 5)],
+    )
+    def test_returns_optimize_report(self, strategy, n_trials):
         df = _make_synthetic_ohlcv(n_days=800, n_tickers=5)
-        weights = {"mom_5d": 0.25, "rsi_oversold": 0.25, "vol_anomaly": 0.25, "rev_accel": 0.25}
-        report = optimize_weights(df, weights, strategy="grid_search", max_windows=3)
+        kwargs = {"strategy": strategy, "max_windows": 3}
+        if n_trials is not None:
+            kwargs["n_trials"] = n_trials
+        report = optimize_weights(df, _DEFAULT_WEIGHTS, **kwargs)
         assert isinstance(report, OptimizeReport)
-        assert report.initial_weights == weights
-        assert len(report.final_weights) == len(weights)
+        assert report.initial_weights == _DEFAULT_WEIGHTS
+        assert len(report.final_weights) == len(_DEFAULT_WEIGHTS)
 
-    def test_final_weights_sum_to_one(self):
+    @pytest.mark.parametrize(
+        ("strategy", "n_trials"),
+        [("grid_search", None), ("tpe", 5)],
+    )
+    def test_final_weights_sum_to_one(self, strategy, n_trials):
         df = _make_synthetic_ohlcv(n_days=800, n_tickers=5)
-        weights = {"mom_5d": 0.25, "rsi_oversold": 0.25, "vol_anomaly": 0.25, "rev_accel": 0.25}
-        report = optimize_weights(df, weights, strategy="grid_search", max_windows=3)
-        assert abs(sum(report.final_weights.values()) - 1.0) < 1e-9
-
-
-class TestOptimizeWeightsTPE:
-    """Tests for the TPE Bayesian optimization strategy."""
-
-    def test_returns_optimize_report(self):
-        df = _make_synthetic_ohlcv(n_days=800, n_tickers=5)
-        weights = {"mom_5d": 0.25, "rsi_oversold": 0.25, "vol_anomaly": 0.25, "rev_accel": 0.25}
-        report = optimize_weights(df, weights, strategy="tpe", max_windows=3, n_trials=5)
-        assert isinstance(report, OptimizeReport)
-        assert report.initial_weights == weights
-        assert len(report.final_weights) == len(weights)
-
-    def test_final_weights_sum_to_one(self):
-        df = _make_synthetic_ohlcv(n_days=800, n_tickers=5)
-        weights = {"mom_5d": 0.25, "rsi_oversold": 0.25, "vol_anomaly": 0.25, "rev_accel": 0.25}
-        report = optimize_weights(df, weights, strategy="tpe", max_windows=3, n_trials=5)
+        kwargs = {"strategy": strategy, "max_windows": 3}
+        if n_trials is not None:
+            kwargs["n_trials"] = n_trials
+        report = optimize_weights(df, _DEFAULT_WEIGHTS, **kwargs)
         assert abs(sum(report.final_weights.values()) - 1.0) < 1e-9
 
     def test_tpe_default_strategy(self):
