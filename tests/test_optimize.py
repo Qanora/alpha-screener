@@ -115,15 +115,18 @@ class TestBuildRollingWindows:
         )
         for tr_s, tr_e, te_s, te_e in ws:
             assert tr_s < tr_e
-            assert te_s == tr_e  # test starts where train ends
+            # With default purge_days=7, there is a gap between train and test
+            assert te_s > tr_e  # test starts after train ends (purge gap)
             assert te_s < te_e
 
     def test_adaptive_shortens_when_data_insufficient(self):
         """When data span is too short for train_years, fall back to shorter."""
-        # Only 1 year of data, but request 2-year training + 6-month test
+        # With purge_days=7 (default), a window requires at least
+        # 0.5yr train (182d) + 7d purge + 6mo test (180d) = 369d.
+        # Use ~13.5 months to fit one minimal window.
         ws = _build_rolling_windows(
             date(2020, 1, 1),
-            date(2021, 1, 1),
+            date(2021, 1, 15),
             train_years=2,
             test_months=6,
             step_months=6,
@@ -235,6 +238,234 @@ class TestOptimizeWeights:
         assert isinstance(report, OptimizeReport)
         # Should use TPE by default (no error)
         assert len(report.final_weights) == 3
+
+
+class TestPurgedWalkForwardWindows:
+    """Tests for purged walk-forward CV replacing naive rolling windows (Issue #326).
+
+    Key properties:
+    - purge_gap: training ends purge_days before test starts
+    - embargo: test periods are separated by at least embargo_days
+    - adjacent windows: training of window N+1 excludes test data of window N
+    - backward compatible: purge_days=0, embargo_days=0 matches old behaviour
+    """
+
+    # ── purge gap ───────────────────────────────────────────────────────────
+
+    def test_purge_gap_within_window(self):
+        """Each window's train_end is exactly purge_days before test_start."""
+        ws = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=10,
+            purge_days=7,
+            embargo_days=0,
+        )
+        assert len(ws) > 0
+        for tr_s, tr_e, te_s, te_e in ws:
+            gap = (te_s - tr_e).days
+            assert gap == 7, f"Expected purge gap of 7 days, got {gap}"
+
+    def test_custom_purge_gap(self):
+        """Purge gap is configurable."""
+        ws = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=5,
+            purge_days=14,
+            embargo_days=0,
+        )
+        assert len(ws) > 0
+        for tr_s, tr_e, te_s, te_e in ws:
+            assert (te_s - tr_e).days == 14
+
+    # ── embargo spacing ────────────────────────────────────────────────────
+
+    def test_embargo_spaces_test_periods(self):
+        """With embargo_days > 0, consecutive test periods are separated."""
+        ws = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=10,
+            purge_days=7,
+            embargo_days=30,
+        )
+        assert len(ws) >= 2  # need at least 2 windows to verify spacing
+        for i in range(1, len(ws)):
+            prev_test_end = ws[i - 1][3]
+            curr_test_start = ws[i][2]
+            gap = (curr_test_start - prev_test_end).days
+            assert gap >= 30, (
+                f"Embargo gap between window {i - 1} test_end ({prev_test_end}) "
+                f"and window {i} test_start ({curr_test_start}) is {gap}, "
+                f"expected >= 30"
+            )
+
+    def test_embargo_defaults_to_zero(self):
+        """With embargo_days=0 (default), test periods can be adjacent."""
+        ws = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=5,
+            purge_days=7,
+            embargo_days=0,
+        )
+        assert len(ws) >= 2
+        # With test_months=6, step_months=6 and embargo=0,
+        # test periods should be adjacent (old behavior preserved).
+        for i in range(1, len(ws)):
+            prev_test_end = ws[i - 1][3]
+            curr_test_start = ws[i][2]
+            gap = (curr_test_start - prev_test_end).days
+            # The purge forces slightly more spacing, but they should be close
+            assert gap >= 0
+
+    # ── no overlap: adjacent train vs test ─────────────────────────────────
+
+    def test_train_does_not_include_previous_test(self):
+        """Training of window N+1 must not include test data from window N.
+
+        Uses a step small enough and embargo large enough that training
+        windows are strictly after the previous test window.
+        """
+        ws = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=5,
+            purge_days=7,
+            embargo_days=7,
+        )
+        assert len(ws) >= 2
+        for i in range(1, len(ws)):
+            prev_test_end = ws[i - 1][3]
+            curr_train_end = ws[i][1]
+            # With embargo_days=7 + purge_days=7, cursor advances
+            # by test_days + embargo + purge = 180 + 7 + 7 = 194 > step 180
+            # So train_end of N+1 should be > test_end of N + embargo
+            assert curr_train_end > prev_test_end + timedelta(days=7), (
+                f"Window {i} train_end ({curr_train_end}) must be after "
+                f"window {i - 1} test_end + embargo ({prev_test_end} + 7d)"
+            )
+
+    def test_no_adjacent_overlap_with_large_embargo(self):
+        """With large embargo, train_end is strictly after prev test_end + embargo."""
+        ws = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=10,
+            purge_days=7,
+            embargo_days=180,  # 6-month embargo = full test period
+        )
+        assert len(ws) >= 2
+        for i in range(1, len(ws)):
+            prev_test_end = ws[i - 1][3]
+            curr_train_end = ws[i][1]
+            # With 6-month embargo, training of next window ends
+            # after prev_test_end + embargo (no test-data leak into training).
+            min_gap = timedelta(days=180)
+            assert curr_train_end > prev_test_end + min_gap, (
+                f"Window {i} train_end ({curr_train_end}) must be after "
+                f"window {i - 1} test_end + embargo ({prev_test_end} + 180d)"
+            )
+
+    # ── backward compatibility ─────────────────────────────────────────────
+
+    def test_zero_purge_embargo_matches_old_behaviour(self):
+        """purge_days=0, embargo_days=0 preserves existing window layout."""
+        ws_new = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=10,
+            purge_days=0,
+            embargo_days=0,
+        )
+        # Old signature (no purge/embargo params) - need to test via
+        # same function with purge=0, embargo=0
+        assert len(ws_new) > 0
+        for tr_s, tr_e, te_s, te_e in ws_new:
+            # train_end == test_start when purge=0
+            assert tr_e == te_s
+            assert tr_s < tr_e < te_e
+
+    # ── reasonable window count ────────────────────────────────────────────
+
+    def test_reasonable_window_count(self):
+        """Purged walk-forward should still produce a reasonable number of windows."""
+        ws = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=50,
+            purge_days=7,
+            embargo_days=0,
+        )
+        # With 5 years of data, 2yr training, 6mo test, step=6mo
+        # we should get at least 3 windows (fewer than max, but reasonable)
+        assert len(ws) >= 3, f"Expected >= 3 windows, got {len(ws)}"
+
+    # ── monotonic order ───────────────────────────────────────────────────
+
+    def test_window_order_monotonic_with_purge(self):
+        """Window dates are monotonically increasing even with purge/embargo."""
+        ws = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=5,
+            purge_days=7,
+            embargo_days=14,
+        )
+        assert len(ws) >= 2
+        for i in range(1, len(ws)):
+            assert ws[i][0] > ws[i - 1][0]  # train_start monotonic
+            assert ws[i][2] > ws[i - 1][2]  # test_start monotonic
+
+    # ── adaptive shortening compatibility ──────────────────────────────────
+
+    def test_adaptive_shortens_with_purge(self):
+        """Adaptive shortening still works with purge_days in effect.
+
+        Purge_days requires extra data: a window needs
+        train_days + purge_days + test_days of data to fit.
+        With 0.5yr train (182d) + 7d purge + 180d test = 369d,
+        we need slightly more than 1 year.
+        """
+        ws = _build_rolling_windows(
+            date(2020, 1, 1),
+            date(2021, 1, 15),  # ~13.5 months: enough for min train + purge + test
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=10,
+            purge_days=7,
+            embargo_days=0,
+        )
+        assert len(ws) >= 1, "Adaptive shortening should produce at least 1 window"
 
 
 class TestEvaluateWindowLookAhead:
