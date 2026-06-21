@@ -8,15 +8,12 @@ import polars as pl
 import pytest
 
 from alphascreener.optimize import (
+    OptimizeReport,
     _build_rolling_windows,
     _normalize_weights,
     _perturb_weights,
-    _score_one,
     optimize_weights,
-    OptimizeReport,
-    WindowResult,
 )
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -39,15 +36,17 @@ def _make_synthetic_ohlcv(
             base = 100.0 + t_idx * 10.0
             noise = rng.randn() * 2.0
             close = base + noise + i * 0.05  # slight upward drift
-            rows.append({
-                "dt": d,
-                "ticker": ticker,
-                "open": close - rng.random() * 0.5,
-                "high": close + rng.random() * 1.0,
-                "low": close - rng.random() * 1.0,
-                "close": close,
-                "volume": float(rng.randint(100000, 1000000)),
-            })
+            rows.append(
+                {
+                    "dt": d,
+                    "ticker": ticker,
+                    "open": close - rng.random() * 0.5,
+                    "high": close + rng.random() * 1.0,
+                    "low": close - rng.random() * 1.0,
+                    "close": close,
+                    "volume": float(rng.randint(100000, 1000000)),
+                }
+            )
     return pl.DataFrame(rows)
 
 
@@ -80,24 +79,36 @@ class TestNormalizeWeights:
 class TestBuildRollingWindows:
     def test_returns_correct_number(self):
         ws = _build_rolling_windows(
-            date(2020, 1, 1), date(2025, 1, 1),
-            train_years=2, test_months=6, step_months=6, max_windows=10,
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=10,
         )
         assert len(ws) > 0
         assert len(ws) <= 10
 
     def test_window_order_monotonic(self):
         ws = _build_rolling_windows(
-            date(2020, 1, 1), date(2025, 1, 1),
-            train_years=2, test_months=6, step_months=6, max_windows=5,
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=5,
         )
         for i in range(1, len(ws)):
             assert ws[i][0] > ws[i - 1][0]  # train_start is monotonic increasing
 
     def test_train_before_test(self):
         ws = _build_rolling_windows(
-            date(2020, 1, 1), date(2025, 1, 1),
-            train_years=2, test_months=6, step_months=6, max_windows=3,
+            date(2020, 1, 1),
+            date(2025, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=3,
         )
         for tr_s, tr_e, te_s, te_e in ws:
             assert tr_s < tr_e
@@ -108,19 +119,25 @@ class TestBuildRollingWindows:
         """When data span is too short for train_years, fall back to shorter."""
         # Only 1 year of data, but request 2-year training + 6-month test
         ws = _build_rolling_windows(
-            date(2020, 1, 1), date(2021, 1, 1),
-            train_years=2, test_months=6, step_months=6, max_windows=10,
+            date(2020, 1, 1),
+            date(2021, 1, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=10,
         )
         # Should still produce at least one window by shortening train_years
-        assert len(ws) > 0, (
-            "Expected at least 1 window when train_years is adaptively shortened"
-        )
+        assert len(ws) > 0, "Expected at least 1 window when train_years is adaptively shortened"
 
     def test_adaptive_returns_all_possible_windows(self):
         """Once a working train length is found, fill up to max_windows."""
         ws = _build_rolling_windows(
-            date(2020, 1, 1), date(2024, 1, 1),  # 4 years span
-            train_years=2, test_months=6, step_months=6, max_windows=50,
+            date(2020, 1, 1),
+            date(2024, 1, 1),  # 4 years span
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=50,
         )
         # With 4 years data, 2+0.5 years needed per window, should get several
         assert len(ws) > 1
@@ -129,8 +146,12 @@ class TestBuildRollingWindows:
         """With just barely enough data, adaptive should find one window."""
         # ~14 months of data: train=0.5yr + test=6mo ≈ 12mo, barely fits
         ws = _build_rolling_windows(
-            date(2020, 1, 1), date(2021, 3, 1),
-            train_years=3, test_months=6, step_months=6, max_windows=10,
+            date(2020, 1, 1),
+            date(2021, 3, 1),
+            train_years=3,
+            test_months=6,
+            step_months=6,
+            max_windows=10,
         )
         assert len(ws) >= 1
 
@@ -138,8 +159,12 @@ class TestBuildRollingWindows:
         """When even minimum training period can't produce a window, return []."""
         # Only 6 months of data — even 0.5yr train + 6mo test won't fit
         ws = _build_rolling_windows(
-            date(2020, 1, 1), date(2020, 7, 1),
-            train_years=2, test_months=6, step_months=6, max_windows=10,
+            date(2020, 1, 1),
+            date(2020, 7, 1),
+            train_years=2,
+            test_months=6,
+            step_months=6,
+            max_windows=10,
         )
         assert len(ws) == 0
 
