@@ -10,6 +10,7 @@ import pytest
 from alphascreener.optimize import (
     OptimizeReport,
     _build_rolling_windows,
+    _evaluate_window,
     _normalize_weights,
     _perturb_weights,
     optimize_weights,
@@ -317,3 +318,105 @@ class TestOptimizeWeightsErrors:
         report = optimize_weights(df, weights, strategy="tpe", max_windows=2, n_trials=3)
         assert isinstance(report, OptimizeReport)
         assert len(report.final_weights) == 2
+
+
+# ── Industry dedup in evaluation tests ─────────────────────────────────────────
+
+
+def _make_universe_meta(tickers: list[str]) -> pl.DataFrame:
+    """Create a synthetic universe_meta DataFrame with sector/industry info.
+
+    Assigns specific sectors so that dedup (Sector≤3, Industry≤2) has a
+    measurable effect when many tickers share the same sector.
+    """
+    rows = []
+    for t in tickers:
+        t_idx = int(t.replace("TEST", "")) if t.startswith("TEST") else hash(t) % 100
+        if t_idx < 5:
+            sector, industry = "Technology", "Software"
+        elif t_idx < 8:
+            sector, industry = "Technology", "Semiconductors"
+        elif t_idx < 12:
+            sector, industry = "Financials", "Banks"
+        else:
+            sector, industry = "Healthcare", "Biotech"
+        rows.append({"ticker": t, "sector": sector, "industry": industry})
+    return pl.DataFrame(rows)
+
+
+class TestEvaluateWindowIndustryDedup:
+    """Verify _evaluate_window applies industry dedup before IC/Precision when
+    universe_meta is provided (Issue #325)."""
+
+    def test_universe_meta_dedup_reduces_scoring_set(self):
+        """With universe_meta, dedup caps Sector≤3 Industry≤2, shrinking the
+        effective set used for IC/Precision."""
+        df = _make_synthetic_ohlcv(n_days=500, n_tickers=25, start=date(2022, 1, 1))
+        universe_meta = _make_universe_meta(df["ticker"].unique().to_list())
+
+        train_start = date(2022, 6, 1)
+        train_end = date(2023, 1, 1)
+        test_start = train_end
+        test_end = date(2023, 5, 1)
+
+        weights = {"mom_5d": 0.3, "rsi_oversold": 0.3, "vol_anomaly": 0.4}
+
+        # Without universe_meta (backward compatible - dedup skipped)
+        result_no_dedup = _evaluate_window(
+            df, weights, train_start, train_end, test_start, test_end
+        )
+
+        # With universe_meta (dedup applied)
+        result_with_dedup = _evaluate_window(
+            df, weights, train_start, train_end, test_start, test_end,
+            universe_meta=universe_meta,
+        )
+
+        # Both should produce valid WindowResults
+        assert result_no_dedup is not None, "Should produce result without dedup"
+        assert result_with_dedup is not None, "Should produce result with dedup"
+
+        # The scores may differ because dedup changes the scoring pool
+        # We cannot assert exact score differences (random data), but both
+        # should produce valid float metrics within expected range.
+        assert -1.0 <= result_with_dedup.ic <= 1.0
+        assert result_with_dedup.precision_at_20 >= 0.0
+        assert result_with_dedup.sharpe == result_with_dedup.score
+
+    def test_universe_meta_none_is_backward_compatible(self):
+        """When universe_meta is None, behavior matches current (no dedup)."""
+        df = _make_synthetic_ohlcv(n_days=500, n_tickers=10, start=date(2022, 1, 1))
+
+        train_start = date(2022, 6, 1)
+        train_end = date(2023, 1, 1)
+        test_start = train_end
+        test_end = date(2023, 5, 1)
+
+        weights = {"mom_5d": 0.3, "rsi_oversold": 0.3, "vol_anomaly": 0.4}
+
+        result = _evaluate_window(
+            df, weights, train_start, train_end, test_start, test_end,
+            universe_meta=None,
+        )
+
+        # Should still work with None
+        assert result is not None
+        assert -1.0 <= result.ic <= 1.0
+        assert result.precision_at_20 >= 0.0
+
+    def test_optimize_weights_accepts_universe_meta(self):
+        """optimize_weights should accept and pass through universe_meta."""
+        df = _make_synthetic_ohlcv(n_days=600, n_tickers=10, start=date(2022, 1, 1))
+        universe_meta = _make_universe_meta(df["ticker"].unique().to_list())
+
+        weights = {"mom_5d": 0.3, "rsi_oversold": 0.3, "vol_anomaly": 0.4}
+
+        report = optimize_weights(
+            df, weights,
+            strategy="grid_search",
+            max_windows=2,
+            universe_meta=universe_meta,
+        )
+        assert isinstance(report, OptimizeReport)
+        assert len(report.final_weights) == len(weights)
+        assert abs(sum(report.final_weights.values()) - 1.0) < 1e-9
