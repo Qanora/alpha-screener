@@ -98,16 +98,19 @@ DEFAULT_INDUSTRY_CAP: int = 2
 # ---------------------------------------------------------------------------
 
 
-def compute_breakout_score(df: pl.DataFrame) -> pl.DataFrame:
+def compute_breakout_score(
+    df: pl.DataFrame,
+    *,
+    weights: dict[str, float] | None = None,
+) -> pl.DataFrame:
     """Compute Breakout_Score = Σ(w_i × z_capped_i) for each ticker.
 
     Continuous factors contribute w_i × z_capped_i (clipped z-score).
     Binary factors contribute full weight when flag == 1, otherwise 0.
-    PEAD_FLAG weight is 0 in coarse screening per PRD 3.1.1.
 
     Args:
-        df: DataFrame with factor columns and ``z_capped_{factor}`` columns
-            (output of :func:`alphascreener.factors.engine.normalize_factors`).
+        df: DataFrame with factor columns.
+        weights: Optional per-factor weight dict.  When *None*, :data:`MVP_WEIGHTS` is used.
 
     Returns:
         DataFrame with ``breakout_score`` (f64) column appended.
@@ -115,15 +118,15 @@ def compute_breakout_score(df: pl.DataFrame) -> pl.DataFrame:
     if df.height == 0:
         return df.with_columns(pl.lit(0.0, dtype=pl.Float64).alias("breakout_score"))
 
+    w_map = weights if weights is not None else MVP_WEIGHTS
+
     score = pl.lit(0.0, dtype=pl.Float64)
 
     for fname in _Z_CAPPED_FACTORS:
         raw_col = fname
         if raw_col in df.columns:
-            w = MVP_WEIGHTS[fname]
+            w = w_map.get(fname, 0.0)
             direction = _SIGNAL_DIRECTION.get(fname, 1)
-            # Cross-sectional z-score normalization (mean 0, std 1)
-            # Clipped to [-3, +3] for outlier robustness
             mu = pl.col(raw_col).mean()
             sigma = pl.col(raw_col).std(ddof=1)
             z_score = pl.when(sigma > 1e-12).then((pl.col(raw_col) - mu) / sigma).otherwise(0.0)
@@ -133,7 +136,7 @@ def compute_breakout_score(df: pl.DataFrame) -> pl.DataFrame:
 
     for fname in _BINARY_FACTORS:
         if fname in df.columns:
-            w = MVP_WEIGHTS[fname]
+            w = w_map.get(fname, 0.0)
             score = score + pl.when(pl.col(fname) == 1).then(w).otherwise(0.0)
 
     return df.with_columns(score.alias("breakout_score"))
@@ -220,6 +223,7 @@ def phase2_pipeline(
     n_final: int = DEFAULT_FINAL_N,
     sector_cap: int = DEFAULT_SECTOR_CAP,
     industry_cap: int = DEFAULT_INDUSTRY_CAP,
+    weights: dict[str, float] | None = None,
 ) -> pl.DataFrame:
     """Run the full Phase 2 pipeline: weighted scoring + industry dedup.
 
@@ -248,10 +252,10 @@ def phase2_pipeline(
         industry, and all input columns.
     """
     if df.height == 0:
-        return compute_breakout_score(df)
+        return compute_breakout_score(df, weights=weights)
 
     # 1. Compute breakout score
-    df = compute_breakout_score(df)
+    df = compute_breakout_score(df, weights=weights)
 
     # 2. Sort by breakout_score descending
     df = df.sort("breakout_score", descending=True)
