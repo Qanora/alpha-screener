@@ -1,8 +1,8 @@
 """Factor weight optimization via rolling walk-forward backtest.
 
-Uses portfolio-level Sharpe ratio from multi-ticker backtrader runs as the
-optimization target, eliminating the proxy-objective bias of the previous
-composite score (IC + Lift + QuantileSpread + single-stock Sharpe).
+Optimises factor weights to maximise excess return over the SPY
+benchmark, directly targeting the "beat SPY" objective rather than
+proxy metrics like IC or standalone Sharpe ratio.
 """
 
 from __future__ import annotations
@@ -52,9 +52,7 @@ def _detect_regime(
     When *proxy_ticker* is not present in *ohlcv_df*, the cross-sectional
     median close across all tickers is used as a market proxy.
     """
-    data = ohlcv_df.filter(
-        (pl.col("dt") >= lookback_start) & (pl.col("dt") <= lookback_end)
-    )
+    data = ohlcv_df.filter((pl.col("dt") >= lookback_start) & (pl.col("dt") <= lookback_end))
     if data.height < 5:
         return "sideways"
 
@@ -63,11 +61,7 @@ def _detect_regime(
         proxy_data = proxy_data.sort("dt")
     else:
         # Fallback: cross-sectional median close per day
-        proxy_data = (
-            data.group_by("dt")
-            .agg(pl.col("close").median().alias("close"))
-            .sort("dt")
-        )
+        proxy_data = data.group_by("dt").agg(pl.col("close").median().alias("close")).sort("dt")
 
     closes = proxy_data["close"].to_list()
     if len(closes) < 2:
@@ -90,6 +84,9 @@ class WindowResult:
 
     ic : Spearman rank IC between breakout_score and T+7 returns.
     quantile_spread : Mean T+7 return of top vs bottom quintile.
+    spy_return : SPY buy-and-hold return over the test period.
+    excess_return : Strategy total return minus SPY benchmark return.
+    score : Optimization target (returns *excess_return*).
     """
 
     train_start: date
@@ -103,6 +100,8 @@ class WindowResult:
     quantile_spread: float
     sharpe: float
     max_drawdown: float
+    spy_return: float
+    excess_return: float
     weights: dict[str, float]
 
     @classmethod
@@ -127,20 +126,22 @@ class WindowResult:
             quantile_spread=0.0,
             sharpe=0.0,
             max_drawdown=0.0,
+            spy_return=0.0,
+            excess_return=0.0,
             weights=dict(weights),
         )
 
     @property
     def score(self) -> float:
-        """Portfolio-level Sharpe ratio as the optimization target.
+        """Excess return vs SPY benchmark as the optimization target.
 
-        Replaces the previous composite proxy (IC+Lift+QuantileSpread+
-        single-stock Sharpe) with the true portfolio Sharpe from a
-        multi-ticker backtrader run.  This eliminates proxy-objective bias:
-        the optimiser now maximises the same risk-adjusted return that the
-        strategy will actually deliver.
+        Replaces the previous portfolio Sharpe with excess return over
+        the SPY buy-and-hold benchmark.  This directly aligns the
+        optimiser with the goal of "beat SPY" rather than maximising
+        a generic risk-adjusted metric.  Excess return is the strategy's
+        total return minus the SPY benchmark return over the test window.
         """
-        return self.sharpe
+        return self.excess_return
 
 
 @dataclass
@@ -293,7 +294,11 @@ def _evaluate_window(
         regime = _detect_regime(ohlcv_df, regime_start, regime_end)
         if regime != "bull":
             return WindowResult.zero(
-                train_start, train_end, test_start, test_end, weights,
+                train_start,
+                train_end,
+                test_start,
+                test_end,
+                weights,
             )
 
     try:
@@ -333,14 +338,8 @@ def _evaluate_window(
     if universe_meta is not None and universe_meta.height > 0:
         try:
             # Pre-selected columns avoid per-window .select() overhead
-            joined = scored_all.join(
-                universe_meta, on="ticker", how="left"
-            )
-            deduped = (
-                joined
-                .sort("breakout_score", descending=True)
-                .pipe(apply_industry_dedup)
-            )
+            joined = scored_all.join(universe_meta, on="ticker", how="left")
+            deduped = joined.sort("breakout_score", descending=True).pipe(apply_industry_dedup)
         except pl.PolarsError:
             _logger.warning(
                 "Industry dedup failed for window %s→%s; falling back to undeduped set",
@@ -420,11 +419,13 @@ def _evaluate_window(
     if math.isnan(lift):
         lift = 0.0
 
-    # ── Portfolio-level backtest for Sharpe/MaxDD ──
+    # ── Portfolio-level backtest for Sharpe/MaxDD + SPY benchmark ──
     from alphascreener.backtrader import run_backtest
 
     sharpe = 0.0
     max_dd = 0.0
+    spy_return = 0.0
+    excess_return = 0.0
     try:
         # Select top N tickers by breakout_score for portfolio construction
         n_positions = min(20, n_effective)
@@ -444,6 +445,23 @@ def _evaluate_window(
             if t_data.height >= 7:  # need at least enough bars for T+7
                 ticker_dfs[t] = t_data
 
+        # ── Extract SPY benchmark data for the test period ──
+        spy_data: pl.DataFrame | None = None
+        has_spy = False
+        spy_test = ohlcv_df.filter(
+            (pl.col("ticker") == "SPY") & (pl.col("dt") >= test_start) & (pl.col("dt") <= test_end)
+        ).sort("dt")
+        # Simple buy-and-hold return: only needs first and last close
+        if spy_test.height >= 2:
+            spy_first = spy_test["close"].head(1).item()
+            spy_last = spy_test["close"].tail(1).item()
+            if spy_first > 0:
+                spy_return = spy_last / spy_first - 1.0
+                has_spy = True
+        # Backtest needs enough bars for realistic trading simulation
+        if spy_test.height >= 7:
+            spy_data = spy_test
+
         if len(ticker_dfs) >= 1:
             # Single signal per ticker at test_start so the strategy enters
             # at T+1 and holds for the full test window.
@@ -451,12 +469,20 @@ def _evaluate_window(
                 {"ticker": t, "dt": test_start, "refined_score": 1.0} for t in ticker_dfs
             ]
             signals_df = pl.DataFrame(signal_rows)
-            bt = run_backtest(ticker_dfs, signals=signals_df)
+            bt = run_backtest(ticker_dfs, signals=signals_df, spy_data=spy_data)
             sharpe = bt["metrics"]["sharpe_ratio"]
             max_dd = abs(bt["metrics"]["max_drawdown"])
+            # Use excess_return from backtest when available (includes
+            # friction costs); fall back to simple subtraction otherwise.
+            if "excess_return" in bt["metrics"]:
+                excess_return = bt["metrics"]["excess_return"]
+            elif has_spy:
+                excess_return = bt["metrics"]["total_return"] - spy_return
+            else:
+                excess_return = bt["metrics"]["total_return"]
     except Exception:
         _logger.warning(
-            "Portfolio backtest failed for window %s→%s; Sharpe set to 0",
+            "Portfolio backtest failed for window %s→%s; metrics set to 0",
             test_start,
             test_end,
         )
@@ -473,6 +499,8 @@ def _evaluate_window(
         quantile_spread=quantile_spread,
         sharpe=sharpe,
         max_drawdown=max_dd,
+        spy_return=spy_return,
+        excess_return=excess_return,
         weights=dict(weights),
     )
 
@@ -517,7 +545,12 @@ def _evaluate_all_windows(
     results: list[WindowResult] = []
     for tr_s, tr_e, te_s, te_e in windows:
         r = _evaluate_window(
-            ohlcv_df, weights, tr_s, tr_e, te_s, te_e,
+            ohlcv_df,
+            weights,
+            tr_s,
+            tr_e,
+            te_s,
+            te_e,
             universe_meta=universe_meta,
             regime_filter=regime_filter,
         )
@@ -536,8 +569,11 @@ def _score_one(
 ) -> float:
     """Compute average composite score across all windows for given weights."""
     results = _evaluate_all_windows(
-        ohlcv_df, weights, windows,
-        universe_meta=universe_meta, regime_filter=regime_filter,
+        ohlcv_df,
+        weights,
+        windows,
+        universe_meta=universe_meta,
+        regime_filter=regime_filter,
     )
     vals = [r.score for r in results]
     return sum(vals) / len(vals) if vals else 0.0
@@ -557,14 +593,20 @@ def _optimize_grid_search(
 
     for factor in list(initial_weights.keys()):
         best_w = initial_weights[factor]
-        best_score = _score_one(ohlcv_df, best_weights, windows,
-                                universe_meta=universe_meta, regime_filter=regime_filter)
+        best_score = _score_one(
+            ohlcv_df,
+            best_weights,
+            windows,
+            universe_meta=universe_meta,
+            regime_filter=regime_filter,
+        )
         for m in multipliers:
             test_w = dict(best_weights)
             test_w[factor] = initial_weights[factor] * m
             test_w = _normalize_weights(test_w)
-            s = _score_one(ohlcv_df, test_w, windows,
-                           universe_meta=universe_meta, regime_filter=regime_filter)
+            s = _score_one(
+                ohlcv_df, test_w, windows, universe_meta=universe_meta, regime_filter=regime_filter
+            )
             if s > best_score:
                 best_score = s
                 best_w = test_w[factor]
@@ -597,8 +639,9 @@ def _optimize_tpe(
     def objective(trial: optuna.Trial) -> float:
         raw = {name: trial.suggest_float(f"w_{name}", 0.01, 1.0) for name in factor_names}
         w = _normalize_weights(raw)
-        return _score_one(ohlcv_df, w, windows,
-                          universe_meta=universe_meta, regime_filter=regime_filter)
+        return _score_one(
+            ohlcv_df, w, windows, universe_meta=universe_meta, regime_filter=regime_filter
+        )
 
     sampler = optuna.samplers.TPESampler(seed=42)
     study = optuna.create_study(direction="maximize", sampler=sampler)
@@ -666,8 +709,14 @@ def optimize_weights(
     data_start = ohlcv_df["dt"].min()
     data_end = ohlcv_df["dt"].max()
     windows = _build_rolling_windows(
-        data_start, data_end, train_years, test_months, step_months, max_windows,
-        purge_days=purge_days, embargo_days=embargo_days,
+        data_start,
+        data_end,
+        train_years,
+        test_months,
+        step_months,
+        max_windows,
+        purge_days=purge_days,
+        embargo_days=embargo_days,
     )
 
     # Pre-select universe_meta columns once (avoid per-window .select() overhead)
@@ -683,19 +732,27 @@ def optimize_weights(
 
     weights = dict(initial_weights)
     report.windows = _evaluate_all_windows(
-        ohlcv_df, weights, windows,
-        universe_meta=universe_meta, regime_filter=regime_filter,
+        ohlcv_df,
+        weights,
+        windows,
+        universe_meta=universe_meta,
+        regime_filter=regime_filter,
     )
 
     if strategy == "tpe":
         best_weights = _optimize_tpe(
-            ohlcv_df, initial_weights, windows, n_trials,
+            ohlcv_df,
+            initial_weights,
+            windows,
+            n_trials,
             universe_meta=universe_meta,
             regime_filter=regime_filter,
         )
     else:
         best_weights = _optimize_grid_search(
-            ohlcv_df, initial_weights, windows,
+            ohlcv_df,
+            initial_weights,
+            windows,
             universe_meta=universe_meta,
             regime_filter=regime_filter,
         )

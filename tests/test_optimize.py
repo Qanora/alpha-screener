@@ -591,14 +591,22 @@ class TestEvaluateWindowIndustryDedup:
 
         # Without universe_meta (backward compatible - dedup skipped)
         result_no_dedup = _evaluate_window(
-            df, weights,
-            d["train_start"], d["train_end"], d["test_start"], d["test_end"],
+            df,
+            weights,
+            d["train_start"],
+            d["train_end"],
+            d["test_start"],
+            d["test_end"],
         )
 
         # With universe_meta (dedup applied)
         result_with_dedup = _evaluate_window(
-            df, weights,
-            d["train_start"], d["train_end"], d["test_start"], d["test_end"],
+            df,
+            weights,
+            d["train_start"],
+            d["train_end"],
+            d["test_start"],
+            d["test_end"],
             universe_meta=universe_meta,
         )
 
@@ -611,7 +619,7 @@ class TestEvaluateWindowIndustryDedup:
         # should produce valid float metrics within expected range.
         assert -1.0 <= result_with_dedup.ic <= 1.0
         assert result_with_dedup.precision_at_20 >= 0.0
-        assert result_with_dedup.sharpe == result_with_dedup.score
+        assert result_with_dedup.excess_return == result_with_dedup.score
 
     def test_universe_meta_none_is_backward_compatible(self):
         """When universe_meta is None, behavior matches current (no dedup)."""
@@ -620,8 +628,12 @@ class TestEvaluateWindowIndustryDedup:
         d = _REGIME_EVAL_DATES
 
         result = _evaluate_window(
-            df, _REGIME_TEST_WEIGHTS,
-            d["train_start"], d["train_end"], d["test_start"], d["test_end"],
+            df,
+            _REGIME_TEST_WEIGHTS,
+            d["train_start"],
+            d["train_end"],
+            d["test_start"],
+            d["test_end"],
             universe_meta=None,
         )
 
@@ -636,7 +648,8 @@ class TestEvaluateWindowIndustryDedup:
         universe_meta = _make_universe_meta(df["ticker"].unique().to_list())
 
         report = optimize_weights(
-            df, _REGIME_TEST_WEIGHTS,
+            df,
+            _REGIME_TEST_WEIGHTS,
             strategy="grid_search",
             max_windows=2,
             universe_meta=universe_meta,
@@ -681,15 +694,17 @@ def _make_regime_ohlcv(
             ret = daily_return + shock
             close = base_prices[t] * np.exp(ret)
             base_prices[t] = close
-            rows.append({
-                "dt": d,
-                "ticker": t,
-                "open": close * (1 - rng.random() * 0.005),
-                "high": close * (1 + rng.random() * 0.01),
-                "low": close * (1 - rng.random() * 0.01),
-                "close": close,
-                "volume": float(rng.randint(100000, 1000000)),
-            })
+            rows.append(
+                {
+                    "dt": d,
+                    "ticker": t,
+                    "open": close * (1 - rng.random() * 0.005),
+                    "high": close * (1 + rng.random() * 0.01),
+                    "low": close * (1 - rng.random() * 0.01),
+                    "close": close,
+                    "volume": float(rng.randint(100000, 1000000)),
+                }
+            )
     return pl.DataFrame(rows)
 
 
@@ -706,8 +721,10 @@ class TestDetectRegime:
     def test_bull_regime_strong_uptrend(self):
         """Strong positive drift (>60% up-days) is classified as bull."""
         df = _make_regime_ohlcv(
-            n_days=80, n_tickers=3,
-            daily_return=0.008, noise_std=0.005,
+            n_days=80,
+            n_tickers=3,
+            daily_return=0.008,
+            noise_std=0.005,
             include_spy=True,
         )
         start_dt = df["dt"].min()
@@ -718,8 +735,10 @@ class TestDetectRegime:
     def test_bear_regime_strong_downtrend(self):
         """Strong negative drift (<40% up-days) is classified as bear."""
         df = _make_regime_ohlcv(
-            n_days=80, n_tickers=3,
-            daily_return=-0.008, noise_std=0.005,
+            n_days=80,
+            n_tickers=3,
+            daily_return=-0.008,
+            noise_std=0.005,
             include_spy=True,
         )
         start_dt = df["dt"].min()
@@ -730,8 +749,10 @@ class TestDetectRegime:
     def test_sideways_regime_flat(self):
         """Near-zero drift (40-60% up-days) is classified as sideways."""
         df = _make_regime_ohlcv(
-            n_days=80, n_tickers=3,
-            daily_return=-0.004, noise_std=0.018,
+            n_days=80,
+            n_tickers=3,
+            daily_return=-0.004,
+            noise_std=0.018,
             include_spy=True,
         )
         start_dt = df["dt"].min()
@@ -742,8 +763,10 @@ class TestDetectRegime:
     def test_fallback_when_proxy_missing(self):
         """When proxy_ticker is not in data, falls back to aggregate of all tickers."""
         df = _make_regime_ohlcv(
-            n_days=80, n_tickers=5,
-            daily_return=0.008, noise_std=0.005,
+            n_days=80,
+            n_tickers=5,
+            daily_return=0.008,
+            noise_std=0.005,
             include_spy=False,  # No SPY in data
         )
         start_dt = df["dt"].min()
@@ -772,6 +795,7 @@ def _make_ohlcv_with_spy(
     appends SPY rows driven by a log-normal random walk.
     """
     import numpy as np
+
     rng = np.random.RandomState(42)
 
     df = _make_synthetic_ohlcv(n_days=n_days, n_tickers=n_tickers, start=start)
@@ -785,12 +809,17 @@ def _make_ohlcv_with_spy(
         d = data_min + timedelta(days=day)
         ret = spy_drift + rng.randn() * spy_noise
         price = price * np.exp(ret)
-        spy_rows.append({
-            "dt": d, "ticker": "SPY",
-            "open": price * 0.999, "high": price * 1.005,
-            "low": price * 0.995, "close": price,
-            "volume": float(rng.randint(1000000, 5000000)),
-        })
+        spy_rows.append(
+            {
+                "dt": d,
+                "ticker": "SPY",
+                "open": price * 0.999,
+                "high": price * 1.005,
+                "low": price * 0.995,
+                "close": price,
+                "volume": float(rng.randint(1000000, 5000000)),
+            }
+        )
     return pl.concat([df, pl.DataFrame(spy_rows)])
 
 
@@ -824,9 +853,12 @@ class TestEvaluateWindowRegimeFilter:
         """In bull regime with regime_filter=True, strategy runs normally."""
         df = _make_ohlcv_with_spy(spy_drift=0.008, spy_noise=0.003)
         result = _evaluate_window(
-            df, self._WEIGHTS,
-            self._D["train_start"], self._D["train_end"],
-            self._D["test_start"], self._D["test_end"],
+            df,
+            self._WEIGHTS,
+            self._D["train_start"],
+            self._D["train_end"],
+            self._D["test_start"],
+            self._D["test_end"],
             regime_filter=True,
         )
         assert result is not None, "Should produce a result in bull regime"
@@ -838,9 +870,12 @@ class TestEvaluateWindowRegimeFilter:
         """In bear regime with regime_filter=True, strategy returns zero result."""
         df = _make_ohlcv_with_spy(spy_drift=-0.008, spy_noise=0.003)
         result = _evaluate_window(
-            df, self._WEIGHTS,
-            self._D["train_start"], self._D["train_end"],
-            self._D["test_start"], self._D["test_end"],
+            df,
+            self._WEIGHTS,
+            self._D["train_start"],
+            self._D["train_end"],
+            self._D["test_start"],
+            self._D["test_end"],
             regime_filter=True,
         )
         assert result is not None, "Should return a WindowResult even when paused"
@@ -852,9 +887,12 @@ class TestEvaluateWindowRegimeFilter:
         """In sideways regime with regime_filter=True, strategy returns zero result."""
         df = _make_ohlcv_with_spy(spy_drift=-0.003, spy_noise=0.012)
         result = _evaluate_window(
-            df, self._WEIGHTS,
-            self._D["train_start"], self._D["train_end"],
-            self._D["test_start"], self._D["test_end"],
+            df,
+            self._WEIGHTS,
+            self._D["train_start"],
+            self._D["train_end"],
+            self._D["test_start"],
+            self._D["test_end"],
             regime_filter=True,
         )
         assert result is not None
@@ -865,9 +903,12 @@ class TestEvaluateWindowRegimeFilter:
         """With regime_filter=False (default), all regimes evaluate normally."""
         df = _make_ohlcv_with_spy(spy_drift=-0.008, spy_noise=0.003)
         result = _evaluate_window(
-            df, self._WEIGHTS,
-            self._D["train_start"], self._D["train_end"],
-            self._D["test_start"], self._D["test_end"],
+            df,
+            self._WEIGHTS,
+            self._D["train_start"],
+            self._D["train_end"],
+            self._D["test_start"],
+            self._D["test_end"],
             regime_filter=False,
         )
         assert result is not None, "Without regime filter, always produces result"
@@ -885,13 +926,16 @@ class TestOptimizeWeightsRegimeFilter:
     def test_optimize_weights_accepts_regime_filter(self):
         """optimize_weights should accept regime_filter parameter."""
         df = _make_regime_ohlcv(
-            n_days=800, n_tickers=25,
-            daily_return=0.008, noise_std=0.005,
+            n_days=800,
+            n_tickers=25,
+            daily_return=0.008,
+            noise_std=0.005,
             include_spy=True,
             start=date(2022, 1, 1),
         )
         report = optimize_weights(
-            df, self._WEIGHTS,
+            df,
+            self._WEIGHTS,
             strategy="grid_search",
             max_windows=2,
             regime_filter=True,
@@ -902,14 +946,195 @@ class TestOptimizeWeightsRegimeFilter:
     def test_optimize_weights_regime_filter_default_false(self):
         """With regime_filter=False (default), backward compatible."""
         df = _make_regime_ohlcv(
-            n_days=800, n_tickers=25,
-            daily_return=-0.008, noise_std=0.005,
+            n_days=800,
+            n_tickers=25,
+            daily_return=-0.008,
+            noise_std=0.005,
             include_spy=True,
             start=date(2022, 1, 1),
         )
         report = optimize_weights(
-            df, self._WEIGHTS,
+            df,
+            self._WEIGHTS,
             strategy="grid_search",
             max_windows=2,
         )
         assert isinstance(report, OptimizeReport)
+
+
+# ── SPY benchmark scoring tests (Issue #328) ──────────────────────────────────
+
+
+class TestWindowResultSpyBenchmark:
+    """Verify WindowResult includes SPY benchmark fields and score uses excess_return.
+
+    Issue #328: optimization target should be "beat SPY" rather than "highest IC".
+    """
+
+    def test_window_result_has_spy_fields(self):
+        """WindowResult must have spy_return and excess_return fields."""
+        from alphascreener.optimize import WindowResult
+
+        wr = WindowResult(
+            train_start=date(2023, 1, 1),
+            train_end=date(2023, 6, 30),
+            test_start=date(2023, 7, 1),
+            test_end=date(2023, 9, 30),
+            precision_at_20=0.15,
+            lift_at_20=1.2,
+            base_rate=0.1,
+            ic=0.05,
+            quantile_spread=0.03,
+            sharpe=0.5,
+            max_drawdown=-0.1,
+            weights={"a": 0.5, "b": 0.5},
+            spy_return=0.04,
+            excess_return=0.06,
+        )
+        assert wr.spy_return == 0.04
+        assert wr.excess_return == 0.06
+
+    def test_window_result_score_is_excess_return(self):
+        """WindowResult.score must return excess_return (not sharpe)."""
+        from alphascreener.optimize import WindowResult
+
+        wr = WindowResult(
+            train_start=date(2023, 1, 1),
+            train_end=date(2023, 6, 30),
+            test_start=date(2023, 7, 1),
+            test_end=date(2023, 9, 30),
+            precision_at_20=0.15,
+            lift_at_20=1.2,
+            base_rate=0.1,
+            ic=0.05,
+            quantile_spread=0.03,
+            sharpe=0.5,
+            max_drawdown=-0.1,
+            weights={"a": 0.5, "b": 0.5},
+            spy_return=0.04,
+            excess_return=0.06,
+        )
+        assert wr.score == wr.excess_return
+        # Score should NOT be sharpe anymore
+        assert wr.score == 0.06
+
+    def test_window_result_zero_includes_spy_fields(self):
+        """WindowResult.zero() must set spy_return and excess_return to 0."""
+        from alphascreener.optimize import WindowResult
+
+        wr = WindowResult.zero(
+            train_start=date(2023, 1, 1),
+            train_end=date(2023, 6, 30),
+            test_start=date(2023, 7, 1),
+            test_end=date(2023, 9, 30),
+            weights={"a": 0.5, "b": 0.5},
+        )
+        assert wr.spy_return == 0.0
+        assert wr.excess_return == 0.0
+        assert wr.score == 0.0
+
+
+class TestEvaluateWindowSpyBenchmark:
+    """Verify _evaluate_window computes SPY benchmark return (Issue #328)."""
+
+    _D = _REGIME_EVAL_DATES
+    _WEIGHTS = _REGIME_TEST_WEIGHTS
+
+    def test_spy_return_computed_when_spy_in_data(self):
+        """When SPY ticker exists in ohlcv_df, spy_return should be non-zero."""
+        df = _make_ohlcv_with_spy(spy_drift=0.005, spy_noise=0.003)
+        result = _evaluate_window(
+            df,
+            self._WEIGHTS,
+            self._D["train_start"],
+            self._D["train_end"],
+            self._D["test_start"],
+            self._D["test_end"],
+        )
+        assert result is not None
+        # SPY is in the data, so spy_return should be computed
+        assert hasattr(result, "spy_return")
+        # In a trending market, spy_return should be non-zero
+        assert isinstance(result.spy_return, float)
+
+    def test_excess_return_computed_when_spy_in_data(self):
+        """When SPY is present, excess_return = strategy_return - spy_return."""
+        df = _make_ohlcv_with_spy(spy_drift=0.005, spy_noise=0.003)
+        result = _evaluate_window(
+            df,
+            self._WEIGHTS,
+            self._D["train_start"],
+            self._D["train_end"],
+            self._D["test_start"],
+            self._D["test_end"],
+        )
+        assert result is not None
+        assert hasattr(result, "excess_return")
+        assert isinstance(result.excess_return, float)
+
+    def test_score_is_excess_return_not_sharpe(self):
+        """score should equal excess_return, not sharpe."""
+        df = _make_ohlcv_with_spy(spy_drift=0.005, spy_noise=0.003)
+        result = _evaluate_window(
+            df,
+            self._WEIGHTS,
+            self._D["train_start"],
+            self._D["train_end"],
+            self._D["test_start"],
+            self._D["test_end"],
+        )
+        assert result is not None
+        assert result.score == result.excess_return
+
+    def test_missing_spy_handled_gracefully(self):
+        """When SPY is not in ohlcv_df, spy_return=0 and excess_return = strategy_return."""
+        df = _make_synthetic_ohlcv(n_days=500, n_tickers=25, start=date(2022, 1, 1))
+        result = _evaluate_window(
+            df,
+            self._WEIGHTS,
+            self._D["train_start"],
+            self._D["train_end"],
+            self._D["test_start"],
+            self._D["test_end"],
+        )
+        assert result is not None
+        assert hasattr(result, "spy_return")
+        assert hasattr(result, "excess_return")
+        # Without SPY, spy_return should be 0
+        assert result.spy_return == 0.0
+
+
+class TestOptimizeWeightsSpyBenchmark:
+    """Verify optimize_weights maximizes excess_return vs SPY (Issue #328)."""
+
+    _WEIGHTS = _REGIME_TEST_WEIGHTS
+
+    def test_optimize_produces_excess_return_based_score(self):
+        """Optimization should produce weights with excess_return-based scoring."""
+        df = _make_ohlcv_with_spy(spy_drift=0.005, spy_noise=0.003, n_days=800)
+        report = optimize_weights(
+            df,
+            self._WEIGHTS,
+            strategy="grid_search",
+            max_windows=3,
+        )
+        assert isinstance(report, OptimizeReport)
+        # Windows should have spy_return and excess_return
+        for w in report.windows:
+            assert hasattr(w, "spy_return")
+            assert hasattr(w, "excess_return")
+            assert w.score == w.excess_return
+
+    def test_tpe_optimize_with_spy_benchmark(self):
+        """TPE optimization should work with SPY benchmark in data."""
+        df = _make_ohlcv_with_spy(spy_drift=0.005, spy_noise=0.003, n_days=800)
+        report = optimize_weights(
+            df,
+            self._WEIGHTS,
+            strategy="tpe",
+            max_windows=3,
+            n_trials=5,
+        )
+        assert isinstance(report, OptimizeReport)
+        assert len(report.final_weights) == len(self._WEIGHTS)
+        assert abs(sum(report.final_weights.values()) - 1.0) < 1e-9
