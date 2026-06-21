@@ -236,6 +236,66 @@ class TestOptimizeWeights:
         assert len(report.final_weights) == 3
 
 
+class TestEvaluateWindowLookAhead:
+    """Verify _evaluate_window does not leak test-period data into factor computation.
+
+    The bug (#324): factor computation used train+test data (dt <= test_end),
+    allowing EMA / rolling windows to "see" the test period before snap to
+    test_start, producing upward-biased IC estimates.
+    """
+
+    def test_factor_computation_uses_train_only(self, monkeypatch):
+        """compute_factors must only receive data within [train_start, train_end]."""
+        from alphascreener.factors.engine import compute_factors as _original_cf
+        from alphascreener.optimize import _evaluate_window
+
+        df = _make_synthetic_ohlcv(n_days=300, n_tickers=10, start=date(2022, 1, 1))
+
+        train_start = date(2022, 3, 1)
+        train_end = date(2022, 6, 30)
+        test_start = train_end
+        test_end = date(2022, 10, 31)
+
+        captured_df: list[pl.DataFrame] = []
+        captured_kwargs: list[dict] = []
+
+        def _capture_compute_factors(data, **kwargs):
+            captured_df.append(data.clone())
+            captured_kwargs.append(kwargs)
+            return _original_cf(data, **kwargs)
+
+        monkeypatch.setattr(
+            "alphascreener.factors.engine.compute_factors",
+            _capture_compute_factors,
+        )
+
+        _evaluate_window(
+            df,
+            {"mom_5d": 0.5, "rsi_oversold": 0.5},
+            train_start,
+            train_end,
+            test_start,
+            test_end,
+        )
+
+        assert len(captured_df) == 1, "compute_factors should be called exactly once"
+        assert len(captured_kwargs) == 1, "compute_factors should be called exactly once"
+
+        data_passed = captured_df[0]
+        max_dt = data_passed["dt"].max()
+        min_dt = data_passed["dt"].min()
+
+        assert max_dt <= train_end, (
+            f"Look-ahead bias: factor data max_dt={max_dt} exceeds train_end={train_end}"
+        )
+        assert min_dt >= train_start, (
+            f"Factor data min_dt={min_dt} precedes train_start={train_start}"
+        )
+
+        dt_arg = captured_kwargs[0].get("dt")
+        assert dt_arg == train_end, f"dt kwarg should be train_end={train_end}, got {dt_arg}"
+
+
 class TestOptimizeWeightsErrors:
     """Edge case and error tests."""
 
