@@ -22,8 +22,6 @@ from alphascreener.display import panel, result_table, rule, warn_card
 
 def _n(t): return t
 
-def _n(t): return t
-
 
 
 def _suppress_log_noise() -> None:
@@ -320,7 +318,13 @@ def backtest(ticker: str, start: str | None, end: str | None) -> None:
 @click.command()
 @click.option("--rounds", default=50, show_default=True, help="Max optimization windows.")
 @click.option("--train", default=2, show_default=True, help="Training window (years).")
-def optimize(rounds: int, train: int) -> None:
+@click.option(
+    "--regime-filter/--no-regime-filter",
+    default=False,
+    show_default=True,
+    help="Only activate strategy in bull regime (>60%% up-days in 63-day lookback; Singha 2025)."
+)
+def optimize(rounds: int, train: int, regime_filter: bool) -> None:
     """Optimize factor weights via walk-forward backtesting.
 
     Iteratively perturbs weights and measures out-of-sample performance
@@ -332,6 +336,8 @@ def optimize(rounds: int, train: int) -> None:
         asc optimize
 
         asc optimize --rounds 100 --train 3
+
+        asc optimize --regime-filter
     """
     _suppress_log_noise()
     rule("Alpha Screener — Weight Optimization")
@@ -385,6 +391,7 @@ def optimize(rounds: int, train: int) -> None:
         step_months=6,
         max_windows=rounds,
         universe_meta=universe_meta,
+        regime_filter=regime_filter,
     )
 
     # ── Output ──

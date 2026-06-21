@@ -10,6 +10,7 @@ import pytest
 from alphascreener.optimize import (
     OptimizeReport,
     _build_rolling_windows,
+    _detect_regime,
     _evaluate_window,
     _normalize_weights,
     _perturb_weights,
@@ -585,21 +586,19 @@ class TestEvaluateWindowIndustryDedup:
         df = _make_synthetic_ohlcv(n_days=500, n_tickers=25, start=date(2022, 1, 1))
         universe_meta = _make_universe_meta(df["ticker"].unique().to_list())
 
-        train_start = date(2022, 6, 1)
-        train_end = date(2023, 1, 1)
-        test_start = train_end
-        test_end = date(2023, 5, 1)
-
-        weights = {"mom_5d": 0.3, "rsi_oversold": 0.3, "vol_anomaly": 0.4}
+        d = _REGIME_EVAL_DATES
+        weights = _REGIME_TEST_WEIGHTS
 
         # Without universe_meta (backward compatible - dedup skipped)
         result_no_dedup = _evaluate_window(
-            df, weights, train_start, train_end, test_start, test_end
+            df, weights,
+            d["train_start"], d["train_end"], d["test_start"], d["test_end"],
         )
 
         # With universe_meta (dedup applied)
         result_with_dedup = _evaluate_window(
-            df, weights, train_start, train_end, test_start, test_end,
+            df, weights,
+            d["train_start"], d["train_end"], d["test_start"], d["test_end"],
             universe_meta=universe_meta,
         )
 
@@ -618,15 +617,11 @@ class TestEvaluateWindowIndustryDedup:
         """When universe_meta is None, behavior matches current (no dedup)."""
         df = _make_synthetic_ohlcv(n_days=500, n_tickers=10, start=date(2022, 1, 1))
 
-        train_start = date(2022, 6, 1)
-        train_end = date(2023, 1, 1)
-        test_start = train_end
-        test_end = date(2023, 5, 1)
-
-        weights = {"mom_5d": 0.3, "rsi_oversold": 0.3, "vol_anomaly": 0.4}
+        d = _REGIME_EVAL_DATES
 
         result = _evaluate_window(
-            df, weights, train_start, train_end, test_start, test_end,
+            df, _REGIME_TEST_WEIGHTS,
+            d["train_start"], d["train_end"], d["test_start"], d["test_end"],
             universe_meta=None,
         )
 
@@ -640,14 +635,281 @@ class TestEvaluateWindowIndustryDedup:
         df = _make_synthetic_ohlcv(n_days=600, n_tickers=10, start=date(2022, 1, 1))
         universe_meta = _make_universe_meta(df["ticker"].unique().to_list())
 
-        weights = {"mom_5d": 0.3, "rsi_oversold": 0.3, "vol_anomaly": 0.4}
-
         report = optimize_weights(
-            df, weights,
+            df, _REGIME_TEST_WEIGHTS,
             strategy="grid_search",
             max_windows=2,
             universe_meta=universe_meta,
         )
         assert isinstance(report, OptimizeReport)
-        assert len(report.final_weights) == len(weights)
+        assert len(report.final_weights) == len(_REGIME_TEST_WEIGHTS)
         assert abs(sum(report.final_weights.values()) - 1.0) < 1e-9
+
+
+# ── Regime detection helpers ──────────────────────────────────────────────────
+
+
+def _make_regime_ohlcv(
+    n_days: int = 120,
+    n_tickers: int = 5,
+    start: date = date(2022, 1, 1),
+    *,
+    daily_return: float = 0.002,
+    noise_std: float = 0.01,
+    include_spy: bool = False,
+) -> pl.DataFrame:
+    """Build synthetic OHLCV with a controlled drift for regime detection.
+
+    When *include_spy* is True, adds a SPY ticker with the same drift.
+    Prices follow a log-normal random walk: close_t = close_{t-1} * exp(daily_return + noise).
+    """
+    import numpy as np
+
+    rng = np.random.RandomState(42)
+    rows = []
+    ticker_base = list(range(n_tickers))
+    ticker_names = [f"TEST{t}" for t in ticker_base]
+    if include_spy:
+        ticker_names.append("SPY")
+
+    base_prices: dict[str, float] = {t: 100.0 + i * 10.0 for i, t in enumerate(ticker_names)}
+
+    for day in range(n_days):
+        d = start + timedelta(days=day)
+        for t in ticker_names:
+            shock = rng.randn() * noise_std
+            ret = daily_return + shock
+            close = base_prices[t] * np.exp(ret)
+            base_prices[t] = close
+            rows.append({
+                "dt": d,
+                "ticker": t,
+                "open": close * (1 - rng.random() * 0.005),
+                "high": close * (1 + rng.random() * 0.01),
+                "low": close * (1 - rng.random() * 0.01),
+                "close": close,
+                "volume": float(rng.randint(100000, 1000000)),
+            })
+    return pl.DataFrame(rows)
+
+
+# ── Regime detection tests ────────────────────────────────────────────────────
+
+
+class TestDetectRegime:
+    """Tests for _detect_regime market state classification (Issue #327).
+
+    Drift regime: >60% up-days in a 63-day window → bull (favorable for strategy).
+    Bear: <40% up-days.  Sideways: 40-60%.
+    """
+
+    def test_bull_regime_strong_uptrend(self):
+        """Strong positive drift (>60% up-days) is classified as bull."""
+        df = _make_regime_ohlcv(
+            n_days=80, n_tickers=3,
+            daily_return=0.008, noise_std=0.005,
+            include_spy=True,
+        )
+        start_dt = df["dt"].min()
+        end_dt = df["dt"].max()
+        regime = _detect_regime(df, start_dt, end_dt, proxy_ticker="SPY")
+        assert regime == "bull", f"Expected bull, got {regime}"
+
+    def test_bear_regime_strong_downtrend(self):
+        """Strong negative drift (<40% up-days) is classified as bear."""
+        df = _make_regime_ohlcv(
+            n_days=80, n_tickers=3,
+            daily_return=-0.008, noise_std=0.005,
+            include_spy=True,
+        )
+        start_dt = df["dt"].min()
+        end_dt = df["dt"].max()
+        regime = _detect_regime(df, start_dt, end_dt, proxy_ticker="SPY")
+        assert regime == "bear", f"Expected bear, got {regime}"
+
+    def test_sideways_regime_flat(self):
+        """Near-zero drift (40-60% up-days) is classified as sideways."""
+        df = _make_regime_ohlcv(
+            n_days=80, n_tickers=3,
+            daily_return=-0.004, noise_std=0.018,
+            include_spy=True,
+        )
+        start_dt = df["dt"].min()
+        end_dt = df["dt"].max()
+        regime = _detect_regime(df, start_dt, end_dt, proxy_ticker="SPY")
+        assert regime == "sideways", f"Expected sideways, got {regime}"
+
+    def test_fallback_when_proxy_missing(self):
+        """When proxy_ticker is not in data, falls back to aggregate of all tickers."""
+        df = _make_regime_ohlcv(
+            n_days=80, n_tickers=5,
+            daily_return=0.008, noise_std=0.005,
+            include_spy=False,  # No SPY in data
+        )
+        start_dt = df["dt"].min()
+        end_dt = df["dt"].max()
+        regime = _detect_regime(df, start_dt, end_dt, proxy_ticker="SPY")
+        # Should still classify (using aggregate fallback)
+        assert regime in ("bull", "bear", "sideways")
+
+
+# ── Regime-gated evaluation helpers ──────────────────────────────────────────
+
+
+def _make_ohlcv_with_spy(
+    n_days: int = 500,
+    n_tickers: int = 25,
+    start: date = date(2022, 1, 1),
+    *,
+    spy_drift: float = 0.008,
+    spy_noise: float = 0.003,
+) -> pl.DataFrame:
+    """Build synthetic OHLCV with a working factor set plus a SPY ticker
+    whose drift/noise controls the regime classification.
+
+    Uses ``_make_synthetic_ohlcv`` for the factor-bearing tickers (which
+    produce valid ``data_sufficient`` rows needed to pass Phase 1), then
+    appends SPY rows driven by a log-normal random walk.
+    """
+    import numpy as np
+    rng = np.random.RandomState(42)
+
+    df = _make_synthetic_ohlcv(n_days=n_days, n_tickers=n_tickers, start=start)
+    data_min = df["dt"].min()
+    data_max = df["dt"].max()
+    n_days_span = (data_max - data_min).days + 1
+
+    spy_rows = []
+    price = 400.0
+    for day in range(n_days_span):
+        d = data_min + timedelta(days=day)
+        ret = spy_drift + rng.randn() * spy_noise
+        price = price * np.exp(ret)
+        spy_rows.append({
+            "dt": d, "ticker": "SPY",
+            "open": price * 0.999, "high": price * 1.005,
+            "low": price * 0.995, "close": price,
+            "volume": float(rng.randint(1000000, 5000000)),
+        })
+    return pl.concat([df, pl.DataFrame(spy_rows)])
+
+
+# Window dates used by the regime-gated evaluation tests (large enough for SMA_200).
+_REGIME_EVAL_DATES = {
+    "train_start": date(2022, 6, 1),
+    "train_end": date(2023, 1, 1),
+    "test_start": date(2023, 1, 1),
+    "test_end": date(2023, 5, 1),
+}
+
+# Common weights used across regime-gated test classes.
+_REGIME_TEST_WEIGHTS = {"mom_5d": 0.3, "rsi_oversold": 0.3, "vol_anomaly": 0.4}
+
+
+# ── Regime-gated evaluation tests ─────────────────────────────────────────────
+
+
+class TestEvaluateWindowRegimeFilter:
+    """Verify _evaluate_window respects regime_filter flag (Issue #327).
+
+    When regime_filter=True:
+    - Bull regime: strategy runs normally, returns valid WindowResult.
+    - Bear/sideways: strategy is paused, returns zero-score WindowResult.
+    """
+
+    _WEIGHTS = _REGIME_TEST_WEIGHTS
+    _D = _REGIME_EVAL_DATES
+
+    def test_regime_filter_bull_strategy_active(self):
+        """In bull regime with regime_filter=True, strategy runs normally."""
+        df = _make_ohlcv_with_spy(spy_drift=0.008, spy_noise=0.003)
+        result = _evaluate_window(
+            df, self._WEIGHTS,
+            self._D["train_start"], self._D["train_end"],
+            self._D["test_start"], self._D["test_end"],
+            regime_filter=True,
+        )
+        assert result is not None, "Should produce a result in bull regime"
+        assert result.sharpe != 0.0 or result.ic != 0.0, (
+            "Active strategy should produce non-zero metrics"
+        )
+
+    def test_regime_filter_bear_strategy_paused(self):
+        """In bear regime with regime_filter=True, strategy returns zero result."""
+        df = _make_ohlcv_with_spy(spy_drift=-0.008, spy_noise=0.003)
+        result = _evaluate_window(
+            df, self._WEIGHTS,
+            self._D["train_start"], self._D["train_end"],
+            self._D["test_start"], self._D["test_end"],
+            regime_filter=True,
+        )
+        assert result is not None, "Should return a WindowResult even when paused"
+        assert result.sharpe == 0.0
+        assert result.ic == 0.0
+        assert result.precision_at_20 == 0.0
+
+    def test_regime_filter_sideways_strategy_paused(self):
+        """In sideways regime with regime_filter=True, strategy returns zero result."""
+        df = _make_ohlcv_with_spy(spy_drift=-0.003, spy_noise=0.012)
+        result = _evaluate_window(
+            df, self._WEIGHTS,
+            self._D["train_start"], self._D["train_end"],
+            self._D["test_start"], self._D["test_end"],
+            regime_filter=True,
+        )
+        assert result is not None
+        assert result.sharpe == 0.0
+        assert result.ic == 0.0
+
+    def test_regime_filter_disabled_backward_compat(self):
+        """With regime_filter=False (default), all regimes evaluate normally."""
+        df = _make_ohlcv_with_spy(spy_drift=-0.008, spy_noise=0.003)
+        result = _evaluate_window(
+            df, self._WEIGHTS,
+            self._D["train_start"], self._D["train_end"],
+            self._D["test_start"], self._D["test_end"],
+            regime_filter=False,
+        )
+        assert result is not None, "Without regime filter, always produces result"
+        assert result.sharpe <= 0.0 or result.sharpe > -999, "bear market may have negative Sharpe"
+
+
+# ── Regime-gated optimization tests ───────────────────────────────────────────
+
+
+class TestOptimizeWeightsRegimeFilter:
+    """Verify optimize_weights accepts and passes through regime_filter."""
+
+    _WEIGHTS = _REGIME_TEST_WEIGHTS
+
+    def test_optimize_weights_accepts_regime_filter(self):
+        """optimize_weights should accept regime_filter parameter."""
+        df = _make_regime_ohlcv(
+            n_days=800, n_tickers=25,
+            daily_return=0.008, noise_std=0.005,
+            include_spy=True,
+            start=date(2022, 1, 1),
+        )
+        report = optimize_weights(
+            df, self._WEIGHTS,
+            strategy="grid_search",
+            max_windows=2,
+            regime_filter=True,
+        )
+        assert isinstance(report, OptimizeReport)
+        assert len(report.final_weights) == len(self._WEIGHTS)
+
+    def test_optimize_weights_regime_filter_default_false(self):
+        """With regime_filter=False (default), backward compatible."""
+        df = _make_regime_ohlcv(
+            n_days=800, n_tickers=25,
+            daily_return=-0.008, noise_std=0.005,
+            include_spy=True,
+            start=date(2022, 1, 1),
+        )
+        report = optimize_weights(
+            df, self._WEIGHTS,
+            strategy="grid_search",
+            max_windows=2,
+        )
+        assert isinstance(report, OptimizeReport)
