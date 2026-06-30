@@ -668,7 +668,7 @@ def optimize_weights(
     universe_meta: pl.DataFrame | None = None,
     purge_days: int = DEFAULT_PURGE_DAYS,
     embargo_days: int = DEFAULT_EMBARGO_DAYS,
-    regime_filter: bool = False,
+    regime_filter: bool = True,
 ) -> OptimizeReport:
     """Run walk-forward weight optimization.
 

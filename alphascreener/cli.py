@@ -11,7 +11,9 @@ Usage:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, timedelta
+from pathlib import Path
 
 import click
 import polars as pl
@@ -21,6 +23,32 @@ from alphascreener.display import panel, result_table, rule, warn_card
 
 
 def _n(t): return t
+
+
+def _apply_weights(weights: dict[str, float]) -> None:
+    """Apply optimized weights to phase2.MVP_WEIGHTS in memory and on disk."""
+    import alphascreener.screening.phase2 as phase2
+
+    # In-memory update — takes effect immediately for this process
+    phase2.MVP_WEIGHTS.clear()
+    phase2.MVP_WEIGHTS.update(weights)
+
+    # Persist to file for future runs
+    phase2_path = Path(__file__).resolve().parent / "screening" / "phase2.py"
+    src = phase2_path.read_text()
+    new_block = "MVP_WEIGHTS: dict[str, float] = {\n"
+    for factor, w in weights.items():
+        new_block += f'    "{factor}": {round(w, 6)},\n'
+    new_block += "}"
+    updated = re.sub(
+        r"MVP_WEIGHTS: dict\[str, float\] = \{.*?\n\}",
+        new_block,
+        src,
+        count=1,
+        flags=re.DOTALL,
+    )
+    if updated != src:
+        phase2_path.write_text(updated)
 
 
 
@@ -93,6 +121,21 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         click.echo("  " + _n("Filtered:") + f" {bad_count}/{n_tickers} tickers with <40 days")
     df = df.filter(pl.col("ticker").is_in(good_tickers))
     n_tickers = len(good_tickers)
+
+    # ── Auto-optimize factor weights before screening ──
+    click.echo(f"  {_n('Optimizing weights ...')}")
+    try:
+        from alphascreener.optimize import optimize_weights
+        from alphascreener.screening import phase2 as _p2
+
+        report = optimize_weights(df, _p2.MVP_WEIGHTS, n_trials=10)
+        if report.final_weights:
+            _apply_weights(report.final_weights)
+            click.echo(f"  {_n('Weights:')} updated ({len(report.windows)} windows, "
+                       f"excess_return={report.windows[-1].score:+.3f}"
+                       f"{'  regime=gated' if True else ''})")
+    except Exception:
+        click.echo(f"  {_n('Weights:')} optimization skipped, using current MVP_WEIGHTS")
 
     try:
         from alphascreener.factors.engine import compute_factors
@@ -320,7 +363,7 @@ def backtest(ticker: str, start: str | None, end: str | None) -> None:
 @click.option("--train", default=2, show_default=True, help="Training window (years).")
 @click.option(
     "--regime-filter/--no-regime-filter",
-    default=False,
+    default=True,
     show_default=True,
     help="Only activate strategy in bull regime (>60%% up-days in 63-day lookback; Singha 2025)."
 )
@@ -422,7 +465,10 @@ def optimize(rounds: int, train: int, regime_filter: bool) -> None:
         result_table(headers, rows)
         click.echo()
 
-    click.echo(f"  {_n('Usage: copy final weights into screening/phase2.py MVP_WEIGHTS')}\n")
+    # ── Auto-apply optimized weights ──
+    if report.final_weights:
+        _apply_weights(report.final_weights)
+        click.echo(f"  {_n('Weights auto-applied to')} MVP_WEIGHTS\n")
 
 
 @click.command()

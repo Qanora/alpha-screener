@@ -900,7 +900,7 @@ class TestEvaluateWindowRegimeFilter:
         assert result.ic == 0.0
 
     def test_regime_filter_disabled_backward_compat(self):
-        """With regime_filter=False (default), all regimes evaluate normally."""
+        """With regime_filter=False (explicit opt-out), all regimes evaluate normally."""
         df = _make_ohlcv_with_spy(spy_drift=-0.008, spy_noise=0.003)
         result = _evaluate_window(
             df,
@@ -943,8 +943,8 @@ class TestOptimizeWeightsRegimeFilter:
         assert isinstance(report, OptimizeReport)
         assert len(report.final_weights) == len(self._WEIGHTS)
 
-    def test_optimize_weights_regime_filter_default_false(self):
-        """With regime_filter=False (default), backward compatible."""
+    def test_optimize_weights_regime_filter_disabled(self):
+        """With regime_filter=False (explicit opt-out), backward compatible."""
         df = _make_regime_ohlcv(
             n_days=800,
             n_tickers=25,
@@ -958,6 +958,7 @@ class TestOptimizeWeightsRegimeFilter:
             self._WEIGHTS,
             strategy="grid_search",
             max_windows=2,
+            regime_filter=False,
         )
         assert isinstance(report, OptimizeReport)
 
