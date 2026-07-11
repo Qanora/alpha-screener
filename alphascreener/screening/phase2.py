@@ -23,19 +23,19 @@ _logger = get_logger("screening")
 # ---------------------------------------------------------------------------
 
 MVP_WEIGHTS: dict[str, float] = {
-    "MOM_5D": 0.14,
-    "PTH": 0.12,
-    "MOM_SLOPE": 0.10,
-    "BB_SQUEEZE": 0.13,
-    "ATR_RATIO": 0.09,
-    "MFI_14": 0.095,
-    "CMF_21": 0.085,
-    "VOL_ANOMALY": 0.045,
-    "RSI_OVERSOLD": 0.045,
-    "MACD_CROSS": 0.035,
-    "GOLDEN_CROSS": 0.035,
-    "INSIDER_BUY": 0.045,
-    "REV_ACCEL": 0.035,
+    "MOM_5D": 0.053754,
+    "PTH": 0.134274,
+    "MOM_SLOPE": 0.103708,
+    "BB_SQUEEZE": 0.085074,
+    "ATR_RATIO": 0.023215,
+    "MFI_14": 0.023212,
+    "CMF_21": 0.009529,
+    "VOL_ANOMALY": 0.12246,
+    "RSI_OVERSOLD": 0.085418,
+    "MACD_CROSS": 0.100365,
+    "GOLDEN_CROSS": 0.004288,
+    "INSIDER_BUY": 0.136957,
+    "REV_ACCEL": 0.117746,
 }
 
 # ---------------------------------------------------------------------------
