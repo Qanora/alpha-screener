@@ -105,9 +105,14 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     data_start = ohlcv["dt"].min()
     data_days = (latest_date - data_start).days
 
-    click.echo(f"  {_n('Data:')} {n_tickers} tickers, {data_start} -> {latest_date} ({data_days}d)")
+    click.echo(
+        f"  {_n('Data:')} {n_tickers} tickers, {data_start} -> "
+        f"{latest_date} ({data_days}d)"
+    )
 
-    df = ohlcv.unique(subset=["ticker", "dt"], keep="last", maintain_order=True).sort(["ticker", "dt"])
+    df = ohlcv.unique(
+        subset=["ticker", "dt"], keep="last", maintain_order=True
+    ).sort(["ticker", "dt"])
 
     # Filter tickers with insufficient data
     ticker_counts = df.group_by("ticker").len()
@@ -155,7 +160,10 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
             bad_factors += 1
     if bad_factors > 0:
         good_n = len(factor_cols) - bad_factors
-        click.echo(f"  {_n('Factors:')} {good_n}/{len(factor_cols)} usable ({bad_factors} have >50% nulls)")
+        click.echo(
+            f"  {_n('Factors:')} {good_n}/{len(factor_cols)} usable "
+            f"({bad_factors} have >50% nulls)"
+        )
         if good_n < 4:
             warn_card("Too few usable factors. Run asc sync to get more historical data.")
             return
@@ -183,7 +191,12 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
             pass
 
     result = phase2_pipeline(passed, n_final=top)
-    result = result.group_by("ticker").agg(pl.col("breakout_score").max()).sort("breakout_score", descending=True).head(top)
+    result = (
+        result.group_by("ticker")
+        .agg(pl.col("breakout_score").max())
+        .sort("breakout_score", descending=True)
+        .head(top)
+    )
 
     rule("Alpha Screener")
     click.echo(f"  {_n('Date:')} {latest_date}  |  "
@@ -438,15 +451,27 @@ def optimize(rounds: int, train: int, regime_filter: bool) -> None:
     )
 
     # ── Output ──
-    click.echo(f"  {_n('Windows evaluated:')} {report.iterations}  |  {_n('Converged:')} {report.converged}\n")
+    click.echo(
+        f"  {_n('Windows evaluated:')} {report.iterations}  |  "
+        f"{_n('Converged:')} {report.converged}\n"
+    )
 
     # Weight changes
     if report.weight_changes:
         click.echo(f"  {_n('Factor Weight Evolution:')}")
-        sorted_changes = sorted(report.weight_changes.items(), key=lambda x: abs(x[1]), reverse=True)
+        sorted_changes = sorted(
+            report.weight_changes.items(),
+            key=lambda x: abs(x[1]),
+            reverse=True,
+        )
         for factor, delta in sorted_changes:
             direction = "↑" if delta > 0 else "↓" if delta < 0 else "—"
-            click.echo(f"    {factor:20s}  {report.initial_weights.get(factor,0):.3f} → {report.final_weights.get(factor,0):.3f}  {delta:+.3f} {direction}")
+            click.echo(
+                f"    {factor:20s}  "
+                f"{report.initial_weights.get(factor,0):.3f} → "
+                f"{report.final_weights.get(factor,0):.3f}  "
+                f"{delta:+.3f} {direction}"
+            )
         click.echo()
 
     # Window results
