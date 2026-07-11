@@ -7,7 +7,6 @@ Reference: PRD 9.1.
 import io
 import json
 import logging
-import os
 from logging.handlers import TimedRotatingFileHandler
 from uuid import uuid4
 
