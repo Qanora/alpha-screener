@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from pathlib import Path
 
 import polars as pl
 import yfinance as yf
@@ -151,11 +150,16 @@ def sync_ohlcv(
             col_map = {}
             for col in ticker_data.columns:
                 cl = str(col).lower()
-                if "open" in cl: col_map[col] = "open"
-                elif "high" in cl: col_map[col] = "high"
-                elif "low" in cl: col_map[col] = "low"
-                elif "close" in cl: col_map[col] = "close"
-                elif "volume" in cl: col_map[col] = "volume"
+                if "open" in cl:
+                    col_map[col] = "open"
+                elif "high" in cl:
+                    col_map[col] = "high"
+                elif "low" in cl:
+                    col_map[col] = "low"
+                elif "close" in cl:
+                    col_map[col] = "close"
+                elif "volume" in cl:
+                    col_map[col] = "volume"
             ticker_data = ticker_data.rename(columns=col_map)
             keep_cols = [c for c in ["open","high","low","close","volume"] if c in col_map.values()]
             ticker_data = ticker_data[keep_cols]
