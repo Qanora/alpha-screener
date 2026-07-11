@@ -9,7 +9,6 @@ Reference: PRD 3.1.3 (normalisation) and 3.1.4 (missing-data handling).
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from datetime import date
 
