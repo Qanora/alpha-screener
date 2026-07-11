@@ -9,10 +9,8 @@ import pytest
 from sqlalchemy import (
     create_engine,
     inspect,
-    text,
 )
 
-from alphascreener.db.engine import create_db_engine
 from alphascreener.db.models import Base
 
 # ============================================================================
