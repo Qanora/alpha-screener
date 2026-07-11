@@ -4,8 +4,6 @@ All CLI output MUST go through these components for visual consistency.
 Adapted from pp_tracer/ppt/display.py design tokens.
 """
 
-from typing import List, Optional, Tuple
-
 from rich import box
 from rich.console import Console
 from rich.panel import Panel as RichPanel
