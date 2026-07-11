@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+
 from alphascreener.config import Settings
 
 
@@ -55,7 +56,6 @@ class TestSettingsEnvOverride:
         monkeypatch.setenv("MOM_5D_MIN", "0.01")
         s = Settings(mom_5d_min=0.02)
         assert s.mom_5d_min == pytest.approx(0.02)
-
 
     def test_extra_env_ignored(self, monkeypatch):
         """Unknown env vars should be silently ignored due to extra='ignore'."""
