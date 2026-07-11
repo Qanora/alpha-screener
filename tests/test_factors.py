@@ -17,7 +17,6 @@ import polars as pl
 import pytest
 
 from alphascreener.factors.engine import (
-    DEFAULT_BATCH_SIZE,
     MISSING_FACTOR_RATE_MAX,
     Z_SCORE_CAP,
     FactorEngine,
@@ -294,8 +293,6 @@ class TestVolAnomaly:
     def test_extreme_volume_triggers(self):
         """Last-day volume spike > 2 sigma triggers anomaly."""
         n = 60
-        normal_vol = [1_000_000.0] * (n - 1)
-        spike_vol = normal_vol + [10_000_000.0]  # 10x volume on last day
         close = list(range(100, 100 + n))
         # Need varying volume for std to be non-zero
         vols = [1_000_000.0 + i * 1000 for i in range(n - 1)] + [50_000_000.0]
@@ -574,8 +571,7 @@ class TestNormalisation:
         vals = [-10.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0, 20.0, 30.0, -20.0]
         df = self._factor_df(vals)
         result = normalize_factors(df)
-        capped = result.get_column("z_capped_MOM_5D").to_list()
-        for v in capped:
+        for v in result.get_column("z_capped_MOM_5D").to_list():
             if v is not None:
                 assert -Z_SCORE_CAP <= v <= Z_SCORE_CAP, f"{v} out of range"
 
@@ -594,7 +590,6 @@ class TestNormalisation:
         vals = [0.0, 0.0, 0.0, 0.0, 0.0]
         df = self._factor_df(vals)
         result = normalize_factors(df)
-        capped = result.get_column("z_capped_MOM_5D").to_list()
         # With zero variance, z_capped is 0, scores are 50
         scores = result.get_column("score_MOM_5D").to_list()
         for s in scores:
