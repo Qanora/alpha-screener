@@ -4,15 +4,11 @@ Reference: PRD 7.6.2 / 7.6.2.1.
 """
 
 from sqlalchemy import (
-    Boolean,
     CheckConstraint,
     Date,
     Float,
-    ForeignKeyConstraint,
-    Index,
     Integer,
     Text,
-    text,
 )
 from sqlalchemy.orm import DeclarativeBase, mapped_column
 
