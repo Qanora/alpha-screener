@@ -1,10 +1,6 @@
-"""Factor computation engine (Issue #93).
+"""Public API exports for factor module."""
 
-Provides 14 factor formulas, z-score normalisation, missing-data handling,
-and chunked-streaming computation via polars.
-
-Reference: PRD 3.1.1 / 3.1.2 / 3.1.3 / 3.1.4.
-"""
+from __future__ import annotations
 
 from alphascreener.factors.engine import (
     FactorEngine,
@@ -14,11 +10,11 @@ from alphascreener.factors.engine import (
 )
 from alphascreener.factors.formulas import (
     FACTOR_NAMES,
+    FUNDAMENTAL_FACTORS,
     MOMENTUM_FACTORS,
-    VOLATILITY_FACTORS,
     MONEY_FLOW_FACTORS,
     TECHNICAL_FACTORS,
-    FUNDAMENTAL_FACTORS,
+    VOLATILITY_FACTORS,
     compute_all_technical_factors,
     compute_atr_ratio,
     compute_bb_squeeze,
