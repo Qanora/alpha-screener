@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -38,6 +39,12 @@ CIRCUIT_BREAKER_TTL_DAYS: int = 1
 # When a batch download fails, retry each ticker individually up to this
 # many per-ticker attempts before recording a failure.
 INDIVIDUAL_RETRY_MAX: int = 2
+_RETRYABLE_ERRORS = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+    asyncio.TimeoutError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +75,7 @@ def _default_retry_policy(
     """
     return retry(
         retry=retry_if_exception_type(
-            (ConnectionError, TimeoutError, OSError, asyncio.TimeoutError, RuntimeError)
+            (ConnectionError, TimeoutError, OSError, asyncio.TimeoutError)
         ),
         stop=stop_after_attempt(max_retries),
         wait=wait_exponential(multiplier=1, min=wait_init, max=wait_max),
@@ -421,7 +428,7 @@ class YFinanceAdapter:
 
     # -- Core execution wrapper --------------------------------------------------
 
-    async def _call_with_slot(self, func, *args, **kwargs) -> Any:
+    async def _call_with_slot(self, func, *args, **kwargs) -> tuple[bool, Any]:
         """Acquire a rate-limit slot, run *func* in a thread, release after delay.
 
         The semaphore slot is held for at least 1 s (via ``_release_after_delay``)
@@ -429,7 +436,16 @@ class YFinanceAdapter:
         """
         await self._acquire_slot()
         try:
-            return await asyncio.to_thread(func, *args, **kwargs)
+            loop = asyncio.get_running_loop()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+
+                def _invoke() -> tuple[bool, Any]:
+                    try:
+                        return True, func(*args, **kwargs)
+                    except Exception as exc:
+                        return False, exc
+
+                return await loop.run_in_executor(executor, _invoke)
         finally:
             self._release_after_delay()
 
@@ -460,21 +476,28 @@ class YFinanceAdapter:
                 f"Circuit breaker open for {ticker} — skipping for the day"
             )
 
-        retried_call = _default_retry_policy(
-            max_retries=self.max_retries,
-            wait_init=self.retry_wait_init_s,
-            wait_max=self.retry_wait_max_s,
-        )(self._call_with_slot)
+        attempt = 0
+        wait_s = self.retry_wait_init_s
+        while True:
+            attempt += 1
+            was_successful, payload = await self._call_with_slot(func, *args, **kwargs)
+            if was_successful:
+                if track_circuit:
+                    self._record_success(ticker)
+                return payload
 
-        try:
-            result = await retried_call(func, *args, **kwargs)
-            if track_circuit:
-                self._record_success(ticker)
-            return result
-        except Exception:
+            exc = payload
+            if isinstance(exc, _RETRYABLE_ERRORS):
+                if attempt >= self.max_retries:
+                    if track_circuit:
+                        self._record_failure(ticker, today)
+                    raise exc
+                await asyncio.sleep(min(wait_s, self.retry_wait_max_s))
+                wait_s = min(wait_s * 2, self.retry_wait_max_s)
+                continue
             if track_circuit:
                 self._record_failure(ticker, today)
-            raise
+            raise exc
 
     # -- Individual ticker fallback (Issue #224) ----------------------------------
 
