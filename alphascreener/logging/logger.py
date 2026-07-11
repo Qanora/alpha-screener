@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from datetime import UTC, datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -20,6 +21,26 @@ from alphascreener.config import Settings
 # ---------------------------------------------------------------------------
 
 VALID_MODULES = frozenset({"screening", "refining", "backtesting", "evolution", "monitoring"})
+
+
+def _ensure_log_directory(log_dir: str) -> Path:
+    """Return a writable log directory, with fallback on permission errors."""
+    candidates = [Path(log_dir), Path(tempfile.gettempdir()) / "alphascreener" / "logs"]
+    for path in candidates:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            (path / ".write_test").unlink(missing_ok=True)
+            test_path = path / ".write_test"
+            test_path.write_text("ok", encoding="utf-8")
+            test_path.unlink(missing_ok=True)
+            return path
+        except OSError:
+            continue
+
+    # Last resort: keep current directory logging for in-memory tests.
+    fallback = Path.cwd() / "logs" / "alphascreener"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +107,7 @@ def get_logger(module: str, log_dir: str | None = None) -> logging.Logger:
     if log_dir is None:
         settings = Settings()
         log_dir = str(settings.alphascreener_home / "logs")
-
-    log_path = Path(log_dir)
-    log_path.mkdir(parents=True, exist_ok=True)
+    log_path = _ensure_log_directory(log_dir)
 
     file_handler = TimedRotatingFileHandler(
         filename=str(log_path / f"{module}.log"),
