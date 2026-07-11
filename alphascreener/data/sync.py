@@ -12,6 +12,7 @@ import polars as pl
 import yfinance as yf
 
 from alphascreener.data.io import scan_parquet, write_parquet
+from alphascreener.universe import build_universe_snapshot, write_universe_snapshot
 
 _logger = logging.getLogger(__name__)
 
@@ -73,7 +74,9 @@ def sync_ohlcv(
     Args:
         tickers: Ticker list (default: SP500 + Russell 1000).
         start: Start date for download. Default: last sync date - 7 days,
-               or 2 years ago if no data exists.
+               or 120 calendar days ago if no data exists.  This covers the
+               60-session prediction contract while keeping the initial CLI
+               data download focused on its actual input requirement.
         progress_callback: Optional callable(ticker_count, batch_num, total_batches).
 
     Returns:
@@ -92,12 +95,12 @@ def sync_ohlcv(
                 data_span = (last - existing["dt"].min()).days if existing.height > 0 else 0
             except Exception:
                 data_span = 0
-            if data_span < 180:
-                start = date.today() - timedelta(days=365 * 2)
+            if data_span < 90:
+                start = date.today() - timedelta(days=120)
             else:
                 start = last - timedelta(days=7)
         else:
-            start = date.today() - timedelta(days=365 * 2)
+            start = date.today() - timedelta(days=120)
 
     end = date.today()
 
@@ -182,6 +185,15 @@ def sync_ohlcv(
         df = pl.DataFrame(all_records)
         write_parquet(df, "ohlcv")
         all_rows = df.height
+
+    # Persist the point-in-time eligibility decision alongside the data used
+    # by later ranking steps.  A failed refresh can still yield a snapshot,
+    # but its cutoff date makes the staleness visible to the caller.
+    try:
+        snapshot = build_universe_snapshot(scan_parquet("ohlcv").collect())
+        write_universe_snapshot(snapshot)
+    except Exception as exc:
+        _logger.warning("Could not write universe snapshot: %s", exc)
 
     _logger.info("Sync complete: %d new rows", all_rows)
     return all_rows
