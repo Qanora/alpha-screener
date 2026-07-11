@@ -10,7 +10,6 @@ Covers:
 """
 
 from datetime import date
-from typing import Dict, List
 
 import polars as pl
 import pytest
@@ -20,7 +19,7 @@ import pytest
 # ============================================================================
 
 
-def _factor_df(rows: List[Dict]) -> pl.DataFrame:
+def _factor_df(rows: list[dict]) -> pl.DataFrame:
     """Minimal factor DataFrame with the columns Phase 1 needs."""
     if not rows:
         # Empty: build zero-row DF with correct schema
