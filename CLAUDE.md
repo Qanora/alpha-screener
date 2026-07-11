@@ -1,23 +1,43 @@
-# Alpha Screener 项目配置
+# Alpha Screener 项目约定
 
-## 飞轮开发
+## 1) 你现在面对的这个仓库是谁
 
-本项目使用飞轮体系进行全流程自动化开发。
+这是业务仓库，不是飞轮能力仓库。
 
-| Skill | 用途 |
-|-------|------|
-| `/fwp-plan <需求>` | 需求 → Issue → 自动交付 |
-| `/fwp-debug <bug>` | Bug 复现 → 自动修复 |
-| `/fwp-inspect` | 13 项全量巡检（运行时 + 代码审查） |
-| `/fw-audit` | AI 安全治理审计 |
-| `/fwp-resume` | 继续中断 |
-| `/fwp-help` | 查看所有命令 |
+- `/fwp-*` 功能由独立 skills 仓库提供。
+- 本仓库只维护：业务代码、配置、测试和交付产物。
 
-开发需求时优先使用 `/fwp-plan` 而非直接写代码。
+## 2) 飞轮能力绑定（每次会话先确认）
 
-## Git 规范
+首次或切换环境后执行：
 
-- commit 必须关联 issue（`#N`、`closes #N`）
-- 分支命名 `feature/issue-<N>`，从 `origin/master` 创建
-- 流程: feature 分支 → MR → squash merge
-- CI 通过后 auto-merge
+```bash
+cd /root/workspace/alpha-screener
+FLYWHEEL_SOURCE_DIR=/root/workspace/skills bash install.sh
+```
+
+- 若已有其他路径，改成你的实际路径。
+- 命令执行后建议重开一次 Codex/Claude 会话。
+
+## 3) 本仓库内开发动作
+
+- 需求拆解：`/fwp-plan`
+- Bug 复现与交接：`/fwp-debug`
+- 巡检：`/fwp-inspect`
+- 风险检查：`/fwp-audit`
+
+- 快速入口：
+  - `./scripts/dev-plan.sh`
+  - `./scripts/dev-inspect.sh`
+  - `./scripts/asc.sh`
+
+## 4) Git 与 PR 规则
+
+- 分支：`feature/issue-<N>`（从 `origin/master` 创建）
+- 提交必须绑定 issue：`#N`、`closes #N`、`fixes #N`
+- PR 合并前：`./scripts/dev-inspect.sh`
+
+## 5) 变更优先级
+
+- 默认以 [CODEX.md](/root/workspace/alpha-screener/CODEX.md) 约定为主。
+- 对应能力/执行入口以 `install.sh` 和 `skills/project-meta` 为单一真实来源。
