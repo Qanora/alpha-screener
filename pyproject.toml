@@ -1,24 +1,17 @@
 [project]
 name = "alpha-screener"
 version = "0.1.0"
-description = "AI-Native quantitative strategy validation platform for US equities"
+description = "CLI screener for 14-session US-equity breakout candidates"
 requires-python = ">=3.11"
 dependencies = [
-    # 上游 AI Agent 框架（git+commit 锁定）
-    "tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@61522e103e61601c553b4544abcd53fa7ebf9f1d",
-
     # 核心数值与数据处理
     "numpy>=1.26",
+    "scipy>=1.11",
     "polars>=0.20",
     "pandas>=2.1",
     "pyarrow>=14",
 
-    # 机器学习 / 聚类（V1.5 起使用）
-    "scikit-learn>=1.4",
-    "hdbscan>=0.8.33",
-    "faiss-cpu>=1.7",
-
-    # 超参数优化
+    # TPE strategy used by the explicit optimization command
     "optuna>=3.0",
 
     # 回测
@@ -26,8 +19,6 @@ dependencies = [
 
     # 数据源
     "yfinance>=0.2.40",
-    "requests>=2.31",
-    "httpx>=0.26",
 
     # 终端显示
     "rich>=13.0",
@@ -39,7 +30,6 @@ dependencies = [
 
     # 系统支持
     "tenacity>=8.2",
-    "psutil>=5.9",
     "pydantic>=2.5",
     "pydantic-settings>=2.2",
     "python-dotenv>=1.0",

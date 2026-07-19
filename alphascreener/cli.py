@@ -1,9 +1,9 @@
-"""Alpha Screener CLI — US equity breakout screening + backtest.
+"""Alpha Screener CLI — US equity 14-session breakout prediction.
 
 Usage:
-    asc                    Run full scan + auto-backtest (default)
+    asc                    Rank candidates and record an immutable prediction ledger
     asc --top 20           Show top 20 candidates
-    asc --no-backtest      Skip backtest, show screening only
+    asc evaluate           Evaluate rankings whose 14-session outcomes matured
     asc backtest TICKER    Backtest a specific ticker
     asc dev ...            Advanced tools (evolution, case-library)
 """
@@ -11,9 +11,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-import re
 from datetime import date, timedelta
-from pathlib import Path
 
 import click
 import polars as pl
@@ -25,33 +23,6 @@ from alphascreener.display import panel, result_table, rule, warn_card
 def _n(t): return t
 
 
-def _apply_weights(weights: dict[str, float]) -> None:
-    """Apply optimized weights to phase2.MVP_WEIGHTS in memory and on disk."""
-    import alphascreener.screening.phase2 as phase2
-
-    # In-memory update — takes effect immediately for this process
-    phase2.MVP_WEIGHTS.clear()
-    phase2.MVP_WEIGHTS.update(weights)
-
-    # Persist to file for future runs
-    phase2_path = Path(__file__).resolve().parent / "screening" / "phase2.py"
-    src = phase2_path.read_text()
-    new_block = "MVP_WEIGHTS: dict[str, float] = {\n"
-    for factor, w in weights.items():
-        new_block += f'    "{factor}": {round(w, 6)},\n'
-    new_block += "}"
-    updated = re.sub(
-        r"MVP_WEIGHTS: dict\[str, float\] = \{.*?\n\}",
-        new_block,
-        src,
-        count=1,
-        flags=re.DOTALL,
-    )
-    if updated != src:
-        phase2_path.write_text(updated)
-
-
-
 def _suppress_log_noise() -> None:
     logging.basicConfig(level=logging.ERROR, format="%(levelname)s: %(message)s")
 
@@ -59,6 +30,33 @@ def _suppress_log_noise() -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 # main — default command: screen + auto-backtest
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _rank_candidates(ohlcv: pl.DataFrame, *, top: int) -> tuple[pl.DataFrame, date]:
+    """Rank eligible tickers from their latest 60 trading sessions only."""
+    from alphascreener.features import compute_60d_features
+    from alphascreener.universe import build_universe_snapshot
+
+    cutoff = ohlcv["dt"].max()
+    snapshot = build_universe_snapshot(ohlcv, cutoff_date=cutoff)
+    eligible = snapshot.filter(pl.col("eligible"))["ticker"].to_list()
+    if not eligible:
+        return pl.DataFrame(schema={"ticker": pl.String, "score": pl.Float64}), cutoff
+    window = (
+        ohlcv.filter(pl.col("ticker").is_in(eligible)).sort(["ticker", "dt"])
+        .group_by("ticker", maintain_order=True).tail(60)
+    )
+    features = compute_60d_features(window).filter(pl.col("dt") == cutoff)
+    signals = [
+        "return_5d", "return_20d", "distance_to_60d_high",
+        "volume_zscore_20", "relative_strength_20d",
+    ]
+    ranked = features.with_columns([
+        pl.col(signal).fill_null(0.0).rank("average").alias(f"_rank_{signal}") for signal in signals
+    ]).with_columns(
+        pl.mean_horizontal([pl.col(f"_rank_{signal}") for signal in signals]).alias("score")
+    )
+    return ranked.select("ticker", "score").sort("score", descending=True).head(top), cutoff
 
 
 def _run_screen(top: int, no_backtest: bool, market: str) -> None:
@@ -78,13 +76,13 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
     except Exception:
         pass
 
-    # Auto-sync if stale or insufficient data
+    # Auto-sync if stale or insufficient for the 60-session contract.
     from alphascreener.data.sync import last_sync_date, sync_ohlcv
     last = last_sync_date()
     needs_sync = last is None or (date.today() - last).days > 1
     if not needs_sync and ohlcv is not None and ohlcv.height > 0:
         data_span = (last - ohlcv["dt"].min()).days if last else 0
-        if data_span < 180:
+        if data_span < 90:
             needs_sync = True
     if needs_sync:
         click.echo(f"  {_n('Updating data ...')}")
@@ -114,176 +112,60 @@ def _run_screen(top: int, no_backtest: bool, market: str) -> None:
         subset=["ticker", "dt"], keep="last", maintain_order=True
     ).sort(["ticker", "dt"])
 
-    # Filter tickers with insufficient data
-    ticker_counts = df.group_by("ticker").len()
-    good_tickers = ticker_counts.filter(pl.col("len") >= 40)["ticker"].to_list()
-    bad_count = n_tickers - len(good_tickers)
-    if len(good_tickers) < 10:
-        warn_card(f"Only {len(good_tickers)} tickers have >=40 trading days "
-                  f"({bad_count} filtered out). Run asc sync for more data.")
+    result, latest_date = _rank_candidates(df, top=top)
+    if result.is_empty():
+        warn_card("No tickers meet the 60-session tradable-universe requirements.")
         return
-    if bad_count > 0:
-        click.echo("  " + _n("Filtered:") + f" {bad_count}/{n_tickers} tickers with <40 days")
-    df = df.filter(pl.col("ticker").is_in(good_tickers))
-    n_tickers = len(good_tickers)
-
-    # ── Auto-optimize factor weights before screening ──
-    click.echo(f"  {_n('Optimizing weights ...')}")
+    from alphascreener.evaluation import write_prediction_ledger
+    predictions = result.with_columns(pl.lit(latest_date).cast(pl.Date).alias("decision_date"))
     try:
-        from alphascreener.optimize import optimize_weights
-        from alphascreener.screening import phase2 as _p2
-
-        report = optimize_weights(df, _p2.MVP_WEIGHTS, n_trials=10)
-        if report.final_weights:
-            _apply_weights(report.final_weights)
-            click.echo(f"  {_n('Weights:')} updated ({len(report.windows)} windows, "
-                       f"excess_return={report.windows[-1].score:+.3f}"
-                       f"{'  regime=gated' if True else ''})")
-    except Exception:
-        click.echo(f"  {_n('Weights:')} optimization skipped, using current MVP_WEIGHTS")
-
-    try:
-        from alphascreener.factors.engine import compute_factors
-        from alphascreener.screening.phase1 import hard_filter_with_fallback
-        from alphascreener.screening.phase2 import phase2_pipeline
-    except ImportError as exc:
-        warn_card(f"Required module not available: {exc}")
-        return
-
-    factors = compute_factors(df, dt=latest_date)
-
-    # Report factor quality
-    factor_cols = [c for c in factors.columns if c not in ("ticker", "dt", "sector", "industry")]
-    bad_factors = 0
-    for col in factor_cols:
-        if factors[col].null_count() > factors.height * 0.5:
-            bad_factors += 1
-    if bad_factors > 0:
-        good_n = len(factor_cols) - bad_factors
-        click.echo(
-            f"  {_n('Factors:')} {good_n}/{len(factor_cols)} usable "
-            f"({bad_factors} have >50% nulls)"
-        )
-        if good_n < 4:
-            warn_card("Too few usable factors. Run asc sync to get more historical data.")
-            return
-
-    filtered, relaxed_used = hard_filter_with_fallback(factors)
-    passed = filtered.filter(pl.col("pass_phase1"))
-    relax_note = " (relaxed)" if relaxed_used else ""
-
-    if passed.height == 0:
-        rule("Alpha Screener")
-        warn_card("No tickers passed screening. Try again with more data.")
-        return
-
-    # ── Join sector/industry from universe_meta (Issue #325) ──
-    universe_meta_path = get_data_home() / "universe_meta.parquet"
-    if universe_meta_path.exists():
-        try:
-            umeta = pl.read_parquet(universe_meta_path)
-            passed = passed.join(
-                umeta.select(["ticker", "sector", "industry"]),
-                on="ticker",
-                how="left",
-            )
-        except Exception:
-            pass
-
-    result = phase2_pipeline(passed, n_final=top)
-    result = (
-        result.group_by("ticker")
-        .agg(pl.col("breakout_score").max())
-        .sort("breakout_score", descending=True)
-        .head(top)
-    )
+        write_prediction_ledger(predictions.select("ticker", "decision_date", "score"))
+    except FileExistsError:
+        click.echo("  Ledger: ranking already recorded for this date")
 
     rule("Alpha Screener")
     click.echo(f"  {_n('Date:')} {latest_date}  |  "
-               f"{_n('Passed:')} {result.height}/{filtered.height}{relax_note}  |  "
+               f"{_n('Candidates:')} {result.height}  |  "
                f"{_n('Data:')} {df['ticker'].n_unique()} tickers\n")
 
     headers = ["#", "Ticker", "Score"]
     rows = []
-    tickers = []
-    for i, row in enumerate(result.select(["ticker", "breakout_score"]).iter_rows(named=True)):
-        rows.append([str(i + 1), str(row["ticker"]), f"{row['breakout_score']:.4f}"])
-        tickers.append(str(row["ticker"]))
+    for i, row in enumerate(result.iter_rows(named=True)):
+        rows.append([str(i + 1), str(row["ticker"]), f"{row['score']:.4f}"])
     result_table(headers, rows)
+    click.echo("\n  Ledger: recorded before the 14-session outcome is available.\n")
 
-    if no_backtest:
-        click.echo(f"\n  {_n('Run')} asc backtest TICKER {_n('for detailed backtest.')}\n")
-        return
 
-    click.echo(f"\n  {_n('Running backtest on top candidates ...')}\n")
-
-    try:
-        from alphascreener.backtrader import _load_ohlcv_data, _load_signals_data, run_backtest
-    except ImportError:
-        warn_card("Backtrader module not available.")
-        return
-
-    s = date.today() - timedelta(days=183)  # 6 months
-    e = date.today()
+@click.command()
+def evaluate() -> None:
+    """Evaluate ledger rankings after their 14-session outcomes mature."""
+    from alphascreener.data.io import scan_parquet
+    from alphascreener.evaluation import (
+        compute_forward_labels,
+        evaluate_rankings,
+        mature_predictions,
+        read_prediction_ledger,
+    )
 
     try:
-        ticker_dfs = _load_ohlcv_data(start_date=s, end_date=e)
-    except Exception:
-        warn_card("Not enough OHLCV history for backtest.")
+        predictions = read_prediction_ledger()
+        labels = compute_forward_labels(scan_parquet("ohlcv").collect())
+    except (FileNotFoundError, ValueError) as exc:
+        warn_card(f"Cannot evaluate predictions: {exc}")
         return
-
-    signals = _load_signals_data(start_date=s, end_date=e)
-
-    # If no signal data exists, create a minimal signal so the backtest
-    # measures raw price action (buy on first available date)
-    if signals is None or signals.height == 0:
-        rows = []
-        for t in tickers[:5]:
-            df_t = ticker_dfs.get(t)
-            if df_t is not None and df_t.height > 0:
-                first_date = df_t["dt"].min()
-                rows.append({"ticker": t, "dt": first_date, "refined_score": 1.0})
-        if rows:
-            signals = pl.DataFrame(rows)
-
-    skipped = 0
-    bt_headers = ["Ticker", "Return", "Ann.Ret", "Sharpe", "MaxDD", "Win%"]
-    bt_rows = []
-    for ticker in tickers[:5]:
-        df_t = ticker_dfs.get(ticker)
-        if df_t is None or df_t.height == 0:
-            continue
-        try:
-            bt = run_backtest({ticker: df_t}, signals=signals)
-            if bt["n_trades"] == 0:
-                continue
-            m = bt["metrics"]
-            bt_rows.append([
-                ticker,
-                f"{m['total_return']:.1%}",
-                f"{m['annualized_return']:.1%}",
-                f"{m['sharpe_ratio']:.2f}",
-                f"{m['max_drawdown']:.1%}",
-                f"{m['win_rate']:.1%}",
-            ])
-        except Exception:
-            continue
-
-    if skipped > 0:
-        click.echo(f"  {_n('Skipped:')} {skipped} tickers with insufficient data")
-    if bt_rows:
-        panel(f"Backtest ({s.isoformat()} \u2192 {e.isoformat()})", [])
-        result_table(bt_headers, bt_rows)
-    else:
-        warn_card("No tickers had enough data for backtest. Run asc sync.")
-
-    spy = ticker_dfs.get("SPY")
-    if spy is not None and spy.height >= 40:
-        spy_close = spy.sort("dt")["close"]
-        spy_ret = (spy_close.tail(1)[0] / spy_close.head(1)[0] - 1) * 100
-        click.echo(f"  {_n('SPY:')} {s.isoformat()} -> {e.isoformat()}  buy+hold {spy_ret:+.1f}%")
-
-    click.echo()
+    matured = mature_predictions(predictions, labels)
+    metrics = evaluate_rankings(matured)
+    rule("Alpha Screener — Matured Predictions")
+    if not metrics["days"]:
+        click.echo("  No prediction dates have matured yet.\n")
+        return
+    panel("14-session prediction quality", [
+        f"Decision dates: {metrics['days']}",
+        f"Precision@10: {metrics['precision_at_k']:.3f}",
+        f"Lift@10: {metrics['lift_at_k']:.2f}",
+        f"Mean forward return: {metrics['mean_forward_return']:.2%}",
+        f"Bootstrap CI: [{metrics['ci_lower']:.3f}, {metrics['ci_upper']:.3f}]",
+    ])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -490,10 +372,8 @@ def optimize(rounds: int, train: int, regime_filter: bool) -> None:
         result_table(headers, rows)
         click.echo()
 
-    # ── Auto-apply optimized weights ──
     if report.final_weights:
-        _apply_weights(report.final_weights)
-        click.echo(f"  {_n('Weights auto-applied to')} MVP_WEIGHTS\n")
+        click.echo(f"  {_n('Weights:')} computed for this report only; source was not modified.\n")
 
 
 @click.command()
@@ -593,22 +473,23 @@ def review(days: int) -> None:
 @click.option(
     "--no-backtest",
     is_flag=True,
-    help="Skip automatic backtest, show screening results only.",
+    hidden=True,
+    help="Deprecated; the default command no longer runs a backtest.",
 )
 @click.option("--market", default="US", hidden=True)
 @click.version_option(message="Alpha Screener v0.1.0", package_name="alpha-screener")
 @click.pass_context
 def cli(ctx: click.Context, top: int, no_backtest: bool, market: str) -> None:
-    """Alpha Screener — US equity breakout screening + backtest.
+    """Alpha Screener — US equity 14-session breakout prediction.
 
-    Default (no subcommand): scan the full US market, show top breakout
-    candidates, then backtest each one.
+    Default (no subcommand): scan the tradable US universe, show top breakout
+    candidates, and record the ranking before outcomes are available.
 
     \b
     Examples:
-      asc                  # default: top 10 + backtest
-      asc --top 5           # top 5 + backtest
-      asc --no-backtest     # screening only
+      asc                  # default: top 10 + prediction ledger
+      asc --top 5          # top 5 + prediction ledger
+      asc evaluate         # evaluate matured prediction dates
       asc backtest AAPL     # backtest a specific ticker
     """
     if ctx.invoked_subcommand is not None:
@@ -617,6 +498,7 @@ def cli(ctx: click.Context, top: int, no_backtest: bool, market: str) -> None:
 
 
 cli.add_command(backtest)
+cli.add_command(evaluate)
 cli.add_command(optimize)
 cli.add_command(sync)
 cli.add_command(dev)

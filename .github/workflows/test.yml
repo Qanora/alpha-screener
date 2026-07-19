@@ -71,4 +71,5 @@ jobs:
           uv python install 3.11
           uv python pin 3.11
           uv sync --extra dev
+          uv run ruff check alphascreener tests
           uv run pytest -v

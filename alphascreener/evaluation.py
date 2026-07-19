@@ -56,8 +56,20 @@ def write_prediction_ledger(predictions: pl.DataFrame) -> Path:
     path = get_data_home() / "predictions" / f"dt={dates[0].isoformat()}"
     path.mkdir(parents=True, exist_ok=True)
     output = path / "ranking.parquet"
+    if output.exists():
+        raise FileExistsError(f"prediction ledger already exists for {dates[0].isoformat()}")
     predictions.with_columns(pl.col("decision_date").cast(pl.Date)).write_parquet(output)
     return output
+
+
+def read_prediction_ledger() -> pl.DataFrame:
+    """Read every immutable ranking written by :func:`write_prediction_ledger`."""
+    paths = sorted((get_data_home() / "predictions").glob("dt=*/ranking.parquet"))
+    if not paths:
+        return pl.DataFrame(
+            schema={"ticker": pl.String, "decision_date": pl.Date, "score": pl.Float64}
+        )
+    return pl.concat([pl.read_parquet(path) for path in paths], how="diagonal_relaxed")
 
 
 def mature_predictions(predictions: pl.DataFrame, labels: pl.DataFrame) -> pl.DataFrame:
