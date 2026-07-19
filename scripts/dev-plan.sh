@@ -36,12 +36,9 @@ echo "Project: ${PROJECT_ROOT}"
 import sys
 import platform
 
-from alphascreener.config import Settings
-
 print(f"Python: {platform.python_version()}")
 print(f"Executable: {sys.executable}")
 print(f"Platform: {platform.platform()}")
-print(f"Home: {Settings().alphascreener_home}")
 PY
 
 echo "=== Step 1: Lint (ruff) ==="
@@ -50,40 +47,7 @@ run_with_runner ruff check alphascreener tests
 echo "=== Step 2: Unit tests (full) ==="
 run_with_runner pytest
 
-echo "=== Step 3: Migration consistency check ==="
-"${PYTHON_BIN}" - <<'PY'
-from pathlib import Path
-
-from alphascreener.db.models import Base
-
-from alembic import command
-from alembic.config import Config
-
-revision_dir = Path("alembic/versions")
-if not revision_dir.exists():
-    raise SystemExit("缺少 alembic/versions 目录")
-
-files = sorted(revision_dir.glob("*.py"))
-if not files:
-    raise SystemExit("未检测到 alembic revision 文件")
-
-cfg = Config("alembic.ini")
-command.history(cfg, verbose=True)
-
-tables = ", ".join(sorted(Base.metadata.tables.keys()))
-print(f"Model tables: {tables}")
-print(f"Migration scripts: {len(files)}")
-PY
-
-echo "=== Step 4: Key smoke test ==="
+echo "=== Step 3: Key smoke test ==="
 run_with_runner asc --help
-"${PYTHON_BIN}" - <<'PY'
-from importlib import import_module
-
-from alphascreener import backtrader, data, factors, optimize, screening
-for mod in (backtrader, data, factors, optimize, screening):
-    import_module(mod.__name__)
-print("Core modules import smoke test: ok")
-PY
 
 echo "=== Plan pipeline check done ==="

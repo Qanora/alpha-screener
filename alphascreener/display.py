@@ -112,7 +112,7 @@ def kpi_row(kpis: list[tuple[str, str, str]]) -> None:
 
 
 def result_table(headers: list[str], rows: list[list[str]]) -> None:
-    """Styled data table for screening / backtest results."""
+    """Styled data table for prediction results."""
     if not rows:
         console.print(f"  [{Color.fg_dim}](no data)[/]")
         return

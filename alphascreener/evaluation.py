@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
-from alphascreener.acceptance import block_bootstrap_ci
 from alphascreener.data.paths import get_data_home
 from alphascreener.prediction_contract import DEFAULT_TOP_K, ExplosionLabelSpec
 
@@ -109,7 +109,7 @@ def evaluate_rankings(
         return {"days": 0, "precision_at_k": None, "lift_at_k": None, "mean_forward_return": None,
                 "ci_lower": None, "ci_upper": None}
     precisions = np.array([item[0] for item in daily])
-    ci_lower, ci_upper = block_bootstrap_ci(precisions, np.mean)
+    ci_lower, ci_upper = _block_bootstrap_ci(precisions, np.mean)
     return {
         "days": len(daily),
         "precision_at_k": float(precisions.mean()),
@@ -118,6 +118,23 @@ def evaluate_rankings(
         "ci_lower": ci_lower,
         "ci_upper": ci_upper,
     }
+
+
+def _block_bootstrap_ci(data: np.ndarray, statistic_fn) -> tuple[float, float]:
+    """Return a 95% block-bootstrap interval for time-ordered daily metrics."""
+    if not len(data):
+        return 0.0, 0.0
+    rng = np.random.default_rng()
+    block_size = min(5, len(data))
+    n_blocks = math.ceil(len(data) / block_size)
+    samples = np.empty(1_000, dtype=np.float64)
+    for index in range(len(samples)):
+        blocks = [
+            data[rng.integers(0, len(data) - block_size + 1) :][:block_size]
+            for _ in range(n_blocks)
+        ]
+        samples[index] = statistic_fn(np.concatenate(blocks)[: len(data)])
+    return tuple(float(value) for value in np.percentile(samples, [2.5, 97.5]))
 
 
 def _label_schema() -> dict[str, pl.DataType]:
