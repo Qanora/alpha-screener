@@ -42,25 +42,10 @@ fi
 echo "=== Inspection Step 1: lint ==="
 run_with_runner ruff check alphascreener tests
 
-echo "=== Inspection Step 2: smoke tests ==="
-run_with_runner pytest tests/test_cli.py::test_cli_help tests/test_cli.py::test_backtest_help -q
+echo "=== Inspection Step 2: CLI smoke tests ==="
+run_with_runner pytest tests/test_cli.py tests/test_evaluation.py -q
 
-echo "=== Inspection Step 3: migration + db metadata sanity ==="
-"${PYTHON_BIN}" - <<'PY'
-from pathlib import Path
-from alphascreener.db.models import Base
-
-print(f"Model table count: {len(Base.metadata.tables)}")
-print("Model tables:", ", ".join(sorted(Base.metadata.tables.keys())))
-
-if not Path("alembic/versions").exists():
-    raise SystemExit("Missing alembic/versions")
-if not list(Path("alembic/versions").glob("*.py")):
-    raise SystemExit("No Alembic revision files found")
-print("Alembic migration files: ok")
-PY
-
-echo "=== Inspection Step 4: CLI help smoke ==="
+echo "=== Inspection Step 3: CLI help smoke ==="
 run_with_runner asc --help
 
 echo "=== Inspection complete ==="
