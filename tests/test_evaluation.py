@@ -10,6 +10,7 @@ from alphascreener.evaluation import (
     compute_forward_labels,
     evaluate_rankings,
     mature_predictions,
+    read_prediction_ledger,
     write_prediction_ledger,
 )
 from alphascreener.prediction_contract import ExplosionLabelSpec
@@ -56,3 +57,11 @@ def test_prediction_ledger_is_written_before_outcome(tmp_path, monkeypatch) -> N
 
     assert path.exists()
     assert pl.read_parquet(path).equals(predictions)
+    assert read_prediction_ledger().equals(predictions)
+
+    try:
+        write_prediction_ledger(predictions)
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError("a decision-date ledger must be immutable")
