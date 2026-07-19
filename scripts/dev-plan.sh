@@ -76,7 +76,7 @@ print(f"Migration scripts: {len(files)}")
 PY
 
 echo "=== Step 4: Key smoke test ==="
-"${PROJECT_ROOT}/scripts/asc.sh" --help
+run_with_runner asc --help
 "${PYTHON_BIN}" - <<'PY'
 from importlib import import_module
 

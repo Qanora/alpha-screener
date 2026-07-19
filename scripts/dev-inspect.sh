@@ -61,6 +61,6 @@ print("Alembic migration files: ok")
 PY
 
 echo "=== Inspection Step 4: CLI help smoke ==="
-"${PROJECT_ROOT}/scripts/asc.sh" --help
+run_with_runner asc --help
 
 echo "=== Inspection complete ==="
