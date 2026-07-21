@@ -6,6 +6,7 @@ import polars as pl
 from click.testing import CliRunner
 
 from alphascreener.cli import _rank_candidates, cli
+from alphascreener.data.sync import SyncResult
 
 
 def test_help_exposes_only_prediction_evaluation() -> None:
@@ -20,7 +21,7 @@ def test_help_exposes_only_prediction_evaluation() -> None:
 
 def test_rank_candidates_uses_the_60_session_window() -> None:
     rows = []
-    for ticker, growth in [("SPY", 1.001), ("WIN", 1.01)]:
+    for ticker, growth in [("SPY", 1.02), ("WIN", 1.01)]:
         for index in range(60):
             rows.append({
                 "ticker": ticker,
@@ -36,3 +37,26 @@ def test_rank_candidates_uses_the_60_session_window() -> None:
 
     assert cutoff == date(2025, 3, 1)
     assert ranked.item(0, "ticker") == "WIN"
+
+
+def test_incomplete_sync_does_not_record_a_ranking(monkeypatch) -> None:
+    ledger_writes = []
+
+    def no_local_data():
+        raise FileNotFoundError
+
+    monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", no_local_data)
+    monkeypatch.setattr("alphascreener.data.sync.last_sync_date", lambda: None)
+    monkeypatch.setattr(
+        "alphascreener.data.sync.sync_ohlcv",
+        lambda: SyncResult(10, 100, 50, ("FAILED",)),
+    )
+    monkeypatch.setattr(
+        "alphascreener.evaluation.write_prediction_ledger",
+        lambda predictions: ledger_writes.append(predictions),
+    )
+
+    result = CliRunner().invoke(cli)
+
+    assert result.exit_code == 0
+    assert ledger_writes == []
