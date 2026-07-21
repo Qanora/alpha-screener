@@ -4,6 +4,7 @@ from datetime import date
 
 import pandas as pd
 import polars as pl
+import pytest
 
 from alphascreener.data.io import scan_ohlcv, write_ohlcv
 from alphascreener.data.sync import _default_universe, _parse_symbol_directory, sync_ohlcv
@@ -44,6 +45,24 @@ def test_default_universe_combines_official_directories_and_adds_spy(monkeypatch
     )
 
     assert _default_universe() == ["GOOD", "OTHER", "SPY"]
+
+
+def test_default_universe_rejects_a_missing_directory(monkeypatch) -> None:
+    nasdaq = "\n".join([
+        "Symbol|Security Name|Market Category|Test Issue|Financial Status|"
+        "Round Lot Size|ETF|NextShares",
+        "GOOD|Good Corporation - Common Stock|Q|N|N|100|N|N",
+    ])
+
+    def download(url):
+        if url.endswith("otherlisted.txt"):
+            raise OSError("directory unavailable")
+        return nasdaq
+
+    monkeypatch.setattr("alphascreener.data.sync._download_symbol_directory", download)
+
+    with pytest.raises(RuntimeError, match="complete US-equity universe unavailable"):
+        _default_universe()
 
 
 def test_partial_sync_reports_coverage_and_preserves_failed_ticker_history(

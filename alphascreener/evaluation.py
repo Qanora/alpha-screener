@@ -74,11 +74,14 @@ def write_prediction_ledger(predictions: pl.DataFrame) -> Path:
         raise FileExistsError(
             f"prediction ledger already exists for {dates[0].isoformat()} and {strategy}"
         )
-    predictions.with_columns(
+    serialized = predictions.with_columns(
         pl.col("decision_date").cast(pl.Date),
         pl.col("rank").cast(pl.Int64),
         pl.col("universe_size").cast(pl.Int64),
-    ).write_parquet(output)
+    )
+    temporary = path / "ranking.parquet.tmp"
+    serialized.write_parquet(temporary)
+    temporary.replace(output)
     return output
 
 
