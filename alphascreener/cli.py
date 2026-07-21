@@ -38,12 +38,12 @@ def _rank_candidates(ohlcv: pl.DataFrame, *, top: int) -> tuple[pl.DataFrame, da
 
 
 def _run_screen(top: int) -> None:
-    from alphascreener.data.io import scan_parquet
+    from alphascreener.data.io import scan_ohlcv
     from alphascreener.data.sync import last_sync_date, sync_ohlcv
     from alphascreener.evaluation import write_prediction_ledger
 
     try:
-        ohlcv = scan_parquet("ohlcv").collect()
+        ohlcv = scan_ohlcv().collect()
     except FileNotFoundError:
         ohlcv = None
     last = last_sync_date()
@@ -54,7 +54,7 @@ def _run_screen(top: int) -> None:
         click.echo("  Updating data ...")
         try:
             sync_ohlcv()
-            ohlcv = scan_parquet("ohlcv").collect()
+            ohlcv = scan_ohlcv().collect()
         except Exception as exc:
             warn_card(f"Sync failed: {exc}")
             return
@@ -86,7 +86,7 @@ def _run_screen(top: int) -> None:
 @click.command()
 def evaluate() -> None:
     """Evaluate rankings after their 14-session outcomes mature."""
-    from alphascreener.data.io import scan_parquet
+    from alphascreener.data.io import scan_ohlcv
     from alphascreener.evaluation import (
         compute_forward_labels,
         evaluate_rankings,
@@ -96,7 +96,7 @@ def evaluate() -> None:
 
     try:
         matured = mature_predictions(
-            read_prediction_ledger(), compute_forward_labels(scan_parquet("ohlcv").collect())
+            read_prediction_ledger(), compute_forward_labels(scan_ohlcv().collect())
         )
     except (FileNotFoundError, ValueError) as exc:
         warn_card(f"Cannot evaluate predictions: {exc}")
@@ -117,7 +117,7 @@ def evaluate() -> None:
 
 @click.group(invoke_without_command=True)
 @click.option("--top", default=10, show_default=True, help="Number of candidates to show.")
-@click.version_option(message="Alpha Screener v0.1.0", package_name="alpha-screener")
+@click.version_option(message="Alpha Screener %(version)s", package_name="alpha-screener")
 @click.pass_context
 def cli(ctx: click.Context, top: int) -> None:
     """Rank US equities and record predictions before outcomes are known."""

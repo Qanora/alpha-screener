@@ -1,3 +1,1 @@
-"""Alpha Screener - AI-Native quantitative strategy validation platform."""
-
-__version__ = "0.1.0"
+"""Rank US equities for potential breakouts over the next 14 sessions."""

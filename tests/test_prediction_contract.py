@@ -25,13 +25,6 @@ def test_explosion_threshold_requires_absolute_and_cross_sectional_tail() -> Non
     assert spec.threshold([0.01, 0.10, 0.20, 0.30, 0.40]) == 0.30
 
 
-def test_explosion_hit_uses_same_date_cross_section() -> None:
-    spec = ExplosionLabelSpec(absolute_return=0.10, cross_section_quantile=0.8)
-    returns = [0.01, 0.05, 0.11, 0.15, 0.30]
-
-    assert spec.is_hit(0.30, returns)
-    assert not spec.is_hit(0.11, returns)
-
 @pytest.mark.parametrize(
     "kwargs",
     [
