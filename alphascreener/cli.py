@@ -17,14 +17,17 @@ def _rank_candidates(ohlcv: pl.DataFrame, *, top: int) -> tuple[pl.DataFrame, da
 
     cutoff = ohlcv["dt"].max()
     snapshot = build_universe_snapshot(ohlcv, cutoff_date=cutoff)
-    eligible = snapshot.filter(pl.col("eligible"))["ticker"].to_list()
+    eligible = snapshot.filter(pl.col("eligible") & (pl.col("ticker") != "SPY"))["ticker"].to_list()
     if not eligible:
         return pl.DataFrame(schema={"ticker": pl.String, "score": pl.Float64}), cutoff
+    feature_tickers = [*eligible, "SPY"]
     window = (
-        ohlcv.filter(pl.col("ticker").is_in(eligible)).sort(["ticker", "dt"])
+        ohlcv.filter(pl.col("ticker").is_in(feature_tickers)).sort(["ticker", "dt"])
         .group_by("ticker", maintain_order=True).tail(60)
     )
-    features = compute_60d_features(window).filter(pl.col("dt") == cutoff)
+    features = compute_60d_features(window).filter(
+        (pl.col("dt") == cutoff) & (pl.col("ticker") != "SPY")
+    )
     signals = [
         "return_5d", "return_20d", "distance_to_60d_high",
         "volume_zscore_20", "relative_strength_20d",
@@ -39,7 +42,7 @@ def _rank_candidates(ohlcv: pl.DataFrame, *, top: int) -> tuple[pl.DataFrame, da
 
 def _run_screen(top: int) -> None:
     from alphascreener.data.io import scan_ohlcv
-    from alphascreener.data.sync import last_sync_date, sync_ohlcv
+    from alphascreener.data.sync import MIN_SYNC_COVERAGE, last_sync_date, sync_ohlcv
     from alphascreener.evaluation import write_prediction_ledger
 
     try:
@@ -53,7 +56,13 @@ def _run_screen(top: int) -> None:
     if needs_sync:
         click.echo("  Updating data ...")
         try:
-            sync_ohlcv()
+            sync_status = sync_ohlcv()
+            if sync_status.coverage < MIN_SYNC_COVERAGE:
+                warn_card(
+                    "Sync incomplete; no ranking was recorded.",
+                    f"Ticker coverage: {sync_status.coverage:.1%}",
+                )
+                return
             ohlcv = scan_ohlcv().collect()
         except Exception as exc:
             warn_card(f"Sync failed: {exc}")
@@ -116,7 +125,13 @@ def evaluate() -> None:
 
 
 @click.group(invoke_without_command=True)
-@click.option("--top", default=10, show_default=True, help="Number of candidates to show.")
+@click.option(
+    "--top",
+    default=10,
+    type=click.IntRange(min=1),
+    show_default=True,
+    help="Number of candidates to show.",
+)
 @click.version_option(message="Alpha Screener %(version)s", package_name="alpha-screener")
 @click.pass_context
 def cli(ctx: click.Context, top: int) -> None:

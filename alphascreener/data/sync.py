@@ -1,12 +1,13 @@
-"""Yahoo Finance OHLCV data sync — download + incremental update.
-
-Writes Hive-partitioned Parquet to ~/.alphascreener/data/ohlcv/dt=YYYY-MM-DD/
-"""
+"""Download a broad US-equity universe and incrementally synchronize OHLCV."""
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
+from dataclasses import dataclass
 from datetime import date, timedelta
+from urllib.request import Request, urlopen
 
 import polars as pl
 import yfinance as yf
@@ -15,43 +16,95 @@ from alphascreener.data.io import scan_ohlcv, write_ohlcv
 
 _logger = logging.getLogger(__name__)
 
-_BATCH_SIZE = 50  # yfinance download batch size
+_BATCH_SIZE = 50
+MIN_SYNC_COVERAGE = 0.90
+_SYMBOL_DIRECTORY_URLS = (
+    "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+    "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+)
+_NON_EQUITY_NAME_MARKERS = (
+    " warrant",
+    " right",
+    " - unit",
+    " unit ",
+    " units",
+    " preferred stock",
+    " preferred shares",
+    " debt",
+    " notes due",
+    " bond",
+)
+_FALLBACK_TICKERS = {
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
+    "JPM", "V", "JNJ", "WMT", "PG", "MA", "UNH", "HD", "DIS", "BAC",
+    "XOM", "NFLX", "ADBE", "CRM", "AMD", "INTC", "QCOM", "TXN", "AVGO",
+    "COST", "PEP", "KO", "MRK", "ABBV", "PFE", "LLY", "TMO", "ABT",
+    "NKE", "MCD", "SBUX", "ORCL", "CSCO", "IBM", "CVX", "WFC", "GS",
+    "MS", "CAT", "BA", "GE", "MMM", "RTX", "LMT", "SPY",
+}
+
+
+@dataclass(frozen=True)
+class SyncResult:
+    """Observable result of one synchronization attempt."""
+
+    rows_written: int
+    requested_tickers: int
+    downloaded_tickers: int
+    failed_tickers: tuple[str, ...]
+
+    @property
+    def coverage(self) -> float:
+        """Return the fraction of requested tickers with usable rows."""
+        if not self.requested_tickers:
+            return 1.0
+        return self.downloaded_tickers / self.requested_tickers
+
+
+def _download_symbol_directory(url: str) -> str:
+    request = Request(url, headers={"User-Agent": "alpha-screener/0.1"})
+    with urlopen(request, timeout=15) as response:
+        return response.read().decode("utf-8")
+
+
+def _parse_symbol_directory(contents: str) -> set[str]:
+    """Extract ordinary US-listed equities and ADRs from a Nasdaq directory."""
+    tickers: set[str] = set()
+    for row in csv.DictReader(io.StringIO(contents), delimiter="|"):
+        if row.get("Test Issue") != "N" or row.get("ETF") != "N":
+            continue
+        if row.get("NextShares") == "Y":
+            continue
+        name = f" {row.get('Security Name', '').lower()}"
+        if any(marker in name for marker in _NON_EQUITY_NAME_MARKERS):
+            continue
+        ticker = row.get("NASDAQ Symbol") or row.get("Symbol") or ""
+        ticker = ticker.strip().replace(".", "-")
+        if ticker and not any(character in ticker for character in "^/"):
+            tickers.add(ticker)
+    return tickers
 
 
 def _default_universe() -> list[str]:
-    """Return a composite US large-cap ticker list."""
+    """Return US-listed equities from the official Nasdaq Trader directories."""
     tickers: set[str] = set()
-    try:
-        # SP500 from Wikipedia
-        table = pl.read_html(
-            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        )[0]
-        sp500 = table["Symbol"].str.replace(".", "-").to_list()
-        tickers.update(sp500)
-    except Exception:
-        _logger.warning("Could not fetch SP500 list, using fallback")
-
+    for url in _SYMBOL_DIRECTORY_URLS:
+        try:
+            tickers.update(_parse_symbol_directory(_download_symbol_directory(url)))
+        except Exception as exc:
+            _logger.warning("Could not fetch symbol directory %s: %s", url, exc)
     if not tickers:
-        # Minimum viable universe if online sources fail
-        tickers = {
-            "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
-            "JPM", "V", "JNJ", "WMT", "PG", "MA", "UNH", "HD", "DIS", "BAC",
-            "XOM", "NFLX", "ADBE", "CRM", "AMD", "INTC", "QCOM", "TXN", "AVGO",
-            "COST", "PEP", "KO", "MRK", "ABBV", "PFE", "LLY", "TMO", "ABT",
-            "NKE", "MCD", "SBUX", "ORCL", "CSCO", "IBM", "CVX", "WFC", "GS",
-            "MS", "CAT", "BA", "GE", "MMM", "RTX", "LMT", "SPY",
-        }
+        _logger.warning("No symbol directory was available; using the fallback universe")
+        tickers.update(_FALLBACK_TICKERS)
+    tickers.add("SPY")
     return sorted(tickers)
 
 
 def last_sync_date() -> date | None:
     """Return the most recent date in the local OHLCV store, or None."""
     try:
-        lf = scan_ohlcv()
-        df = lf.select("dt").collect()
-        if df.height == 0:
-            return None
-        return df["dt"].max()
+        frame = scan_ohlcv().select("dt").collect()
+        return frame["dt"].max() if frame.height else None
     except Exception:
         return None
 
@@ -60,51 +113,36 @@ def sync_ohlcv(
     tickers: list[str] | None = None,
     *,
     start: date | None = None,
-) -> int:
-    """Download OHLCV data and write to the Parquet store.
-
-    Args:
-        tickers: Ticker list (default: SP500 + Russell 1000).
-        start: Start date for download. Default: last sync date - 7 days,
-               or 120 calendar days ago if no data exists.  This covers the
-               60-session prediction contract while keeping the initial CLI
-               data download focused on its actual input requirement.
-    Returns:
-        Number of new rows written.
-    """
-    if tickers is None:
-        tickers = _default_universe()
-
-    # Determine date range. If existing data is minimal, do full download.
+) -> SyncResult:
+    """Download OHLCV rows, merge them safely, and report ticker coverage."""
+    requested = tuple(dict.fromkeys(tickers if tickers is not None else _default_universe()))
     if start is None:
         last = last_sync_date()
         if last is not None:
             try:
                 existing = scan_ohlcv().collect()
-                data_span = (last - existing["dt"].min()).days if existing.height > 0 else 0
+                data_span = (last - existing["dt"].min()).days if existing.height else 0
             except Exception:
                 data_span = 0
-            if data_span < 90:
-                start = date.today() - timedelta(days=120)
-            else:
-                start = last - timedelta(days=7)
+            start = (
+                date.today() - timedelta(days=120)
+                if data_span < 90
+                else last - timedelta(days=7)
+            )
         else:
             start = date.today() - timedelta(days=120)
 
     end = date.today()
+    _logger.info("Syncing %d tickers from %s to %s", len(requested), start, end)
 
-    _logger.info("Syncing %d tickers from %s to %s", len(tickers), start, end)
-
-    # Download in batches, collect all records, then write once
-    all_records = []
-
-    for i in range(0, len(tickers), _BATCH_SIZE):
-        batch = tickers[i : i + _BATCH_SIZE]
-        batch_num = i // _BATCH_SIZE + 1
-
+    all_records: list[dict[str, object]] = []
+    downloaded: set[str] = set()
+    for offset in range(0, len(requested), _BATCH_SIZE):
+        batch = requested[offset : offset + _BATCH_SIZE]
+        batch_number = offset // _BATCH_SIZE + 1
         try:
             data = yf.download(
-                batch,
+                list(batch),
                 start=str(start),
                 end=str(end),
                 auto_adjust=True,
@@ -112,64 +150,66 @@ def sync_ohlcv(
                 threads=True,
             )
         except Exception as exc:
-            _logger.warning("Batch %d download failed: %s", batch_num, exc)
+            _logger.warning("Batch %d download failed: %s", batch_number, exc)
             continue
-
         if data.empty:
             continue
 
         is_multi = hasattr(data.columns, "levels") and len(data.columns.levels) > 1
-
-        for ticker_str in batch:
+        for ticker in batch:
             try:
                 if is_multi:
-                    if ticker_str not in data.columns.get_level_values(1):
+                    if ticker not in data.columns.get_level_values(1):
                         continue
-                    ticker_data = data.xs(ticker_str, level=1, axis=1)
-                else:
+                    ticker_data = data.xs(ticker, level=1, axis=1)
+                elif len(batch) == 1:
                     ticker_data = data.copy()
+                else:
+                    continue
             except (KeyError, AttributeError):
                 continue
 
             ticker_data = ticker_data.dropna(how="all")
             if ticker_data.empty:
                 continue
-
-            col_map = {}
-            for col in ticker_data.columns:
-                cl = str(col).lower()
-                if "open" in cl:
-                    col_map[col] = "open"
-                elif "high" in cl:
-                    col_map[col] = "high"
-                elif "low" in cl:
-                    col_map[col] = "low"
-                elif "close" in cl:
-                    col_map[col] = "close"
-                elif "volume" in cl:
-                    col_map[col] = "volume"
-            ticker_data = ticker_data.rename(columns=col_map)
-            keep_cols = [c for c in ["open","high","low","close","volume"] if c in col_map.values()]
-            ticker_data = ticker_data[keep_cols]
+            column_map: dict[object, str] = {}
+            for column in ticker_data.columns:
+                lowered = str(column).lower()
+                for field in ("open", "high", "low", "close", "volume"):
+                    if field in lowered:
+                        column_map[column] = field
+                        break
+            ticker_data = ticker_data.rename(columns=column_map)
+            keep_columns = [
+                field for field in ("open", "high", "low", "close", "volume")
+                if field in column_map.values()
+            ]
+            ticker_data = ticker_data[keep_columns]
             if ticker_data.empty or "close" not in ticker_data.columns:
                 continue
 
-            for idx, row in ticker_data.iterrows():
-                all_records.append({
-                    "ticker": ticker_str,
-                    "dt": idx.date() if hasattr(idx, "date") else idx,
+            ticker_rows = []
+            for index, row in ticker_data.iterrows():
+                ticker_rows.append({
+                    "ticker": ticker,
+                    "dt": index.date() if hasattr(index, "date") else index,
                     "open": float(row.get("open", 0) or 0),
                     "high": float(row.get("high", 0) or 0),
                     "low": float(row.get("low", 0) or 0),
                     "close": float(row.get("close", 0) or 0),
                     "volume": int(row.get("volume", 0) or 0),
                 })
+            if ticker_rows:
+                downloaded.add(ticker)
+                all_records.extend(ticker_rows)
 
-    all_rows = 0
     if all_records:
-        df = pl.DataFrame(all_records)
-        write_ohlcv(df)
-        all_rows = df.height
-
-    _logger.info("Sync complete: %d new rows", all_rows)
-    return all_rows
+        write_ohlcv(pl.DataFrame(all_records))
+    failed = tuple(sorted(set(requested) - downloaded))
+    result = SyncResult(len(all_records), len(requested), len(downloaded), failed)
+    _logger.info(
+        "Sync complete: %d rows, %.1f%% ticker coverage",
+        result.rows_written,
+        result.coverage * 100,
+    )
+    return result
