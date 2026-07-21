@@ -33,10 +33,37 @@ def test_rank_candidates_uses_the_60_session_window() -> None:
                 "volume": 2_000_000,
             })
 
-    ranked, cutoff = _rank_candidates(pl.DataFrame(rows), top=1)
+    ranked, cutoff = _rank_candidates(pl.DataFrame(rows))
 
     assert cutoff == date(2025, 3, 1)
     assert ranked.item(0, "ticker") == "WIN"
+
+
+def test_top_option_limits_display_but_ledger_receives_full_ranking(monkeypatch) -> None:
+    rows = []
+    start = date.today() - timedelta(days=90)
+    for ticker, growth in [("SPY", 1.001), ("WIN", 1.01), ("SECOND", 1.005)]:
+        for index in range(91):
+            rows.append({
+                "ticker": ticker,
+                "dt": start + timedelta(days=index),
+                "close": 100.0 * growth**index,
+                "volume": 2_000_000,
+            })
+    data = pl.DataFrame(rows)
+    ledger_writes = []
+    monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
+    monkeypatch.setattr("alphascreener.data.sync.last_sync_date", lambda: date.today())
+    monkeypatch.setattr(
+        "alphascreener.evaluation.write_prediction_ledger",
+        lambda predictions: ledger_writes.append(predictions),
+    )
+
+    result = CliRunner().invoke(cli, ["--top", "1"])
+
+    assert result.exit_code == 0
+    assert ledger_writes[0].height == 2
+    assert ledger_writes[0]["universe_size"].unique().to_list() == [2]
 
 
 def test_incomplete_sync_does_not_record_a_ranking(monkeypatch) -> None:
