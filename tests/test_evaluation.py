@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from alphascreener.evaluation import (
     LEGACY_STRATEGY_VERSION,
@@ -109,6 +111,28 @@ def test_prediction_ledgers_are_immutable_per_date_and_strategy(tmp_path, monkey
     second_path = write_prediction_ledger(_predictions("rank-v2"))
     assert second_path.exists()
     assert read_prediction_ledger().height == 4
+
+
+def test_failed_ledger_replace_does_not_create_an_immutable_output(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("alphascreener.evaluation.get_data_home", lambda: tmp_path)
+
+    def fail_replace(self, target):
+        raise OSError("replace failed")
+
+    with monkeypatch.context() as context:
+        context.setattr(Path, "replace", fail_replace)
+        with pytest.raises(OSError, match="replace failed"):
+            write_prediction_ledger(_predictions())
+
+    output = (
+        tmp_path
+        / "predictions"
+        / "dt=2025-01-01"
+        / "strategy=rank-v1"
+        / "ranking.parquet"
+    )
+    assert not output.exists()
+    assert write_prediction_ledger(_predictions()) == output
 
 
 def test_legacy_ledger_is_readable_but_has_no_claimed_universe_size(tmp_path, monkeypatch) -> None:

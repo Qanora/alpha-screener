@@ -33,6 +33,7 @@ asc evaluate        # 评估已经成熟的 14 交易日预测
 - 股票目录来自 Nasdaq Trader 的 `nasdaqlisted.txt` 和 `otherlisted.txt`，过滤测试证券、ETF 和明显的非股票工具；SPY 只作为市场基准，不会作为候选输出。
 - 日线 OHLCV 来自 Yahoo Finance，使用自动复权价格。
 - 行情按 `ticker + dt` 合并并原子替换分区；部分批次失败不会删除其他股票的历史数据。
+- 任一官方股票目录不可用或为空时，`asc` 会停止，不会用半个市场生成排名。
 - 刷新覆盖率低于 90% 时，`asc` 不会输出或记录新排名。
 - 行情保存在 `~/.alphascreener/data/ohlcv/`，预测账本保存在 `~/.alphascreener/predictions/`。
 - 旧三列账本仍可读取，但因缺少完整股票池大小，不参与可信的 lift 计算。

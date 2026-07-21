@@ -34,16 +34,6 @@ _NON_EQUITY_NAME_MARKERS = (
     " notes due",
     " bond",
 )
-_FALLBACK_TICKERS = {
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
-    "JPM", "V", "JNJ", "WMT", "PG", "MA", "UNH", "HD", "DIS", "BAC",
-    "XOM", "NFLX", "ADBE", "CRM", "AMD", "INTC", "QCOM", "TXN", "AVGO",
-    "COST", "PEP", "KO", "MRK", "ABBV", "PFE", "LLY", "TMO", "ABT",
-    "NKE", "MCD", "SBUX", "ORCL", "CSCO", "IBM", "CVX", "WFC", "GS",
-    "MS", "CAT", "BA", "GE", "MMM", "RTX", "LMT", "SPY",
-}
-
-
 @dataclass(frozen=True)
 class SyncResult:
     """Observable result of one synchronization attempt."""
@@ -88,14 +78,21 @@ def _parse_symbol_directory(contents: str) -> set[str]:
 def _default_universe() -> list[str]:
     """Return US-listed equities from the official Nasdaq Trader directories."""
     tickers: set[str] = set()
+    failures: list[str] = []
     for url in _SYMBOL_DIRECTORY_URLS:
         try:
-            tickers.update(_parse_symbol_directory(_download_symbol_directory(url)))
+            directory_tickers = _parse_symbol_directory(_download_symbol_directory(url))
+            if not directory_tickers:
+                raise ValueError("symbol directory contained no eligible equities")
+            tickers.update(directory_tickers)
         except Exception as exc:
             _logger.warning("Could not fetch symbol directory %s: %s", url, exc)
-    if not tickers:
-        _logger.warning("No symbol directory was available; using the fallback universe")
-        tickers.update(_FALLBACK_TICKERS)
+            failures.append(url)
+    if failures:
+        raise RuntimeError(
+            "complete US-equity universe unavailable; failed directories: "
+            + ", ".join(failures)
+        )
     tickers.add("SPY")
     return sorted(tickers)
 
