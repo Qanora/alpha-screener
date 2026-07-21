@@ -52,10 +52,15 @@ jobs:
             exit 1
           fi
 
-  tests:
+  compatibility:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [gitleaks]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
@@ -65,9 +70,14 @@ jobs:
       - name: Run full test suite
         run: |
           set -e
-          # Pin to Python 3.11 to avoid resolution failures with 3.12+ deps
-          uv python install 3.11
-          uv python pin 3.11
-          uv sync --extra dev
+          uv python install ${{ matrix.python-version }}
+          uv sync --extra dev --python ${{ matrix.python-version }}
           uv run ruff check alphascreener tests
           uv run pytest -v
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    needs: [compatibility]
+    steps:
+      - run: echo "All supported Python versions passed."

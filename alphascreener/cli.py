@@ -148,6 +148,7 @@ def evaluate() -> None:
         panel(f"14-session quality — {metrics['strategy_version']}", [
             f"Decision dates: {metrics['days']} (skipped: {metrics['skipped_days']})",
             f"Precision@10: {metrics['precision_at_k']:.3f}",
+            f"Base explosion rate: {metrics['base_explosion_rate']:.3f}",
             f"Lift@10: {lift}",
             f"Mean forward return: {metrics['mean_forward_return']:.2%}",
             f"Mean outcome coverage: {metrics['mean_outcome_coverage']:.1%}",

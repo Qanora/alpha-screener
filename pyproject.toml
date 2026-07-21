@@ -2,7 +2,8 @@
 name = "alpha-screener"
 version = "0.1.0"
 description = "CLI screener for 14-session US-equity breakout candidates"
-requires-python = ">=3.11"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     # 核心数值与数据处理
     "numpy>=1.26",
