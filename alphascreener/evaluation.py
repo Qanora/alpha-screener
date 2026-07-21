@@ -1,8 +1,9 @@
-"""Future-14-session labels, prediction ledger, and out-of-sample metrics."""
+"""Future-14-session labels, immutable rankings, and strategy-aware metrics."""
 
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -11,16 +12,19 @@ import polars as pl
 from alphascreener.data.paths import get_data_home
 from alphascreener.prediction_contract import DEFAULT_TOP_K, ExplosionLabelSpec
 
+LEGACY_STRATEGY_VERSION = "legacy-unversioned"
+MIN_OUTCOME_COVERAGE = 0.90
+MIN_CONFIDENCE_INTERVAL_DAYS = 20
+
 
 def compute_forward_labels(
     ohlcv: pl.DataFrame,
     *,
     spec: ExplosionLabelSpec = ExplosionLabelSpec(),
 ) -> pl.DataFrame:
-    """Label each decision date using only its later 14-session close."""
+    """Compute each ticker's return over the next 14 observed sessions."""
     required = {"ticker", "dt", "close"}
-    missing = required - set(ohlcv.columns)
-    if missing:
+    if missing := required - set(ohlcv.columns):
         raise ValueError(f"OHLCV data missing columns: {sorted(missing)}")
     data = ohlcv.sort(["ticker", "dt"]).with_columns(
         pl.col("close").shift(-spec.horizon_sessions).over("ticker").alias("future_close")
@@ -29,112 +33,209 @@ def compute_forward_labels(
         ((pl.col("future_close") / pl.col("close")) - 1.0).alias("forward_return")
     ).drop_nulls("forward_return")
 
-    labeled: list[pl.DataFrame] = []
-    for (decision_date,), group in data.group_by("dt", maintain_order=True):
-        returns = group["forward_return"].to_list()
-        threshold = spec.threshold(returns)
-        labeled.append(
+    return data.select(_label_schema().keys()).sort(["dt", "ticker"])
+
+
+def write_prediction_ledger(predictions: pl.DataFrame) -> Path:
+    """Persist one complete decision-date ranking before outcomes are observable."""
+    required = {
+        "ticker",
+        "decision_date",
+        "score",
+        "rank",
+        "strategy_version",
+        "universe_size",
+    }
+    if missing := required - set(predictions.columns):
+        raise ValueError(f"predictions missing columns: {sorted(missing)}")
+    dates = predictions["decision_date"].cast(pl.Date).unique().to_list()
+    strategies = predictions["strategy_version"].unique().to_list()
+    sizes = predictions["universe_size"].unique().to_list()
+    if len(dates) != 1 or len(strategies) != 1 or len(sizes) != 1:
+        raise ValueError("ledger write requires one date, strategy, and universe size")
+    strategy = str(strategies[0])
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", strategy):
+        raise ValueError("strategy_version contains unsafe path characters")
+    if sizes[0] != predictions.height:
+        raise ValueError("universe_size must equal the complete ranking size")
+    expected_ranks = list(range(1, predictions.height + 1))
+    if sorted(predictions["rank"].cast(pl.Int64).to_list()) != expected_ranks:
+        raise ValueError("rank must contain every ordinal from 1 through universe_size")
+
+    path = (
+        get_data_home()
+        / "predictions"
+        / f"dt={dates[0].isoformat()}"
+        / f"strategy={strategy}"
+    )
+    path.mkdir(parents=True, exist_ok=True)
+    output = path / "ranking.parquet"
+    if output.exists():
+        raise FileExistsError(
+            f"prediction ledger already exists for {dates[0].isoformat()} and {strategy}"
+        )
+    predictions.with_columns(
+        pl.col("decision_date").cast(pl.Date),
+        pl.col("rank").cast(pl.Int64),
+        pl.col("universe_size").cast(pl.Int64),
+    ).write_parquet(output)
+    return output
+
+
+def read_prediction_ledger() -> pl.DataFrame:
+    """Read rankings and normalize legacy three-column ledger files."""
+    paths = sorted((get_data_home() / "predictions").rglob("ranking.parquet"))
+    if not paths:
+        return pl.DataFrame(schema=_prediction_schema())
+    return pl.concat([_normalize_ledger(pl.read_parquet(path)) for path in paths])
+
+
+def _normalize_ledger(frame: pl.DataFrame) -> pl.DataFrame:
+    frame = frame.with_columns(pl.col("decision_date").cast(pl.Date))
+    if "strategy_version" not in frame.columns:
+        frame = frame.with_columns(pl.lit(LEGACY_STRATEGY_VERSION).alias("strategy_version"))
+    if "rank" not in frame.columns:
+        frame = frame.with_columns(
+            pl.col("score")
+            .rank("ordinal", descending=True)
+            .over(["decision_date", "strategy_version"])
+            .cast(pl.Int64)
+            .alias("rank")
+        )
+    if "universe_size" not in frame.columns:
+        frame = frame.with_columns(pl.lit(None, dtype=pl.Int64).alias("universe_size"))
+    return frame.select(_prediction_schema().keys())
+
+
+def mature_predictions(
+    predictions: pl.DataFrame,
+    labels: pl.DataFrame,
+    *,
+    spec: ExplosionLabelSpec = ExplosionLabelSpec(),
+) -> pl.DataFrame:
+    """Join outcomes and classify explosions within each ranked eligible universe."""
+    required_predictions = set(_prediction_schema())
+    required_labels = {"ticker", "dt", "forward_return"}
+    if missing := required_predictions - set(predictions.columns):
+        raise ValueError(f"predictions missing columns: {sorted(missing)}")
+    if missing := required_labels - set(labels.columns):
+        raise ValueError(f"labels missing columns: {sorted(missing)}")
+    joined = predictions.join(
+        labels.select(["ticker", "dt", "forward_return"]),
+        left_on=["ticker", "decision_date"],
+        right_on=["ticker", "dt"],
+        how="inner",
+    )
+    matured: list[pl.DataFrame] = []
+    for _, group in joined.group_by(
+        ["strategy_version", "decision_date"], maintain_order=True
+    ):
+        threshold = spec.threshold(group["forward_return"].to_list())
+        matured.append(
             group.with_columns(
                 pl.lit(threshold).alias("hit_threshold"),
                 (pl.col("forward_return") >= threshold).alias("is_explosion"),
             )
         )
-    if not labeled:
-        return pl.DataFrame(schema=_label_schema())
-    return pl.concat(labeled).select(_label_schema().keys()).sort(["dt", "ticker"])
-
-
-def write_prediction_ledger(predictions: pl.DataFrame) -> Path:
-    """Persist one decision-date ranking before its outcome is observable."""
-    required = {"ticker", "decision_date", "score"}
-    missing = required - set(predictions.columns)
-    if missing:
-        raise ValueError(f"predictions missing columns: {sorted(missing)}")
-    dates = predictions["decision_date"].cast(pl.Date).unique().to_list()
-    if len(dates) != 1:
-        raise ValueError("ledger write requires exactly one decision_date")
-    path = get_data_home() / "predictions" / f"dt={dates[0].isoformat()}"
-    path.mkdir(parents=True, exist_ok=True)
-    output = path / "ranking.parquet"
-    if output.exists():
-        raise FileExistsError(f"prediction ledger already exists for {dates[0].isoformat()}")
-    predictions.with_columns(pl.col("decision_date").cast(pl.Date)).write_parquet(output)
-    return output
-
-
-def read_prediction_ledger() -> pl.DataFrame:
-    """Read every immutable ranking written by :func:`write_prediction_ledger`."""
-    paths = sorted((get_data_home() / "predictions").glob("dt=*/ranking.parquet"))
-    if not paths:
-        return pl.DataFrame(
-            schema={"ticker": pl.String, "decision_date": pl.Date, "score": pl.Float64}
+    if not matured:
+        return joined.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("hit_threshold"),
+            pl.lit(None, dtype=pl.Boolean).alias("is_explosion"),
         )
-    return pl.concat([pl.read_parquet(path) for path in paths], how="diagonal_relaxed")
-
-
-def mature_predictions(predictions: pl.DataFrame, labels: pl.DataFrame) -> pl.DataFrame:
-    """Join a previously stored ranking to labels only after they mature."""
-    required_predictions = {"ticker", "decision_date", "score"}
-    required_labels = {"ticker", "dt", "forward_return", "is_explosion"}
-    if missing := required_predictions - set(predictions.columns):
-        raise ValueError(f"predictions missing columns: {sorted(missing)}")
-    if missing := required_labels - set(labels.columns):
-        raise ValueError(f"labels missing columns: {sorted(missing)}")
-    return predictions.join(
-        labels.select(["ticker", "dt", "forward_return", "is_explosion"]),
-        left_on=["ticker", "decision_date"],
-        right_on=["ticker", "dt"],
-        how="inner",
-    )
+    return pl.concat(matured)
 
 
 def evaluate_rankings(
-    matured: pl.DataFrame, *, top_k: int = DEFAULT_TOP_K
-) -> dict[str, float | int | None]:
-    """Aggregate daily Top-K precision, lift, return, and bootstrap CI."""
+    matured: pl.DataFrame,
+    *,
+    top_k: int = DEFAULT_TOP_K,
+) -> list[dict[str, str | float | int | None]]:
+    """Evaluate each strategy independently against its complete eligible universe."""
     if top_k <= 0:
         raise ValueError("top_k must be positive")
-    required = {"decision_date", "score", "is_explosion", "forward_return"}
+    required = {
+        "decision_date",
+        "score",
+        "rank",
+        "strategy_version",
+        "universe_size",
+        "is_explosion",
+        "forward_return",
+    }
     if missing := required - set(matured.columns):
         raise ValueError(f"matured predictions missing columns: {sorted(missing)}")
+    if matured.is_empty():
+        return []
 
-    daily: list[tuple[float, float, float]] = []
-    for _, group in matured.group_by("decision_date", maintain_order=True):
-        ordered = group.sort("score", descending=True).head(top_k)
-        base_rate = float(group["is_explosion"].mean())
-        precision = float(ordered["is_explosion"].mean())
-        lift = precision / base_rate if base_rate > 0 else None
-        daily.append((precision, lift or 0.0, float(ordered["forward_return"].mean())))
-    if not daily:
-        return {"days": 0, "precision_at_k": None, "lift_at_k": None, "mean_forward_return": None,
-                "ci_lower": None, "ci_upper": None}
-    precisions = np.array([item[0] for item in daily])
-    ci_lower, ci_upper = _block_bootstrap_ci(precisions, np.mean)
-    return {
-        "days": len(daily),
-        "precision_at_k": float(precisions.mean()),
-        "lift_at_k": float(np.mean([item[1] for item in daily])),
-        "mean_forward_return": float(np.mean([item[2] for item in daily])),
-        "ci_lower": ci_lower,
-        "ci_upper": ci_upper,
-    }
+    results: list[dict[str, str | float | int | None]] = []
+    for (strategy,), strategy_rows in matured.group_by("strategy_version", maintain_order=True):
+        daily: list[tuple[float, float | None, float, float]] = []
+        skipped_days = 0
+        for _, group in strategy_rows.group_by("decision_date", maintain_order=True):
+            sizes = group["universe_size"].drop_nulls().unique().to_list()
+            if len(sizes) != 1 or sizes[0] <= 0:
+                skipped_days += 1
+                continue
+            outcome_coverage = group.height / int(sizes[0])
+            if outcome_coverage < MIN_OUTCOME_COVERAGE:
+                skipped_days += 1
+                continue
+            ordered = group.sort("rank").head(top_k)
+            base_rate = float(group["is_explosion"].mean())
+            precision = float(ordered["is_explosion"].mean())
+            lift = precision / base_rate if base_rate > 0 else None
+            daily.append(
+                (precision, lift, float(ordered["forward_return"].mean()), outcome_coverage)
+            )
+
+        precisions = np.array([item[0] for item in daily], dtype=np.float64)
+        ci_lower, ci_upper = _block_bootstrap_ci(precisions)
+        lifts = [item[1] for item in daily if item[1] is not None]
+        results.append({
+            "strategy_version": str(strategy),
+            "days": len(daily),
+            "skipped_days": skipped_days,
+            "precision_at_k": float(precisions.mean()) if len(precisions) else None,
+            "lift_at_k": float(np.mean(lifts)) if lifts else None,
+            "mean_forward_return": (
+                float(np.mean([item[2] for item in daily])) if daily else None
+            ),
+            "mean_outcome_coverage": (
+                float(np.mean([item[3] for item in daily])) if daily else None
+            ),
+            "ci_lower": ci_lower,
+            "ci_upper": ci_upper,
+        })
+    return results
 
 
-def _block_bootstrap_ci(data: np.ndarray, statistic_fn) -> tuple[float, float]:
-    """Return a 95% block-bootstrap interval for time-ordered daily metrics."""
-    if not len(data):
-        return 0.0, 0.0
-    rng = np.random.default_rng()
+def _block_bootstrap_ci(data: np.ndarray) -> tuple[float | None, float | None]:
+    """Return a deterministic 95% interval after enough daily observations exist."""
+    if len(data) < MIN_CONFIDENCE_INTERVAL_DAYS:
+        return None, None
+    rng = np.random.default_rng(0)
     block_size = min(5, len(data))
     n_blocks = math.ceil(len(data) / block_size)
     samples = np.empty(1_000, dtype=np.float64)
     for index in range(len(samples)):
         blocks = [
-            data[rng.integers(0, len(data) - block_size + 1) :][:block_size]
-            for _ in range(n_blocks)
+            data[start : start + block_size]
+            for start in rng.integers(0, len(data) - block_size + 1, size=n_blocks)
         ]
-        samples[index] = statistic_fn(np.concatenate(blocks)[: len(data)])
-    return tuple(float(value) for value in np.percentile(samples, [2.5, 97.5]))
+        samples[index] = np.mean(np.concatenate(blocks)[: len(data)])
+    lower, upper = np.percentile(samples, [2.5, 97.5])
+    return float(lower), float(upper)
+
+
+def _prediction_schema() -> dict[str, pl.DataType]:
+    return {
+        "ticker": pl.String,
+        "decision_date": pl.Date,
+        "score": pl.Float64,
+        "rank": pl.Int64,
+        "strategy_version": pl.String,
+        "universe_size": pl.Int64,
+    }
 
 
 def _label_schema() -> dict[str, pl.DataType]:
@@ -144,6 +245,4 @@ def _label_schema() -> dict[str, pl.DataType]:
         "close": pl.Float64,
         "future_close": pl.Float64,
         "forward_return": pl.Float64,
-        "hit_threshold": pl.Float64,
-        "is_explosion": pl.Boolean,
     }
