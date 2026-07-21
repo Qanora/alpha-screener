@@ -51,6 +51,17 @@ def test_snapshot_rejects_missing_ohlcv_columns() -> None:
     with pytest.raises(ValueError, match="missing columns"):
         build_universe_snapshot(pl.DataFrame({"ticker": ["AAPL"]}))
 
+
+def test_snapshot_excludes_non_finite_observations() -> None:
+    rows = _ohlcv("BAD", 60)
+    rows[-1]["close"] = float("nan")
+
+    snapshot = build_universe_snapshot(pl.DataFrame(rows), cutoff_date=date(2025, 3, 1))
+
+    assert snapshot.item(0, "eligible") is False
+    assert snapshot.item(0, "exclusion_reason") == "invalid_data"
+
+
 def test_rules_can_be_made_stricter_without_changing_snapshot_contract() -> None:
     snapshot = build_universe_snapshot(
         pl.DataFrame(_ohlcv("AAPL", 60)),

@@ -104,3 +104,24 @@ def test_partial_sync_reports_coverage_and_preserves_failed_ticker_history(
     stored = scan_ohlcv().collect().sort("ticker")
     assert stored["ticker"].to_list() == ["FAIL", "GOOD"]
     assert stored.filter(pl.col("ticker") == "FAIL").item(0, "close") == 20.0
+
+
+def test_sync_does_not_count_non_finite_rows_as_downloaded(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "alphascreener.data.sync.yf.download",
+        lambda tickers, **kwargs: pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [11.0],
+                "Low": [9.0],
+                "Close": [float("nan")],
+                "Volume": [2_000],
+            },
+            index=pd.to_datetime(["2025-01-02"]),
+        ),
+    )
+
+    result = sync_ohlcv(["BAD"], start=date(2025, 1, 1))
+
+    assert result.downloaded_tickers == 0
+    assert result.failed_tickers == ("BAD",)

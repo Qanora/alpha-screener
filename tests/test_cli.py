@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import polars as pl
+import pytest
 from click.testing import CliRunner
 
 from alphascreener.cli import _rank_candidates, cli
@@ -37,6 +38,20 @@ def test_rank_candidates_uses_the_60_session_window() -> None:
 
     assert cutoff == date(2025, 3, 1)
     assert ranked.item(0, "ticker") == "WIN"
+
+
+def test_rank_candidates_requires_a_current_spy_benchmark() -> None:
+    rows = []
+    for index in range(60):
+        rows.append({
+            "ticker": "WIN",
+            "dt": date(2025, 1, 1) + timedelta(days=index),
+            "close": 100.0 * 1.01**index,
+            "volume": 2_000_000,
+        })
+
+    with pytest.raises(ValueError, match="SPY benchmark unavailable"):
+        _rank_candidates(pl.DataFrame(rows))
 
 
 def test_top_option_limits_display_but_ledger_receives_full_ranking(monkeypatch) -> None:
@@ -86,4 +101,30 @@ def test_incomplete_sync_does_not_record_a_ranking(monkeypatch) -> None:
     result = CliRunner().invoke(cli)
 
     assert result.exit_code == 0
+    assert ledger_writes == []
+
+
+def test_cli_does_not_record_a_ranking_without_spy(monkeypatch) -> None:
+    start = date.today() - timedelta(days=90)
+    data = pl.DataFrame([
+        {
+            "ticker": "WIN",
+            "dt": start + timedelta(days=index),
+            "close": 100.0 * 1.01**index,
+            "volume": 2_000_000,
+        }
+        for index in range(91)
+    ])
+    ledger_writes = []
+    monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
+    monkeypatch.setattr("alphascreener.data.sync.last_sync_date", lambda: date.today())
+    monkeypatch.setattr(
+        "alphascreener.evaluation.write_prediction_ledger",
+        lambda predictions: ledger_writes.append(predictions),
+    )
+
+    result = CliRunner().invoke(cli)
+
+    assert result.exit_code == 0
+    assert "SPY benchmark unavailable" in result.output
     assert ledger_writes == []

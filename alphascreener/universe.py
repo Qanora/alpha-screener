@@ -54,12 +54,23 @@ def build_universe_snapshot(
         average_dollar_volume = float(
             (volume_window["close"] * volume_window["volume"]).mean()
         )
+        lookback = ticker_data.tail(rules.required_sessions)
+        invalid_observations = lookback.filter(
+            pl.col("close").is_null()
+            | ~pl.col("close").cast(pl.Float64).is_finite()
+            | (pl.col("close") <= 0)
+            | pl.col("volume").is_null()
+            | ~pl.col("volume").cast(pl.Float64).is_finite()
+            | (pl.col("volume") < 0)
+        ).height
 
         exclusion_reason: str | None = None
         if sessions < rules.required_sessions:
             exclusion_reason = "insufficient_history"
         elif last_date != cutoff_date:
             exclusion_reason = "stale_data"
+        elif invalid_observations:
+            exclusion_reason = "invalid_data"
         elif last_close < rules.min_close:
             exclusion_reason = "low_price"
         elif average_dollar_volume < rules.min_average_dollar_volume:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -85,6 +86,24 @@ def test_low_outcome_coverage_is_skipped() -> None:
     assert metrics["skipped_days"] == 1
 
 
+def test_missing_top_rank_is_not_replaced_by_a_lower_rank() -> None:
+    matured = pl.DataFrame({
+        "ticker": [f"T{rank}" for rank in range(2, 11)],
+        "decision_date": [date(2025, 1, 1)] * 9,
+        "score": [float(11 - rank) for rank in range(2, 11)],
+        "rank": list(range(2, 11)),
+        "strategy_version": ["rank-v1"] * 9,
+        "universe_size": [10] * 9,
+        "is_explosion": [True] + [False] * 8,
+        "forward_return": [0.20] + [0.0] * 8,
+    })
+
+    metrics = evaluate_rankings(matured, top_k=1)[0]
+
+    assert metrics["days"] == 0
+    assert metrics["skipped_days"] == 1
+
+
 def test_prediction_ledgers_are_immutable_per_date_and_strategy(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("alphascreener.evaluation.get_data_home", lambda: tmp_path)
     predictions = _predictions()
@@ -133,6 +152,24 @@ def test_failed_ledger_replace_does_not_create_an_immutable_output(tmp_path, mon
     )
     assert not output.exists()
     assert write_prediction_ledger(_predictions()) == output
+
+
+def test_concurrent_ledger_writes_keep_exactly_one_immutable_result(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("alphascreener.evaluation.get_data_home", lambda: tmp_path)
+
+    def attempt_write():
+        try:
+            return write_prediction_ledger(_predictions())
+        except FileExistsError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: attempt_write(), range(2)))
+
+    assert sum(result is not None for result in results) == 1
+    assert read_prediction_ledger().equals(_predictions())
 
 
 def test_legacy_ledger_is_readable_but_has_no_claimed_universe_size(tmp_path, monkeypatch) -> None:

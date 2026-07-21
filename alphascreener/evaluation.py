@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from alphascreener.data.locking import exclusive_file_lock
 from alphascreener.data.paths import get_data_home
 from alphascreener.prediction_contract import DEFAULT_TOP_K, ExplosionLabelSpec
 
@@ -62,26 +63,27 @@ def write_prediction_ledger(predictions: pl.DataFrame) -> Path:
     if sorted(predictions["rank"].cast(pl.Int64).to_list()) != expected_ranks:
         raise ValueError("rank must contain every ordinal from 1 through universe_size")
 
+    prediction_root = get_data_home() / "predictions"
     path = (
-        get_data_home()
-        / "predictions"
+        prediction_root
         / f"dt={dates[0].isoformat()}"
         / f"strategy={strategy}"
     )
-    path.mkdir(parents=True, exist_ok=True)
-    output = path / "ranking.parquet"
-    if output.exists():
-        raise FileExistsError(
-            f"prediction ledger already exists for {dates[0].isoformat()} and {strategy}"
+    with exclusive_file_lock(prediction_root / ".write.lock"):
+        path.mkdir(parents=True, exist_ok=True)
+        output = path / "ranking.parquet"
+        if output.exists():
+            raise FileExistsError(
+                f"prediction ledger already exists for {dates[0].isoformat()} and {strategy}"
+            )
+        serialized = predictions.with_columns(
+            pl.col("decision_date").cast(pl.Date),
+            pl.col("rank").cast(pl.Int64),
+            pl.col("universe_size").cast(pl.Int64),
         )
-    serialized = predictions.with_columns(
-        pl.col("decision_date").cast(pl.Date),
-        pl.col("rank").cast(pl.Int64),
-        pl.col("universe_size").cast(pl.Int64),
-    )
-    temporary = path / "ranking.parquet.tmp"
-    serialized.write_parquet(temporary)
-    temporary.replace(output)
+        temporary = path / "ranking.parquet.tmp"
+        serialized.write_parquet(temporary)
+        temporary.replace(output)
     return output
 
 
@@ -183,7 +185,11 @@ def evaluate_rankings(
             if outcome_coverage < MIN_OUTCOME_COVERAGE:
                 skipped_days += 1
                 continue
-            ordered = group.sort("rank").head(top_k)
+            expected_top_ranks = set(range(1, min(top_k, int(sizes[0])) + 1))
+            ordered = group.filter(pl.col("rank") <= top_k).sort("rank")
+            if set(ordered["rank"].to_list()) != expected_top_ranks:
+                skipped_days += 1
+                continue
             base_rate = float(group["is_explosion"].mean())
             precision = float(ordered["is_explosion"].mean())
             lift = precision / base_rate if base_rate > 0 else None

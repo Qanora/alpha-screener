@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from urllib.request import Request, urlopen
 
+import numpy as np
 import polars as pl
 import yfinance as yf
 
@@ -182,7 +183,21 @@ def sync_ohlcv(
                 if field in column_map.values()
             ]
             ticker_data = ticker_data[keep_columns]
-            if ticker_data.empty or "close" not in ticker_data.columns:
+            required_columns = {"open", "high", "low", "close", "volume"}
+            if ticker_data.empty or not required_columns.issubset(ticker_data.columns):
+                continue
+            try:
+                ticker_data = ticker_data.astype({column: "float64" for column in required_columns})
+            except (TypeError, ValueError):
+                continue
+            finite_prices = np.isfinite(ticker_data[["open", "high", "low", "close"]]).all(axis=1)
+            finite_volume = np.isfinite(ticker_data["volume"])
+            positive_prices = (ticker_data[["open", "high", "low", "close"]] > 0).all(axis=1)
+            non_negative_volume = ticker_data["volume"] >= 0
+            ticker_data = ticker_data.loc[
+                finite_prices & finite_volume & positive_prices & non_negative_volume
+            ]
+            if ticker_data.empty:
                 continue
 
             ticker_rows = []
@@ -190,11 +205,11 @@ def sync_ohlcv(
                 ticker_rows.append({
                     "ticker": ticker,
                     "dt": index.date() if hasattr(index, "date") else index,
-                    "open": float(row.get("open", 0) or 0),
-                    "high": float(row.get("high", 0) or 0),
-                    "low": float(row.get("low", 0) or 0),
-                    "close": float(row.get("close", 0) or 0),
-                    "volume": int(row.get("volume", 0) or 0),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": int(row["volume"]),
                 })
             if ticker_rows:
                 downloaded.add(ticker)
