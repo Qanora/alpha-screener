@@ -51,7 +51,3 @@ class ExplosionLabelSpec:
         ordered = sorted(float(value) for value in forward_returns)
         index = max(0, ceil(len(ordered) * self.cross_section_quantile) - 1)
         return max(self.absolute_return, ordered[index])
-
-    def is_hit(self, forward_return: float, forward_returns: Sequence[float]) -> bool:
-        """Classify one forward return against its same-date universe."""
-        return forward_return >= self.threshold(forward_returns)

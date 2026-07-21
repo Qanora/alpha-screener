@@ -4,7 +4,7 @@ from datetime import date
 
 import polars as pl
 
-from alphascreener.data.io import scan_parquet, write_parquet
+from alphascreener.data.io import scan_ohlcv, write_ohlcv
 
 
 def test_ohlcv_storage_round_trip(tmp_path, monkeypatch) -> None:
@@ -13,6 +13,6 @@ def test_ohlcv_storage_round_trip(tmp_path, monkeypatch) -> None:
         "ticker": ["AAPL"], "dt": [date(2025, 1, 2)], "close": [100.0],
     })
 
-    write_parquet(data, "ohlcv")
+    write_ohlcv(data)
 
-    assert scan_parquet("ohlcv").collect().equals(data)
+    assert scan_ohlcv().collect().equals(data)

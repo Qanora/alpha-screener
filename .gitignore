@@ -21,7 +21,6 @@ env/
 # Environment
 .env
 .env.*
-!.env.template
 
 # Data storage
 /alphascreener_data/
@@ -34,9 +33,6 @@ env/
 .coverage
 htmlcov/
 
-# Claude state tracking
+# Local agent state
 .claude/state/
-
-# Type checking
-.mypy_cache/
 .claude/worktrees/

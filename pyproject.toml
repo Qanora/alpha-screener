@@ -7,7 +7,6 @@ dependencies = [
     # 核心数值与数据处理
     "numpy>=1.26",
     "polars>=0.20",
-    "pyarrow>=14",
 
     # 数据源
     "yfinance>=0.2.40",

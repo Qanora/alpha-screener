@@ -11,21 +11,15 @@ from datetime import date, timedelta
 import polars as pl
 import yfinance as yf
 
-from alphascreener.data.io import scan_parquet, write_parquet
+from alphascreener.data.io import scan_ohlcv, write_ohlcv
 
 _logger = logging.getLogger(__name__)
-
-# SP500 + Russell 1000 composite (major US equities, ~1500 after dedup)
-_DEFAULT_TICKERS: list[str] | None = None
 
 _BATCH_SIZE = 50  # yfinance download batch size
 
 
 def _default_universe() -> list[str]:
     """Return a composite US large-cap ticker list."""
-    if _DEFAULT_TICKERS is not None:
-        return _DEFAULT_TICKERS  # type: ignore[return-value]
-
     tickers: set[str] = set()
     try:
         # SP500 from Wikipedia
@@ -53,7 +47,7 @@ def _default_universe() -> list[str]:
 def last_sync_date() -> date | None:
     """Return the most recent date in the local OHLCV store, or None."""
     try:
-        lf = scan_parquet("ohlcv")
+        lf = scan_ohlcv()
         df = lf.select("dt").collect()
         if df.height == 0:
             return None
@@ -66,7 +60,6 @@ def sync_ohlcv(
     tickers: list[str] | None = None,
     *,
     start: date | None = None,
-    progress_callback=None,
 ) -> int:
     """Download OHLCV data and write to the Parquet store.
 
@@ -76,8 +69,6 @@ def sync_ohlcv(
                or 120 calendar days ago if no data exists.  This covers the
                60-session prediction contract while keeping the initial CLI
                data download focused on its actual input requirement.
-        progress_callback: Optional callable(ticker_count, batch_num, total_batches).
-
     Returns:
         Number of new rows written.
     """
@@ -89,8 +80,7 @@ def sync_ohlcv(
         last = last_sync_date()
         if last is not None:
             try:
-                from alphascreener.data.io import scan_parquet
-                existing = scan_parquet("ohlcv").collect()
+                existing = scan_ohlcv().collect()
                 data_span = (last - existing["dt"].min()).days if existing.height > 0 else 0
             except Exception:
                 data_span = 0
@@ -107,14 +97,10 @@ def sync_ohlcv(
 
     # Download in batches, collect all records, then write once
     all_records = []
-    total_batches = (len(tickers) + _BATCH_SIZE - 1) // _BATCH_SIZE
 
     for i in range(0, len(tickers), _BATCH_SIZE):
         batch = tickers[i : i + _BATCH_SIZE]
         batch_num = i // _BATCH_SIZE + 1
-
-        if progress_callback:
-            progress_callback(len(tickers), batch_num, total_batches)
 
         try:
             data = yf.download(
@@ -182,7 +168,7 @@ def sync_ohlcv(
     all_rows = 0
     if all_records:
         df = pl.DataFrame(all_records)
-        write_parquet(df, "ohlcv")
+        write_ohlcv(df)
         all_rows = df.height
 
     _logger.info("Sync complete: %d new rows", all_rows)

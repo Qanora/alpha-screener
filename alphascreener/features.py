@@ -20,7 +20,6 @@ def compute_60d_features(ohlcv: pl.DataFrame) -> pl.DataFrame:
     ret_5 = pl.col("close") / pl.col("close").shift(5).over("ticker") - 1.0
     ret_20 = pl.col("close") / pl.col("close").shift(20).over("ticker") - 1.0
     high_60 = pl.col("close").rolling_max(60).over("ticker")
-    daily_return = pl.col("close").pct_change().over("ticker")
     volume_mean = pl.col("volume").rolling_mean(20).over("ticker")
     volume_std = pl.col("volume").rolling_std(20).over("ticker")
 
@@ -28,10 +27,6 @@ def compute_60d_features(ohlcv: pl.DataFrame) -> pl.DataFrame:
         ret_5.alias("return_5d"),
         ret_20.alias("return_20d"),
         (pl.col("close") / high_60 - 1.0).alias("distance_to_60d_high"),
-        (
-            daily_return.rolling_std(5).over("ticker")
-            / daily_return.rolling_std(20).over("ticker")
-        ).alias("volatility_ratio_5_20"),
         pl.when(volume_std > 0)
         .then((pl.col("volume") - volume_mean) / volume_std)
         .otherwise(0.0)
