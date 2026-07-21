@@ -55,24 +55,3 @@ class ExplosionLabelSpec:
     def is_hit(self, forward_return: float, forward_returns: Sequence[float]) -> bool:
         """Classify one forward return against its same-date universe."""
         return forward_return >= self.threshold(forward_returns)
-
-
-def assert_purged_time_split(
-    *,
-    train_last_decision_session: int,
-    test_first_decision_session: int,
-    horizon_sessions: int = FORECAST_HORIZON_SESSIONS,
-) -> None:
-    """Reject a split whose training labels overlap the test decision period.
-
-    Session values are monotonically increasing trading-session indexes.  A
-    training decision at ``t`` consumes returns through ``t + horizon``; the
-    first test decision must therefore be strictly later than that session.
-    """
-    if horizon_sessions <= 0:
-        raise ValueError("horizon_sessions must be positive")
-    if test_first_decision_session - train_last_decision_session <= horizon_sessions:
-        raise ValueError(
-            "test decisions must start after the training label horizon "
-            f"({horizon_sessions} sessions)"
-        )

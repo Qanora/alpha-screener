@@ -12,7 +12,6 @@ import polars as pl
 import yfinance as yf
 
 from alphascreener.data.io import scan_parquet, write_parquet
-from alphascreener.universe import build_universe_snapshot, write_universe_snapshot
 
 _logger = logging.getLogger(__name__)
 
@@ -185,15 +184,6 @@ def sync_ohlcv(
         df = pl.DataFrame(all_records)
         write_parquet(df, "ohlcv")
         all_rows = df.height
-
-    # Persist the point-in-time eligibility decision alongside the data used
-    # by later ranking steps.  A failed refresh can still yield a snapshot,
-    # but its cutoff date makes the staleness visible to the caller.
-    try:
-        snapshot = build_universe_snapshot(scan_parquet("ohlcv").collect())
-        write_universe_snapshot(snapshot)
-    except Exception as exc:
-        _logger.warning("Could not write universe snapshot: %s", exc)
 
     _logger.info("Sync complete: %d new rows", all_rows)
     return all_rows

@@ -4,5 +4,5 @@ Closes #
 
 ## Test plan
 
-- [ ] `python -m pytest tests/ -v` passes
-- [ ] ruff check passes
+- [ ] `uv run pytest -v` passes
+- [ ] `uv run ruff check alphascreener tests` passes
