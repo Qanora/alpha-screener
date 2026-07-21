@@ -67,6 +67,7 @@ def test_metrics_use_the_complete_universe_and_keep_strategies_separate() -> Non
     }
 
     assert by_strategy["rank-v1"]["precision_at_k"] == 1.0
+    assert by_strategy["rank-v1"]["base_explosion_rate"] == 0.5
     assert by_strategy["rank-v1"]["lift_at_k"] == 2.0
     assert by_strategy["inverse"]["precision_at_k"] == 0.0
     assert by_strategy["inverse"]["lift_at_k"] == 0.0

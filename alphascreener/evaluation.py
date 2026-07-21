@@ -169,7 +169,7 @@ def evaluate_rankings(
 
     results: list[dict[str, str | float | int | None]] = []
     for (strategy,), strategy_rows in matured.group_by("strategy_version", maintain_order=True):
-        daily: list[tuple[float, float | None, float, float]] = []
+        daily: list[tuple[float, float | None, float, float, float]] = []
         skipped_days = 0
         for _, group in strategy_rows.group_by("decision_date", maintain_order=True):
             sizes = group["universe_size"].drop_nulls().unique().to_list()
@@ -185,7 +185,13 @@ def evaluate_rankings(
             precision = float(ordered["is_explosion"].mean())
             lift = precision / base_rate if base_rate > 0 else None
             daily.append(
-                (precision, lift, float(ordered["forward_return"].mean()), outcome_coverage)
+                (
+                    precision,
+                    lift,
+                    float(ordered["forward_return"].mean()),
+                    outcome_coverage,
+                    base_rate,
+                )
             )
 
         precisions = np.array([item[0] for item in daily], dtype=np.float64)
@@ -202,6 +208,9 @@ def evaluate_rankings(
             ),
             "mean_outcome_coverage": (
                 float(np.mean([item[3] for item in daily])) if daily else None
+            ),
+            "base_explosion_rate": (
+                float(np.mean([item[4] for item in daily])) if daily else None
             ),
             "ci_lower": ci_lower,
             "ci_upper": ci_upper,
