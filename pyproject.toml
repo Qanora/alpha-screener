@@ -25,7 +25,6 @@ asc = "alphascreener.cli:cli"
 dev = [
     "pytest>=7.4",
     "ruff>=0.2",
-    "mypy>=1.8",
 ]
 
 [build-system]
@@ -44,4 +43,3 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"

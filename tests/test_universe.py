@@ -7,7 +7,7 @@ from datetime import date, timedelta
 import polars as pl
 import pytest
 
-from alphascreener.universe import UniverseRules, build_universe_snapshot, write_universe_snapshot
+from alphascreener.universe import UniverseRules, build_universe_snapshot
 
 
 def _ohlcv(ticker: str, sessions: int, *, close: float = 20.0, volume: int = 500_000) -> list[dict]:
@@ -50,20 +50,6 @@ def test_snapshot_uses_only_data_at_or_before_cutoff() -> None:
 def test_snapshot_rejects_missing_ohlcv_columns() -> None:
     with pytest.raises(ValueError, match="missing columns"):
         build_universe_snapshot(pl.DataFrame({"ticker": ["AAPL"]}))
-
-
-def test_snapshot_is_persisted_under_its_cutoff_date(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("alphascreener.universe.get_data_home", lambda: tmp_path)
-    snapshot = build_universe_snapshot(
-        pl.DataFrame(_ohlcv("GOOD", 60)), cutoff_date=date(2025, 3, 1)
-    )
-
-    write_universe_snapshot(snapshot)
-
-    stored = tmp_path / "universe" / "dt=2025-03-01" / "snapshot.parquet"
-    assert stored.exists()
-    assert pl.read_parquet(stored).equals(snapshot)
-
 
 def test_rules_can_be_made_stricter_without_changing_snapshot_contract() -> None:
     snapshot = build_universe_snapshot(

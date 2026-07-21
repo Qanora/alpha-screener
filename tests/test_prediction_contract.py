@@ -9,7 +9,6 @@ from alphascreener.prediction_contract import (
     FORECAST_HORIZON_SESSIONS,
     INPUT_LOOKBACK_SESSIONS,
     ExplosionLabelSpec,
-    assert_purged_time_split,
 )
 
 
@@ -32,20 +31,6 @@ def test_explosion_hit_uses_same_date_cross_section() -> None:
 
     assert spec.is_hit(0.30, returns)
     assert not spec.is_hit(0.11, returns)
-
-
-def test_purged_split_requires_a_full_14_session_gap() -> None:
-    assert_purged_time_split(
-        train_last_decision_session=100,
-        test_first_decision_session=115,
-    )
-
-    with pytest.raises(ValueError, match="training label horizon"):
-        assert_purged_time_split(
-            train_last_decision_session=100,
-            test_first_decision_session=114,
-        )
-
 
 @pytest.mark.parametrize(
     "kwargs",

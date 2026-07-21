@@ -37,8 +37,3 @@ def scan_parquet(category: str = "ohlcv", *, date_filter: date | None = None) ->
     if not glob.glob(str(pattern), recursive=True):
         raise FileNotFoundError(f"No Parquet files found matching: {pattern}")
     return pl.scan_parquet(str(pattern))
-
-
-def read_parquet(category: str = "ohlcv") -> pl.LazyFrame:
-    """Compatibility wrapper for scanning the OHLCV store."""
-    return scan_parquet(category)

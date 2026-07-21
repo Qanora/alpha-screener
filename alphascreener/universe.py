@@ -7,7 +7,6 @@ from datetime import date
 
 import polars as pl
 
-from alphascreener.data.paths import get_data_home
 from alphascreener.prediction_contract import INPUT_LOOKBACK_SESSIONS
 
 
@@ -78,18 +77,6 @@ def build_universe_snapshot(
             }
         )
     return pl.DataFrame(rows, schema=_snapshot_schema()).sort("ticker")
-
-
-def write_universe_snapshot(snapshot: pl.DataFrame) -> None:
-    """Persist one point-in-time universe snapshot beneath the local data home."""
-    if snapshot.is_empty():
-        return
-    cutoff_dates = snapshot["cutoff_date"].unique().to_list()
-    if len(cutoff_dates) != 1:
-        raise ValueError("snapshot must contain exactly one cutoff_date")
-    snapshot_dir = get_data_home() / "universe" / f"dt={cutoff_dates[0].isoformat()}"
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    snapshot.write_parquet(snapshot_dir / "snapshot.parquet")
 
 
 def _empty_snapshot() -> pl.DataFrame:
