@@ -17,6 +17,14 @@ def _rank_candidates(ohlcv: pl.DataFrame) -> tuple[pl.DataFrame, date]:
 
     cutoff = ohlcv["dt"].max()
     snapshot = build_universe_snapshot(ohlcv, cutoff_date=cutoff)
+    benchmark = snapshot.filter(pl.col("ticker") == "SPY")
+    if benchmark.height != 1 or not benchmark.item(0, "eligible"):
+        reason = (
+            "missing"
+            if benchmark.is_empty()
+            else str(benchmark.item(0, "exclusion_reason"))
+        )
+        raise ValueError(f"SPY benchmark unavailable on {cutoff}: {reason}")
     eligible = snapshot.filter(pl.col("eligible") & (pl.col("ticker") != "SPY"))["ticker"].to_list()
     if not eligible:
         return pl.DataFrame(schema={"ticker": pl.String, "score": pl.Float64}), cutoff
@@ -78,7 +86,11 @@ def _run_screen(top: int) -> None:
         return
 
     data = ohlcv.unique(subset=["ticker", "dt"], keep="last").sort(["ticker", "dt"])
-    ranking, decision_date = _rank_candidates(data)
+    try:
+        ranking, decision_date = _rank_candidates(data)
+    except ValueError as exc:
+        warn_card(f"Cannot rank candidates: {exc}")
+        return
     if ranking.is_empty():
         warn_card("No tickers meet the 60-session tradable-universe requirements.")
         return

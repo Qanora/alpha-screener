@@ -17,7 +17,7 @@ def test_contract_uses_60_sessions_to_predict_14_sessions() -> None:
     assert INPUT_LOOKBACK_SESSIONS == 60
     assert FORECAST_HORIZON_SESSIONS == 14
     assert DEFAULT_TOP_K == 10
-    assert STRATEGY_VERSION == "rank-v1"
+    assert STRATEGY_VERSION == "rank-v2"
 
 
 def test_explosion_threshold_requires_absolute_and_cross_sectional_tail() -> None:
