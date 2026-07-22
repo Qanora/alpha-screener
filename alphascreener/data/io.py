@@ -59,8 +59,11 @@ def write_ohlcv(df: pl.DataFrame) -> None:
             )
             output = partition / "data.parquet"
             temporary = partition / "data.parquet.tmp"
-            merged.write_parquet(temporary)
-            temporary.replace(output)
+            try:
+                merged.write_parquet(temporary)
+                temporary.replace(output)
+            finally:
+                temporary.unlink(missing_ok=True)
             for stale in existing_paths:
                 if stale != output:
                     stale.unlink()
