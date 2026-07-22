@@ -18,6 +18,7 @@ def _ohlcv(tickers: list[str], closes: list[float]) -> pl.DataFrame:
         "high": closes,
         "low": closes,
         "close": closes,
+        "raw_close": closes,
         "volume": [1_000] * len(tickers),
     })
 

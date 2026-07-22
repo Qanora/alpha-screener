@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import polars as pl
@@ -16,16 +16,24 @@ from alphascreener.evaluation import (
     read_prediction_ledger,
     write_prediction_ledger,
 )
+from alphascreener.market_calendar import infer_market_dates, market_dates_between
 from alphascreener.prediction_contract import ExplosionLabelSpec
+
+
+def _market_dates(count: int) -> list[date]:
+    dates = market_dates_between(date(2025, 1, 2), date(2025, 12, 31))
+    assert len(dates) >= count
+    return dates[:count]
 
 
 def _ohlcv() -> pl.DataFrame:
     rows = []
-    for ticker, multiplier in [("WIN", 1.02), ("LOSE", 1.001)]:
-        for index in range(29):
+    market_dates = _market_dates(29)
+    for ticker, multiplier in [("SPY", 1.001), ("WIN", 1.02), ("LOSE", 1.001)]:
+        for index, market_date in enumerate(market_dates):
             rows.append({
                 "ticker": ticker,
-                "dt": date(2025, 1, 1) + timedelta(days=index),
+                "dt": market_date,
                 "close": 100.0 * multiplier**index,
             })
     return pl.DataFrame(rows)
@@ -43,11 +51,93 @@ def _predictions(strategy: str = "rank-v1") -> pl.DataFrame:
 
 
 def test_forward_labels_use_exactly_14_later_sessions() -> None:
-    labels = compute_forward_labels(_ohlcv(), spec=ExplosionLabelSpec(absolute_return=0.01))
+    data = _ohlcv()
+    market_dates = infer_market_dates(data)
+    labels = compute_forward_labels(data, spec=ExplosionLabelSpec(absolute_return=0.01))
 
     assert labels.filter(pl.col("ticker") == "WIN").height == 15
-    first = labels.filter((pl.col("ticker") == "WIN") & (pl.col("dt") == date(2025, 1, 1)))
+    first = labels.filter(
+        (pl.col("ticker") == "WIN") & (pl.col("dt") == market_dates[0])
+    )
     assert first.item(0, "future_close") == 100.0 * 1.02**14
+    assert first.item(0, "result_date") == market_dates[14]
+
+
+def test_forward_labels_follow_the_spy_calendar_when_a_ticker_misses_a_session() -> None:
+    market_dates = _market_dates(16)
+    rows = [
+        {"ticker": "SPY", "dt": market_date, "close": 100.0}
+        for market_date in market_dates
+    ]
+    rows.extend(
+        {
+            "ticker": "WIN",
+            "dt": market_date,
+            "close": 100.0 + index,
+        }
+        for index, market_date in enumerate(market_dates)
+        if index != 5
+    )
+
+    labels = compute_forward_labels(pl.DataFrame(rows))
+
+    first = labels.filter(
+        (pl.col("ticker") == "WIN") & (pl.col("dt") == market_dates[0])
+    )
+    assert first.height == 1
+    assert first.item(0, "result_date") == market_dates[14]
+    assert first.item(0, "future_close") == 114.0
+
+
+def test_forward_labels_do_not_substitute_a_later_ticker_session() -> None:
+    market_dates = _market_dates(16)
+    rows = [
+        {"ticker": "SPY", "dt": market_date, "close": 100.0}
+        for market_date in market_dates
+    ]
+    rows.extend(
+        {
+            "ticker": "WIN",
+            "dt": market_date,
+            "close": 100.0 + index,
+        }
+        for index, market_date in enumerate(market_dates)
+        if index != 14
+    )
+
+    labels = compute_forward_labels(pl.DataFrame(rows))
+
+    assert labels.filter(
+        (pl.col("ticker") == "WIN") & (pl.col("dt") == market_dates[0])
+    ).is_empty()
+
+
+def test_forward_labels_do_not_shift_when_spy_misses_a_market_session() -> None:
+    market_dates = _market_dates(16)
+    rows = []
+    for ticker in ("SPY", "WIN", "AUX"):
+        rows.extend(
+            {
+                "ticker": ticker,
+                "dt": market_date,
+                "close": 100.0 + index,
+            }
+            for index, market_date in enumerate(market_dates)
+            if ticker != "SPY" or index != 5
+        )
+
+    labels = compute_forward_labels(pl.DataFrame(rows))
+
+    first = labels.filter(
+        (pl.col("ticker") == "WIN") & (pl.col("dt") == market_dates[0])
+    )
+    assert first.item(0, "result_date") == market_dates[14]
+    assert first.item(0, "future_close") == 114.0
+
+
+def test_forward_labels_require_a_market_calendar() -> None:
+    with pytest.raises(ValueError, match="SPY market calendar unavailable"):
+        compute_forward_labels(_ohlcv().filter(pl.col("ticker") != "SPY"))
 
 
 def _matured_rows(*, missing_ranks: set[int] = set()) -> pl.DataFrame:
@@ -164,7 +254,7 @@ def test_legacy_ledger_outside_current_contract_is_ignored(tmp_path, monkeypatch
 
 
 def test_longest_consecutive_passes_requires_adjacent_market_dates() -> None:
-    market_dates = [date(2025, 1, 1) + timedelta(days=index) for index in range(7)]
+    market_dates = _market_dates(7)
     daily = pl.DataFrame({
         "strategy_version": ["rank-v2"] * 6,
         "decision_date": [*market_dates[:3], *market_dates[4:7]],

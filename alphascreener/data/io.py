@@ -10,12 +10,33 @@ import polars as pl
 from alphascreener.data.locking import exclusive_file_lock
 from alphascreener.data.paths import get_ohlcv_dir
 
-_REQUIRED_COLUMNS = {"ticker", "dt", "open", "high", "low", "close", "volume"}
-_PRICE_COLUMNS = ("open", "high", "low", "close")
+_REQUIRED_COLUMNS = {
+    "ticker",
+    "dt",
+    "open",
+    "high",
+    "low",
+    "close",
+    "raw_close",
+    "volume",
+}
+_PRICE_COLUMNS = ("open", "high", "low", "close", "raw_close")
+_STORAGE_SCHEMA = {
+    "ticker": pl.String,
+    "dt": pl.Date,
+    "open": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "close": pl.Float64,
+    "raw_close": pl.Float64,
+    "volume": pl.Int64,
+}
 
 
 def write_ohlcv(df: pl.DataFrame) -> None:
     """Merge OHLCV rows by ticker/date and atomically replace affected partitions."""
+    if "raw_close" not in df.columns and "close" in df.columns:
+        df = df.with_columns(pl.col("close").alias("raw_close"))
     if missing := _REQUIRED_COLUMNS - set(df.columns):
         raise ValueError(f"DataFrame missing columns: {sorted(missing)}")
     if df.schema["ticker"] != pl.String:
@@ -75,4 +96,8 @@ def scan_ohlcv(*, date_filter: date | None = None) -> pl.LazyFrame:
     pattern = base / (f"dt={date_filter.isoformat()}/*.parquet" if date_filter else "**/*.parquet")
     if not glob.glob(str(pattern), recursive=True):
         raise FileNotFoundError(f"No Parquet files found matching: {pattern}")
-    return pl.scan_parquet(str(pattern))
+    return pl.scan_parquet(
+        str(pattern),
+        schema=_STORAGE_SCHEMA,
+        missing_columns="insert",
+    )

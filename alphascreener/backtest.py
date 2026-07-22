@@ -1,112 +1,233 @@
-"""Recent current-universe walk-forward evidence for each screen."""
+"""On-demand current-universe walk-forward diagnostics."""
 
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 
 import polars as pl
 
-from alphascreener.data.locking import exclusive_file_lock
-from alphascreener.data.paths import get_data_home
 from alphascreener.evaluation import (
+    MIN_OUTCOME_COVERAGE,
     compute_forward_labels,
     evaluate_daily_rankings,
     mature_predictions,
 )
+from alphascreener.market_calendar import infer_market_dates, require_spy
 from alphascreener.prediction_contract import (
+    DEFAULT_BACKTEST_DAYS,
     DEFAULT_TOP_K,
     FORECAST_HORIZON_SESSIONS,
     INPUT_LOOKBACK_SESSIONS,
-    REQUIRED_BACKTEST_DAYS,
+    MAX_BACKTEST_DAYS,
     STRATEGY_VERSION,
 )
-from alphascreener.ranking import rank_candidates
+from alphascreener.ranking import rank_candidate_dates
 
 BACKTEST_UNIVERSE_SOURCE = "current-directory"
 
 
-def run_recent_backtest(
+def run_backtest(
     ohlcv: pl.DataFrame,
     *,
-    required_days: int = REQUIRED_BACKTEST_DAYS,
+    days: int = DEFAULT_BACKTEST_DAYS,
 ) -> pl.DataFrame:
-    """Walk the current strategy over the latest consecutive matured market dates."""
-    if required_days <= 0:
-        raise ValueError("required_days must be positive")
-    market_dates = (
-        ohlcv.filter(pl.col("ticker") == "SPY")["dt"].unique().sort().to_list()
+    """Recompute the latest matured decision dates without persisting results.
+
+    Once the requested dates can be identified from the market calendar, a
+    problem on one date is represented by an INVALID row instead of aborting
+    the remaining walk-forward simulation.
+    """
+    if not 1 <= days <= MAX_BACKTEST_DAYS:
+        raise ValueError(f"days must be between 1 and {MAX_BACKTEST_DAYS}")
+    required = {"ticker", "dt", "close", "volume"}
+    if missing := required - set(ohlcv.columns):
+        raise ValueError(f"OHLCV data missing columns: {sorted(missing)}")
+
+    data = (
+        ohlcv.with_columns(pl.col("dt").cast(pl.Date))
+        .unique(subset=["ticker", "dt"], keep="last")
+        .sort(["ticker", "dt"])
     )
-    last_decision_index = len(market_dates) - FORECAST_HORIZON_SESSIONS - 1
-    first_decision_index = last_decision_index - required_days + 1
-    if first_decision_index < INPUT_LOOKBACK_SESSIONS - 1:
+    require_spy(data)
+    market_dates = infer_market_dates(data)
+    matured_date_count = len(market_dates) - FORECAST_HORIZON_SESSIONS
+    if matured_date_count < days:
         raise ValueError(
-            f"need at least {required_days} matured backtest dates with "
-            f"{INPUT_LOOKBACK_SESSIONS} prior sessions"
+            f"SPY market calendar has {max(0, matured_date_count)} matured dates; "
+            f"{days} requested"
         )
 
-    labels = compute_forward_labels(ohlcv)
-    records: list[dict[str, str | date | float | int | bool]] = []
-    for decision_index in range(first_decision_index, last_decision_index + 1):
+    labels = compute_forward_labels(data)
+    first_decision_index = matured_date_count - days
+    decision_dates = market_dates[first_decision_index:matured_date_count]
+    rankings = rank_candidate_dates(data, decision_dates)
+    records: list[dict[str, object]] = []
+    for decision_index in range(first_decision_index, matured_date_count):
         decision_date = market_dates[decision_index]
         result_date = market_dates[decision_index + FORECAST_HORIZON_SESSIONS]
-        history_dates = market_dates[
-            decision_index - INPUT_LOOKBACK_SESSIONS + 1 : decision_index + 1
-        ]
-        history = ohlcv.filter(pl.col("dt").is_in(history_dates))
-        ranking, ranked_date = rank_candidates(history)
-        if ranked_date != decision_date or ranking.height < DEFAULT_TOP_K:
-            raise ValueError(f"backtest universe incomplete on {decision_date}")
+        if decision_index < INPUT_LOOKBACK_SESSIONS - 1:
+            records.append(
+                _invalid_record(
+                    decision_date,
+                    result_date,
+                    "insufficient_history",
+                )
+            )
+            continue
+
+        spy_problem = _spy_history_problem(
+            data,
+            market_dates,
+            decision_index,
+        )
+        if spy_problem is not None:
+            records.append(
+                _invalid_record(
+                    decision_date,
+                    result_date,
+                    spy_problem,
+                )
+            )
+            continue
+
+        ranking = (
+            rankings.filter(pl.col("decision_date") == decision_date)
+            .select("ticker", "score", "rank")
+            .sort("rank")
+        )
+        if ranking.height < DEFAULT_TOP_K:
+            records.append(
+                _invalid_record(
+                    decision_date,
+                    result_date,
+                    f"eligible_universe_below_top_{DEFAULT_TOP_K}",
+                    universe_size=ranking.height,
+                )
+            )
+            continue
+
         predictions = ranking.with_columns(
             pl.lit(decision_date).cast(pl.Date).alias("decision_date"),
             pl.lit(STRATEGY_VERSION).alias("strategy_version"),
             pl.lit(ranking.height).cast(pl.Int64).alias("universe_size"),
         )
-        daily = evaluate_daily_rankings(mature_predictions(predictions, labels))
+        matured = mature_predictions(predictions, labels)
+        outcome_coverage = matured.height / ranking.height
+        if outcome_coverage < MIN_OUTCOME_COVERAGE:
+            records.append(
+                _invalid_record(
+                    decision_date,
+                    result_date,
+                    "outcome_coverage_below_90pct",
+                    universe_size=ranking.height,
+                    outcome_coverage=outcome_coverage,
+                )
+            )
+            continue
+        top_ranks = set(
+            matured.filter(pl.col("rank") <= DEFAULT_TOP_K)["rank"].to_list()
+        )
+        if top_ranks != set(range(1, DEFAULT_TOP_K + 1)):
+            records.append(
+                _invalid_record(
+                    decision_date,
+                    result_date,
+                    f"top_{DEFAULT_TOP_K}_outcomes_incomplete",
+                    universe_size=ranking.height,
+                    outcome_coverage=outcome_coverage,
+                )
+            )
+            continue
+
+        daily = evaluate_daily_rankings(matured)
         if daily.height != 1:
-            raise ValueError(f"backtest outcomes incomplete on {decision_date}")
+            records.append(
+                _invalid_record(
+                    decision_date,
+                    result_date,
+                    "evaluation_failed",
+                    universe_size=ranking.height,
+                    outcome_coverage=outcome_coverage,
+                )
+            )
+            continue
         metric = daily.row(0, named=True)
+        precision = float(metric["precision_at_k"])
         records.append({
-            **{key: value for key, value in metric.items() if key != "precision_at_k"},
-            "precision_at_10": metric["precision_at_k"],
+            "strategy_version": str(metric["strategy_version"]),
+            "decision_date": decision_date,
             "result_date": result_date,
+            "status": "VALID",
+            "invalid_reason": None,
+            "universe_size": int(metric["universe_size"]),
+            "outcome_coverage": float(metric["outcome_coverage"]),
+            "hits_at_10": round(precision * DEFAULT_TOP_K),
+            "precision_at_10": precision,
+            "base_explosion_rate": float(metric["base_explosion_rate"]),
+            "passed": bool(metric["passed"]),
             "universe_source": BACKTEST_UNIVERSE_SOURCE,
         })
     return pl.DataFrame(records, schema=_backtest_schema()).sort("decision_date")
 
 
-def write_backtest_records(records: pl.DataFrame) -> Path:
-    """Atomically replace the current strategy's reproducible backtest evidence."""
-    required = set(_backtest_schema())
-    if missing := required - set(records.columns):
-        raise ValueError(f"backtest records missing columns: {sorted(missing)}")
-    strategies = records["strategy_version"].unique().to_list()
-    if records.height < REQUIRED_BACKTEST_DAYS or len(strategies) != 1:
-        raise ValueError("backtest commit requires one strategy and at least three dates")
+def _spy_history_problem(
+    data: pl.DataFrame,
+    market_dates: list[date],
+    decision_index: int,
+) -> str | None:
+    """Identify a missing benchmark date without collapsing it out of time."""
+    decision_date = market_dates[decision_index]
+    spy_dates = set(
+        data.filter(pl.col("ticker") == "SPY")["dt"].cast(pl.Date).to_list()
+    )
+    if decision_date not in spy_dates:
+        return "spy_missing_on_decision_date"
+    expected = set(
+        market_dates[
+            decision_index - INPUT_LOOKBACK_SESSIONS + 1 : decision_index + 1
+        ]
+    )
+    if not expected.issubset(spy_dates):
+        return "spy_history_incomplete"
+    return None
 
-    root = get_data_home() / "backtests"
-    path = root / f"strategy={strategies[0]}"
-    output = path / "recent.parquet"
-    temporary = path / "recent.parquet.tmp"
-    with exclusive_file_lock(root / ".write.lock"):
-        path.mkdir(parents=True, exist_ok=True)
-        try:
-            records.select(_backtest_schema().keys()).write_parquet(temporary)
-            temporary.replace(output)
-        finally:
-            temporary.unlink(missing_ok=True)
-    return output
+
+def _invalid_record(
+    decision_date: date,
+    result_date: date,
+    reason: str,
+    *,
+    universe_size: int | None = None,
+    outcome_coverage: float | None = None,
+) -> dict[str, object]:
+    return {
+        "strategy_version": STRATEGY_VERSION,
+        "decision_date": decision_date,
+        "result_date": result_date,
+        "status": "INVALID",
+        "invalid_reason": reason,
+        "universe_size": universe_size,
+        "outcome_coverage": outcome_coverage,
+        "hits_at_10": None,
+        "precision_at_10": None,
+        "base_explosion_rate": None,
+        "passed": None,
+        "universe_source": BACKTEST_UNIVERSE_SOURCE,
+    }
 
 
 def _backtest_schema() -> dict[str, pl.DataType]:
     return {
         "strategy_version": pl.String,
         "decision_date": pl.Date,
+        "result_date": pl.Date,
+        "status": pl.String,
+        "invalid_reason": pl.String,
         "universe_size": pl.Int64,
         "outcome_coverage": pl.Float64,
+        "hits_at_10": pl.Int64,
         "precision_at_10": pl.Float64,
         "base_explosion_rate": pl.Float64,
         "passed": pl.Boolean,
-        "result_date": pl.Date,
         "universe_source": pl.String,
     }
