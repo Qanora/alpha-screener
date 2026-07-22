@@ -5,11 +5,16 @@ from __future__ import annotations
 import pytest
 
 from alphascreener.prediction_contract import (
+    BACKTEST_HISTORY_SESSIONS,
+    DEFAULT_BACKTEST_DAYS,
     DEFAULT_TOP_K,
     FORECAST_HORIZON_SESSIONS,
     INPUT_LOOKBACK_SESSIONS,
-    REQUIRED_BACKTEST_DAYS,
-    REQUIRED_HISTORY_SESSIONS,
+    MAX_BACKTEST_DAYS,
+    MAX_CANDIDATES,
+    MIN_AVERAGE_DOLLAR_VOLUME,
+    MIN_CANDIDATE_CLOSE,
+    PREDICTION_HISTORY_SESSIONS,
     STRATEGY_VERSION,
     ExplosionLabelSpec,
 )
@@ -19,9 +24,14 @@ def test_contract_uses_60_sessions_to_predict_14_sessions() -> None:
     assert INPUT_LOOKBACK_SESSIONS == 60
     assert FORECAST_HORIZON_SESSIONS == 14
     assert DEFAULT_TOP_K == 10
-    assert REQUIRED_BACKTEST_DAYS == 3
-    assert REQUIRED_HISTORY_SESSIONS == 76
-    assert STRATEGY_VERSION == "rank-v4"
+    assert DEFAULT_BACKTEST_DAYS == 30
+    assert MAX_BACKTEST_DAYS == 45
+    assert MIN_CANDIDATE_CLOSE == 5.0
+    assert MIN_AVERAGE_DOLLAR_VOLUME == 10_000_000.0
+    assert MAX_CANDIDATES == 2_000
+    assert PREDICTION_HISTORY_SESSIONS == 60
+    assert BACKTEST_HISTORY_SESSIONS == 118
+    assert STRATEGY_VERSION == "rank-v6"
 
 
 def test_explosion_threshold_requires_absolute_and_cross_sectional_tail() -> None:

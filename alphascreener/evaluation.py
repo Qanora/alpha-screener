@@ -10,6 +10,7 @@ import polars as pl
 
 from alphascreener.data.locking import exclusive_file_lock
 from alphascreener.data.paths import get_data_home
+from alphascreener.market_calendar import infer_market_dates, require_spy
 from alphascreener.prediction_contract import DEFAULT_TOP_K, ExplosionLabelSpec
 
 MIN_OUTCOME_COVERAGE = 0.90
@@ -22,18 +23,47 @@ def compute_forward_labels(
     *,
     spec: ExplosionLabelSpec = ExplosionLabelSpec(),
 ) -> pl.DataFrame:
-    """Compute each ticker's return over the next 14 observed sessions."""
+    """Compute returns on the exact 14th later NYSE session.
+
+    A per-ticker shift is not equivalent to a market-session horizon when a
+    security is suspended or has a missing observation.  A stable exchange
+    calendar defines the horizon, and future prices are joined on that exact
+    result date.
+    """
     required = {"ticker", "dt", "close"}
     if missing := required - set(ohlcv.columns):
         raise ValueError(f"OHLCV data missing columns: {sorted(missing)}")
-    data = ohlcv.sort(["ticker", "dt"]).with_columns(
-        pl.col("close").shift(-spec.horizon_sessions).over("ticker").alias("future_close")
+    require_spy(ohlcv)
+    market_dates = infer_market_dates(ohlcv)
+    if len(market_dates) <= spec.horizon_sessions:
+        raise ValueError(
+            f"SPY market calendar needs more than {spec.horizon_sessions} sessions"
+        )
+    calendar = pl.DataFrame({
+        "dt": market_dates[:-spec.horizon_sessions],
+        "result_date": market_dates[spec.horizon_sessions:],
+    })
+    prices = (
+        ohlcv.select("ticker", pl.col("dt").cast(pl.Date), "close")
+        .unique(subset=["ticker", "dt"], keep="last")
     )
-    data = data.with_columns(
-        ((pl.col("future_close") / pl.col("close")) - 1.0).alias("forward_return")
-    ).drop_nulls("forward_return")
-
-    return data.select(_label_schema().keys()).sort(["dt", "ticker"])
+    future_prices = prices.select(
+        "ticker",
+        pl.col("dt").alias("result_date"),
+        pl.col("close").alias("future_close"),
+    )
+    labels = prices.join(calendar, on="dt", how="inner").join(
+        future_prices,
+        on=["ticker", "result_date"],
+        how="inner",
+    )
+    return (
+        labels.with_columns(
+            ((pl.col("future_close") / pl.col("close")) - 1.0).alias("forward_return")
+        )
+        .select(_label_schema().keys())
+        .sort(["dt", "ticker"])
+    )
 
 
 def write_prediction_ledger(predictions: pl.DataFrame) -> Path:
@@ -120,13 +150,13 @@ def mature_predictions(
 ) -> pl.DataFrame:
     """Join outcomes and classify explosions within each ranked eligible universe."""
     required_predictions = set(_prediction_schema())
-    required_labels = {"ticker", "dt", "forward_return"}
+    required_labels = {"ticker", "dt", "result_date", "forward_return"}
     if missing := required_predictions - set(predictions.columns):
         raise ValueError(f"predictions missing columns: {sorted(missing)}")
     if missing := required_labels - set(labels.columns):
         raise ValueError(f"labels missing columns: {sorted(missing)}")
     joined = predictions.join(
-        labels.select(["ticker", "dt", "forward_return"]),
+        labels.select(["ticker", "dt", "result_date", "forward_return"]),
         left_on=["ticker", "decision_date"],
         right_on=["ticker", "dt"],
         how="inner",
@@ -248,6 +278,7 @@ def _label_schema() -> dict[str, pl.DataType]:
     return {
         "ticker": pl.String,
         "dt": pl.Date,
+        "result_date": pl.Date,
         "close": pl.Float64,
         "future_close": pl.Float64,
         "forward_return": pl.Float64,

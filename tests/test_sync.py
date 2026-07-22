@@ -7,7 +7,16 @@ import polars as pl
 import pytest
 
 from alphascreener.data.io import scan_ohlcv, write_ohlcv
-from alphascreener.data.sync import _default_universe, _parse_symbol_directory, sync_ohlcv
+from alphascreener.data.sync import (
+    _default_universe,
+    _download_batch,
+    _parse_symbol_directory,
+    sync_ohlcv,
+)
+from alphascreener.market_calendar import (
+    latest_completed_market_date,
+    market_dates_between,
+)
 
 
 def test_symbol_directory_keeps_equities_and_excludes_other_instruments() -> None:
@@ -96,7 +105,9 @@ def test_partial_sync_reports_coverage_and_preserves_failed_ticker_history(
     def download(tickers, **kwargs):
         if tickers == ["FAIL"]:
             raise RuntimeError("simulated batch failure")
-        dates = pd.date_range("2025-01-01", periods=76, freq="D")
+        dates = pd.to_datetime(
+            market_dates_between(date(2025, 1, 2), date(2025, 6, 30))[:76]
+        )
         return pd.DataFrame(
             {
                 "Open": [10.0] * 76,
@@ -114,6 +125,7 @@ def test_partial_sync_reports_coverage_and_preserves_failed_ticker_history(
 
     assert result.coverage == 0.5
     assert result.failed_tickers == ("FAIL",)
+    assert result.requested_symbols == ("FAIL", "GOOD")
     stored = scan_ohlcv().collect().sort("ticker")
     assert stored["ticker"].unique().sort().to_list() == ["FAIL", "GOOD"]
     assert stored.filter(pl.col("ticker") == "FAIL").item(0, "close") == 20.0
@@ -140,20 +152,170 @@ def test_sync_does_not_count_non_finite_rows_as_downloaded(monkeypatch) -> None:
     assert result.failed_tickers == ("BAD",)
 
 
-def test_fresh_ready_universe_skips_redundant_downloads(tmp_path, monkeypatch) -> None:
+def test_download_keeps_adjusted_and_raw_close_separate(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "alphascreener.data.sync.yf.download",
+        lambda tickers, **kwargs: pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [13.0],
+                "Low": [9.0],
+                "Close": [12.0],
+                "Adj Close": [6.0],
+                "Volume": [2_000],
+            },
+            index=pd.to_datetime(["2025-01-02"]),
+        ),
+    )
+
+    row = _download_batch(
+        ("SPLIT",),
+        start=date(2025, 1, 1),
+        end=date(2025, 1, 3),
+        batch_number=1,
+    )[0]
+
+    assert row["close"] == 6.0
+    assert row["raw_close"] == 12.0
+
+
+def test_network_batches_are_committed_in_bounded_groups_and_keep_successes(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: tmp_path)
-    rows = []
-    for ticker in ("SPY", "GOOD"):
-        for offset in range(76):
-            rows.append({
+    monkeypatch.setattr("alphascreener.data.sync._BATCH_SIZE", 1)
+    monkeypatch.setattr("alphascreener.data.sync._NETWORK_BATCHES_PER_CHECKPOINT", 2)
+    network_calls = []
+
+    def download(batch, *, start, end, batch_number):
+        network_calls.append((batch, batch_number))
+        ticker = batch[0]
+        if ticker == "B":
+            return []
+        return [{
+            "ticker": ticker,
+            "dt": date(2025, 1, 2),
+            "open": 10.0,
+            "high": 11.0,
+            "low": 9.0,
+            "close": 10.5,
+            "volume": 2_000,
+        }]
+
+    checkpoints = []
+    monkeypatch.setattr("alphascreener.data.sync._download_batch", download)
+    monkeypatch.setattr(
+        "alphascreener.data.sync.write_ohlcv", lambda frame: checkpoints.append(frame)
+    )
+
+    result = sync_ohlcv(["A", "B", "C", "D", "E"], start=date(2025, 1, 1))
+
+    assert network_calls == [
+        (("A",), 1),
+        (("B",), 2),
+        (("C",), 3),
+        (("D",), 4),
+        (("E",), 5),
+    ]
+    assert [frame["ticker"].to_list() for frame in checkpoints] == [
+        ["A"],
+        ["C", "D"],
+        ["E"],
+    ]
+    assert result.rows_written == 4
+
+
+def test_ledger_outcome_ticker_is_refreshed_but_excluded_from_current_coverage(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: tmp_path)
+    calls = []
+    starts = []
+
+    def download(batch, *, start, end, batch_number):
+        calls.extend(batch)
+        starts.append((batch, start))
+        return [
+            {
                 "ticker": ticker,
-                "dt": date.today() - timedelta(days=75 - offset),
+                "dt": date.today(),
                 "open": 10.0,
                 "high": 11.0,
                 "low": 9.0,
                 "close": 10.5,
-                "volume": 2_000,
-            })
+                "volume": 2_000_000,
+            }
+            for ticker in batch
+        ]
+
+    monkeypatch.setattr("alphascreener.data.sync._download_batch", download)
+
+    decision_date = date.today() - timedelta(days=400)
+    result_date = decision_date + timedelta(days=21)
+    result = sync_ohlcv(
+        ["SPY", "CURRENT"],
+        start=date.today(),
+        outcome_requirements=(("DELISTED", decision_date, result_date),),
+    )
+
+    assert set(calls) == {"SPY", "CURRENT", "DELISTED"}
+    assert result.requested_tickers == 2
+    assert result.requested_symbols == ("CURRENT", "SPY")
+    assert "DELISTED" not in result.ready_tickers
+    assert (("DELISTED",), decision_date - timedelta(days=7)) in starts
+    assert scan_ohlcv().collect()["ticker"].unique().sort().to_list() == [
+        "CURRENT",
+        "DELISTED",
+        "SPY",
+    ]
+
+
+def test_download_end_includes_a_market_session_completed_today(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "alphascreener.data.sync.latest_completed_market_date",
+        lambda: date.today(),
+    )
+    ends = []
+    monkeypatch.setattr(
+        "alphascreener.data.sync._download_batch",
+        lambda batch, *, start, end, batch_number: ends.append(end) or [],
+    )
+
+    sync_ohlcv(["SPY"], start=date.today() - timedelta(days=7))
+
+    assert ends == [date.today() + timedelta(days=1)]
+
+
+def _stored_rows(ticker: str, sessions: int) -> list[dict[str, object]]:
+    end = latest_completed_market_date()
+    dates = market_dates_between(
+        end - timedelta(days=sessions * 3),
+        end,
+    )[-sessions:]
+    return [
+        {
+            "ticker": ticker,
+            "dt": session_date,
+            "open": 10.0,
+            "high": 11.0,
+            "low": 9.0,
+            "close": 10.5,
+            "volume": 2_000,
+        }
+        for session_date in dates
+    ]
+
+
+def test_fresh_backtest_ready_universe_skips_redundant_downloads(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: tmp_path)
+    rows = []
+    for ticker in ("SPY", "GOOD"):
+        rows.extend(_stored_rows(ticker, 118))
     write_ohlcv(pl.DataFrame(rows))
 
     def unexpected_download(*args, **kwargs):
@@ -166,3 +328,121 @@ def test_fresh_ready_universe_skips_redundant_downloads(tmp_path, monkeypatch) -
     assert result.rows_written == 0
     assert result.coverage == 1.0
     assert result.ready_tickers == ("GOOD", "SPY")
+
+
+def test_fresh_spy_gap_forces_a_repair_download_even_above_90pct_coverage(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: tmp_path)
+    tickers = ["SPY", *(f"M{index}" for index in range(9))]
+    rows = [
+        row
+        for ticker in tickers
+        for row in _stored_rows(ticker, 118)
+    ]
+    spy_dates = [row["dt"] for row in rows if row["ticker"] == "SPY"]
+    missing_date = spy_dates[-30]
+    rows = [
+        row
+        for row in rows
+        if not (row["ticker"] == "SPY" and row["dt"] == missing_date)
+    ]
+    write_ohlcv(pl.DataFrame(rows))
+    calls = []
+    monkeypatch.setattr(
+        "alphascreener.data.sync._download_batch",
+        lambda batch, **kwargs: calls.append(batch) or [],
+    )
+
+    result = sync_ohlcv(tickers)
+
+    assert calls == [("SPY",)]
+    assert result.coverage == 0.9
+    assert "SPY" not in result.ready_tickers
+
+
+def test_fresh_prediction_ready_cache_is_expanded_for_backtests(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: tmp_path)
+    write_ohlcv(
+        pl.DataFrame([
+            row
+            for ticker in ("SPY", "GOOD")
+            for row in _stored_rows(ticker, 76)
+        ])
+    )
+    calls = []
+
+    def observe_download(batch, *, start, end, batch_number):
+        calls.append((batch, start, end, batch_number))
+        return []
+
+    monkeypatch.setattr("alphascreener.data.sync._download_batch", observe_download)
+
+    result = sync_ohlcv(["SPY", "GOOD"])
+
+    assert calls == [
+        (
+            ("SPY", "GOOD"),
+            date.today() - timedelta(days=210),
+            latest_completed_market_date() + timedelta(days=1),
+            1,
+        )
+    ]
+    assert result.coverage == 1.0
+    assert result.ready_tickers == ("GOOD", "SPY")
+
+
+def test_stale_complete_cache_remains_stale_when_refresh_downloads_fail(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: tmp_path)
+    stale_end = latest_completed_market_date() - timedelta(days=10)
+    rows = []
+    for ticker in ("SPY", "GOOD"):
+        rows.extend(
+            {
+                **row,
+                "dt": stale_end - timedelta(days=117 - index),
+            }
+            for index, row in enumerate(_stored_rows(ticker, 118))
+        )
+    write_ohlcv(pl.DataFrame(rows))
+    calls = []
+    monkeypatch.setattr(
+        "alphascreener.data.sync._download_batch",
+        lambda *args, **kwargs: calls.append(True) or [],
+    )
+
+    result = sync_ohlcv(["SPY", "GOOD"])
+
+    assert calls
+    assert result.coverage == 1.0
+    assert result.as_of_date == stale_end
+    assert result.is_fresh is False
+
+
+def test_prediction_ready_ipo_is_not_excluded_by_backtest_history_requirement(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("alphascreener.data.paths.get_data_home", lambda: tmp_path)
+    mature_tickers = ["SPY", *[f"M{index}" for index in range(8)]]
+    rows = [
+        row
+        for ticker in mature_tickers
+        for row in _stored_rows(ticker, 118)
+    ]
+    rows.extend(_stored_rows("IPO", 60))
+    write_ohlcv(pl.DataFrame(rows))
+
+    def unexpected_download(*args, **kwargs):
+        raise AssertionError("90% backtest history should permit a fresh-cache fast path")
+
+    monkeypatch.setattr("alphascreener.data.sync._download_batch", unexpected_download)
+
+    result = sync_ohlcv([*mature_tickers, "IPO"])
+
+    assert result.rows_written == 0
+    assert result.coverage == 1.0
+    assert "IPO" in result.ready_tickers
