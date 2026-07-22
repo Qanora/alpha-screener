@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import math
 import re
+from datetime import date
 from pathlib import Path
 
-import numpy as np
 import polars as pl
 
 from alphascreener.data.locking import exclusive_file_lock
 from alphascreener.data.paths import get_data_home
 from alphascreener.prediction_contract import DEFAULT_TOP_K, ExplosionLabelSpec
 
-LEGACY_STRATEGY_VERSION = "legacy-unversioned"
 MIN_OUTCOME_COVERAGE = 0.90
-MIN_CONFIDENCE_INTERVAL_DAYS = 20
+DAILY_PRECISION_TARGET = 0.10
+REQUIRED_CONSECUTIVE_PASSES = 5
 
 
 def compute_forward_labels(
@@ -82,34 +81,35 @@ def write_prediction_ledger(predictions: pl.DataFrame) -> Path:
             pl.col("universe_size").cast(pl.Int64),
         )
         temporary = path / "ranking.parquet.tmp"
-        serialized.write_parquet(temporary)
-        temporary.replace(output)
+        try:
+            serialized.write_parquet(temporary)
+            temporary.replace(output)
+        finally:
+            temporary.unlink(missing_ok=True)
     return output
 
 
 def read_prediction_ledger() -> pl.DataFrame:
-    """Read rankings and normalize legacy three-column ledger files."""
-    paths = sorted((get_data_home() / "predictions").rglob("ranking.parquet"))
+    """Read complete rankings written under the current ledger contract."""
+    paths = sorted(
+        (get_data_home() / "predictions").glob("dt=*/strategy=*/ranking.parquet")
+    )
     if not paths:
         return pl.DataFrame(schema=_prediction_schema())
-    return pl.concat([_normalize_ledger(pl.read_parquet(path)) for path in paths])
-
-
-def _normalize_ledger(frame: pl.DataFrame) -> pl.DataFrame:
-    frame = frame.with_columns(pl.col("decision_date").cast(pl.Date))
-    if "strategy_version" not in frame.columns:
-        frame = frame.with_columns(pl.lit(LEGACY_STRATEGY_VERSION).alias("strategy_version"))
-    if "rank" not in frame.columns:
-        frame = frame.with_columns(
-            pl.col("score")
-            .rank("ordinal", descending=True)
-            .over(["decision_date", "strategy_version"])
-            .cast(pl.Int64)
-            .alias("rank")
+    frames: list[pl.DataFrame] = []
+    required = set(_prediction_schema())
+    for path in paths:
+        frame = pl.read_parquet(path)
+        if missing := required - set(frame.columns):
+            raise ValueError(f"prediction ledger {path} missing columns: {sorted(missing)}")
+        frames.append(
+            frame.select(_prediction_schema().keys()).with_columns(
+                pl.col("decision_date").cast(pl.Date),
+                pl.col("rank").cast(pl.Int64),
+                pl.col("universe_size").cast(pl.Int64),
+            )
         )
-    if "universe_size" not in frame.columns:
-        frame = frame.with_columns(pl.lit(None, dtype=pl.Int64).alias("universe_size"))
-    return frame.select(_prediction_schema().keys())
+    return pl.concat(frames)
 
 
 def mature_predictions(
@@ -150,12 +150,12 @@ def mature_predictions(
     return pl.concat(matured)
 
 
-def evaluate_rankings(
+def evaluate_daily_rankings(
     matured: pl.DataFrame,
     *,
     top_k: int = DEFAULT_TOP_K,
-) -> list[dict[str, str | float | int | None]]:
-    """Evaluate each strategy independently against its complete eligible universe."""
+) -> pl.DataFrame:
+    """Return valid per-date Precision@K measurements without rank substitution."""
     if top_k <= 0:
         raise ValueError("top_k must be positive")
     required = {
@@ -170,79 +170,67 @@ def evaluate_rankings(
     if missing := required - set(matured.columns):
         raise ValueError(f"matured predictions missing columns: {sorted(missing)}")
     if matured.is_empty():
-        return []
+        return pl.DataFrame(schema=_daily_metric_schema())
 
-    results: list[dict[str, str | float | int | None]] = []
-    for (strategy,), strategy_rows in matured.group_by("strategy_version", maintain_order=True):
-        daily: list[tuple[float, float | None, float, float, float]] = []
-        skipped_days = 0
-        for _, group in strategy_rows.group_by("decision_date", maintain_order=True):
-            sizes = group["universe_size"].drop_nulls().unique().to_list()
-            if len(sizes) != 1 or sizes[0] <= 0:
-                skipped_days += 1
-                continue
-            outcome_coverage = group.height / int(sizes[0])
-            if outcome_coverage < MIN_OUTCOME_COVERAGE:
-                skipped_days += 1
-                continue
-            expected_top_ranks = set(range(1, min(top_k, int(sizes[0])) + 1))
-            ordered = group.filter(pl.col("rank") <= top_k).sort("rank")
-            if set(ordered["rank"].to_list()) != expected_top_ranks:
-                skipped_days += 1
-                continue
-            base_rate = float(group["is_explosion"].mean())
-            precision = float(ordered["is_explosion"].mean())
-            lift = precision / base_rate if base_rate > 0 else None
-            daily.append(
-                (
-                    precision,
-                    lift,
-                    float(ordered["forward_return"].mean()),
-                    outcome_coverage,
-                    base_rate,
-                )
-            )
-
-        precisions = np.array([item[0] for item in daily], dtype=np.float64)
-        ci_lower, ci_upper = _block_bootstrap_ci(precisions)
-        lifts = [item[1] for item in daily if item[1] is not None]
+    results: list[dict[str, str | date | float | int | bool]] = []
+    for (strategy, decision_date), group in matured.group_by(
+        ["strategy_version", "decision_date"], maintain_order=True
+    ):
+        sizes = group["universe_size"].drop_nulls().unique().to_list()
+        if len(sizes) != 1 or sizes[0] < top_k:
+            continue
+        universe_size = int(sizes[0])
+        outcome_coverage = group.height / universe_size
+        if outcome_coverage < MIN_OUTCOME_COVERAGE:
+            continue
+        expected_top_ranks = set(range(1, top_k + 1))
+        ordered = group.filter(pl.col("rank") <= top_k).sort("rank")
+        if set(ordered["rank"].to_list()) != expected_top_ranks:
+            continue
+        base_rate = float(group["is_explosion"].mean())
+        precision = float(ordered["is_explosion"].mean())
         results.append({
             "strategy_version": str(strategy),
-            "days": len(daily),
-            "skipped_days": skipped_days,
-            "precision_at_k": float(precisions.mean()) if len(precisions) else None,
-            "lift_at_k": float(np.mean(lifts)) if lifts else None,
-            "mean_forward_return": (
-                float(np.mean([item[2] for item in daily])) if daily else None
-            ),
-            "mean_outcome_coverage": (
-                float(np.mean([item[3] for item in daily])) if daily else None
-            ),
-            "base_explosion_rate": (
-                float(np.mean([item[4] for item in daily])) if daily else None
-            ),
-            "ci_lower": ci_lower,
-            "ci_upper": ci_upper,
+            "decision_date": decision_date,
+            "universe_size": universe_size,
+            "outcome_coverage": outcome_coverage,
+            "precision_at_k": precision,
+            "base_explosion_rate": base_rate,
+            "passed": precision >= DAILY_PRECISION_TARGET and precision > base_rate,
         })
-    return results
+    return pl.DataFrame(results, schema=_daily_metric_schema()).sort(
+        ["strategy_version", "decision_date"]
+    )
 
 
-def _block_bootstrap_ci(data: np.ndarray) -> tuple[float | None, float | None]:
-    """Return a deterministic 95% interval after enough daily observations exist."""
-    if len(data) < MIN_CONFIDENCE_INTERVAL_DAYS:
-        return None, None
-    rng = np.random.default_rng(0)
-    block_size = min(5, len(data))
-    n_blocks = math.ceil(len(data) / block_size)
-    samples = np.empty(1_000, dtype=np.float64)
-    for index in range(len(samples)):
-        blocks = [
-            data[start : start + block_size]
-            for start in rng.integers(0, len(data) - block_size + 1, size=n_blocks)
-        ]
-        samples[index] = np.mean(np.concatenate(blocks)[: len(data)])
-    lower, upper = np.percentile(samples, [2.5, 97.5])
-    return float(lower), float(upper)
+def longest_consecutive_passes(
+    daily: pl.DataFrame,
+    market_dates: list[date],
+    *,
+    strategy_version: str,
+) -> int:
+    """Return the longest run of passing metrics on consecutive market dates."""
+    positions = {value: index for index, value in enumerate(market_dates)}
+    rows = (
+        daily.filter(pl.col("strategy_version") == strategy_version)
+        .sort("decision_date")
+        .select("decision_date", "passed")
+        .iter_rows()
+    )
+    longest = 0
+    current = 0
+    previous_position: int | None = None
+    for decision_date, passed in rows:
+        position = positions.get(decision_date)
+        if not passed or position is None:
+            current = 0
+        elif previous_position is not None and position == previous_position + 1:
+            current += 1
+        else:
+            current = 1
+        longest = max(longest, current)
+        previous_position = position
+    return longest
 
 
 def _prediction_schema() -> dict[str, pl.DataType]:
@@ -263,4 +251,16 @@ def _label_schema() -> dict[str, pl.DataType]:
         "close": pl.Float64,
         "future_close": pl.Float64,
         "forward_return": pl.Float64,
+    }
+
+
+def _daily_metric_schema() -> dict[str, pl.DataType]:
+    return {
+        "strategy_version": pl.String,
+        "decision_date": pl.Date,
+        "universe_size": pl.Int64,
+        "outcome_coverage": pl.Float64,
+        "precision_at_k": pl.Float64,
+        "base_explosion_rate": pl.Float64,
+        "passed": pl.Boolean,
     }

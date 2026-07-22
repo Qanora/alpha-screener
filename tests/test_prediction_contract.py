@@ -8,6 +8,8 @@ from alphascreener.prediction_contract import (
     DEFAULT_TOP_K,
     FORECAST_HORIZON_SESSIONS,
     INPUT_LOOKBACK_SESSIONS,
+    REQUIRED_BACKTEST_DAYS,
+    REQUIRED_HISTORY_SESSIONS,
     STRATEGY_VERSION,
     ExplosionLabelSpec,
 )
@@ -17,7 +19,9 @@ def test_contract_uses_60_sessions_to_predict_14_sessions() -> None:
     assert INPUT_LOOKBACK_SESSIONS == 60
     assert FORECAST_HORIZON_SESSIONS == 14
     assert DEFAULT_TOP_K == 10
-    assert STRATEGY_VERSION == "rank-v2"
+    assert REQUIRED_BACKTEST_DAYS == 3
+    assert REQUIRED_HISTORY_SESSIONS == 76
+    assert STRATEGY_VERSION == "rank-v4"
 
 
 def test_explosion_threshold_requires_absolute_and_cross_sectional_tail() -> None:

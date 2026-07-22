@@ -2,93 +2,44 @@
 
 from __future__ import annotations
 
-from datetime import date
-
 import click
 import polars as pl
 
 from alphascreener.display import panel, result_table, rule, warn_card
-
-
-def _rank_candidates(ohlcv: pl.DataFrame) -> tuple[pl.DataFrame, date]:
-    """Rank the complete eligible universe from its latest 60 sessions."""
-    from alphascreener.features import compute_60d_features
-    from alphascreener.universe import build_universe_snapshot
-
-    cutoff = ohlcv["dt"].max()
-    snapshot = build_universe_snapshot(ohlcv, cutoff_date=cutoff)
-    benchmark = snapshot.filter(pl.col("ticker") == "SPY")
-    if benchmark.height != 1 or not benchmark.item(0, "eligible"):
-        reason = (
-            "missing"
-            if benchmark.is_empty()
-            else str(benchmark.item(0, "exclusion_reason"))
-        )
-        raise ValueError(f"SPY benchmark unavailable on {cutoff}: {reason}")
-    eligible = snapshot.filter(pl.col("eligible") & (pl.col("ticker") != "SPY"))["ticker"].to_list()
-    if not eligible:
-        return pl.DataFrame(schema={"ticker": pl.String, "score": pl.Float64}), cutoff
-    feature_tickers = [*eligible, "SPY"]
-    window = (
-        ohlcv.filter(pl.col("ticker").is_in(feature_tickers)).sort(["ticker", "dt"])
-        .group_by("ticker", maintain_order=True).tail(60)
-    )
-    features = compute_60d_features(window).filter(
-        (pl.col("dt") == cutoff) & (pl.col("ticker") != "SPY")
-    )
-    signals = [
-        "return_5d", "return_20d", "distance_to_60d_high",
-        "volume_zscore_20", "relative_strength_20d",
-    ]
-    ranked = features.with_columns([
-        pl.col(signal).fill_null(0.0).rank("average").alias(f"_rank_{signal}") for signal in signals
-    ]).with_columns(
-        pl.mean_horizontal([pl.col(f"_rank_{signal}") for signal in signals]).alias("score")
-    )
-    ranking = (
-        ranked.select("ticker", "score")
-        .sort("score", descending=True)
-        .with_row_index("rank", offset=1)
-        .with_columns(pl.col("rank").cast(pl.Int64))
-    )
-    return ranking, cutoff
+from alphascreener.ranking import rank_candidates
 
 
 def _run_screen(top: int) -> None:
+    from alphascreener.backtest import run_recent_backtest, write_backtest_records
     from alphascreener.data.io import scan_ohlcv
-    from alphascreener.data.sync import MIN_SYNC_COVERAGE, last_sync_date, sync_ohlcv
-    from alphascreener.evaluation import write_prediction_ledger
+    from alphascreener.data.sync import MIN_SYNC_COVERAGE, sync_ohlcv
+    from alphascreener.evaluation import read_prediction_ledger, write_prediction_ledger
 
+    click.echo("  Updating data ...")
     try:
-        ohlcv = scan_ohlcv().collect()
-    except FileNotFoundError:
-        ohlcv = None
-    last = last_sync_date()
-    needs_sync = last is None
-    if not needs_sync and ohlcv is not None and ohlcv.height:
-        needs_sync = (date.today() - last).days > 1 or (last - ohlcv["dt"].min()).days < 90
-    if needs_sync:
-        click.echo("  Updating data ...")
-        try:
-            sync_status = sync_ohlcv()
-            if sync_status.coverage < MIN_SYNC_COVERAGE:
-                warn_card(
-                    "Sync incomplete; no ranking was recorded.",
-                    f"Ticker coverage: {sync_status.coverage:.1%}",
-                )
-                return
-            ohlcv = scan_ohlcv().collect()
-        except Exception as exc:
-            warn_card(f"Sync failed: {exc}")
+        sync_status = sync_ohlcv()
+        if sync_status.coverage < MIN_SYNC_COVERAGE:
+            warn_card(
+                "Sync incomplete; no ranking was recorded.",
+                f"Decision-ready coverage: {sync_status.coverage:.1%}",
+            )
             return
-    if ohlcv is None or not ohlcv.height:
+        ohlcv = scan_ohlcv().collect()
+        if sync_status.ready_tickers:
+            ohlcv = ohlcv.filter(pl.col("ticker").is_in(sync_status.ready_tickers))
+    except Exception as exc:
+        warn_card(f"Sync failed: {exc}")
+        return
+    if not ohlcv.height:
         warn_card("No OHLCV data available.")
         return
 
     data = ohlcv.unique(subset=["ticker", "dt"], keep="last").sort(["ticker", "dt"])
     try:
-        ranking, decision_date = _rank_candidates(data)
-    except ValueError as exc:
+        backtest = run_recent_backtest(data)
+        write_backtest_records(backtest)
+        ranking, decision_date = rank_candidates(data)
+    except (OSError, ValueError) as exc:
         warn_card(f"Cannot rank candidates: {exc}")
         return
     if ranking.is_empty():
@@ -105,9 +56,36 @@ def _run_screen(top: int) -> None:
         write_prediction_ledger(predictions)
     except FileExistsError:
         click.echo("  Ledger: ranking already recorded for this date and strategy")
+        try:
+            recorded = read_prediction_ledger().filter(
+                (pl.col("decision_date") == decision_date)
+                & (pl.col("strategy_version") == STRATEGY_VERSION)
+            )
+            if recorded.is_empty():
+                raise ValueError("recorded ranking could not be read")
+            ranking = recorded.select("ticker", "score", "rank").sort("rank")
+        except (OSError, ValueError) as exc:
+            warn_card(f"Cannot read immutable ranking: {exc}")
+            return
 
     displayed = ranking.head(top)
     rule("Alpha Screener")
+    click.echo("  Recent current-universe walk-forward backtest:\n")
+    result_table(
+        ["Decision", "Result", "Precision@10", "Base", "Coverage", "Pass"],
+        [
+            [
+                str(row["decision_date"]),
+                str(row["result_date"]),
+                f"{row['precision_at_10']:.0%}",
+                f"{row['base_explosion_rate']:.1%}",
+                f"{row['outcome_coverage']:.1%}",
+                "yes" if row["passed"] else "no",
+            ]
+            for row in backtest.iter_rows(named=True)
+        ],
+    )
+    click.echo()
     click.echo(
         f"  Date: {decision_date}  |  Displayed: {displayed.height}"
         f"  |  Eligible universe: {ranking.height}\n"
@@ -128,44 +106,49 @@ def evaluate() -> None:
     from alphascreener.data.io import scan_ohlcv
     from alphascreener.evaluation import (
         compute_forward_labels,
-        evaluate_rankings,
+        evaluate_daily_rankings,
+        longest_consecutive_passes,
         mature_predictions,
         read_prediction_ledger,
     )
+    from alphascreener.prediction_contract import STRATEGY_VERSION
 
     try:
-        matured = mature_predictions(
-            read_prediction_ledger(), compute_forward_labels(scan_ohlcv().collect())
-        )
+        ohlcv = scan_ohlcv().collect()
+        matured = mature_predictions(read_prediction_ledger(), compute_forward_labels(ohlcv))
     except (FileNotFoundError, ValueError) as exc:
         warn_card(f"Cannot evaluate predictions: {exc}")
         return
-    strategy_metrics = evaluate_rankings(matured)
+    daily = evaluate_daily_rankings(matured)
     rule("Alpha Screener — Matured Predictions")
-    valid_metrics = [metrics for metrics in strategy_metrics if metrics["days"]]
-    if not valid_metrics:
+    if daily.is_empty():
         click.echo("  No prediction dates have matured yet.\n")
         return
-    for metrics in valid_metrics:
-        interval = (
-            f"[{metrics['ci_lower']:.3f}, {metrics['ci_upper']:.3f}]"
-            if metrics["ci_lower"] is not None
-            else "pending at least 20 matured dates"
-        )
-        lift = (
-            f"{metrics['lift_at_k']:.2f}"
-            if metrics["lift_at_k"] is not None
-            else "n/a"
-        )
-        panel(f"14-session quality — {metrics['strategy_version']}", [
-            f"Decision dates: {metrics['days']} (skipped: {metrics['skipped_days']})",
-            f"Precision@10: {metrics['precision_at_k']:.3f}",
-            f"Base explosion rate: {metrics['base_explosion_rate']:.3f}",
-            f"Lift@10: {lift}",
-            f"Mean forward return: {metrics['mean_forward_return']:.2%}",
-            f"Mean outcome coverage: {metrics['mean_outcome_coverage']:.1%}",
-            f"Bootstrap CI: {interval}",
-        ])
+    current = daily.filter(pl.col("strategy_version") == STRATEGY_VERSION).sort("decision_date")
+    result_table(
+        ["Decision", "Precision@10", "Base", "Coverage", "Pass"],
+        [
+            [
+                str(row["decision_date"]),
+                f"{row['precision_at_k']:.0%}",
+                f"{row['base_explosion_rate']:.1%}",
+                f"{row['outcome_coverage']:.1%}",
+                "yes" if row["passed"] else "no",
+            ]
+            for row in current.tail(5).iter_rows(named=True)
+        ],
+    )
+    market_dates = ohlcv.filter(pl.col("ticker") == "SPY")["dt"].unique().sort().to_list()
+    streak = longest_consecutive_passes(
+        daily, market_dates, strategy_version=STRATEGY_VERSION
+    )
+    panel(
+        f"14-session target — {STRATEGY_VERSION}",
+        [
+            f"Best consecutive passing days: {streak}/5",
+            "Target reached: yes" if streak >= 5 else "Target reached: no",
+        ],
+    )
 
 
 @click.group(invoke_without_command=True)

@@ -58,6 +58,7 @@ def test_ohlcv_storage_keeps_original_partition_when_replace_fails(tmp_path, mon
         write_ohlcv(update)
 
     assert scan_ohlcv().collect().equals(initial)
+    assert not (tmp_path / "ohlcv" / "dt=2025-01-02" / "data.parquet.tmp").exists()
 
 
 def test_ohlcv_storage_rejects_non_finite_prices(tmp_path, monkeypatch) -> None:
