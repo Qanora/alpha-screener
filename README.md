@@ -72,6 +72,17 @@ uv sync --extra dev
 ./scripts/dev-plan.sh
 ```
 
+模型研究不属于公开 `asc` 接口。需要复现冻结的长周期资格验证时执行：
+
+```bash
+uv sync --extra dev --extra research
+uv run python -m alphascreener.research --backfill-start 2020-01-01
+```
+
+该命令使用相同的逐日预筛股票池，对 `rank-v6`、正则化线性基线和按决策日分组的 LambdaMART 做严格时间顺序比较。训练标签必须在对应 `model_as_of` 前成熟，训练与验证之间隔离 14 个交易日，最后 252 个有效日只做走步样本外测试；报告使用 14 日成对区块自助法，并检查四个连续测试块和 SPY 涨跌状态。研究行情按 63 个决策日分块计算，不写预测账本。
+
+多年历史仍来自本次运行取得的当前官方股票目录，因此报告明确标记为 `CURRENT_SURVIVOR_UNIVERSE_RESEARCH_DIAGNOSTIC`，包含幸存者偏差。即使挑战模型通过离线门槛，也只说明它有资格进入新的事前预测账本验证，不能替代连续 5 个真实成熟预测日。
+
 CI 会在 Python 3.11、3.12、3.13 和 3.14 上运行 lint 与完整测试。
 
 本工具输出的是研究候选，不构成投资建议。外部数据可能延迟、缺失或受供应商限制。

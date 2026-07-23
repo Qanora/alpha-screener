@@ -13,6 +13,7 @@ from alphascreener.evaluation import (
     compute_forward_labels,
     evaluate_daily_rankings,
     longest_consecutive_passes,
+    mature_predictions,
     read_prediction_ledger,
     write_prediction_ledger,
 )
@@ -172,6 +173,30 @@ def test_low_outcome_coverage_is_skipped() -> None:
 
 def test_missing_top_rank_is_not_replaced_by_a_lower_rank() -> None:
     assert evaluate_daily_rankings(_matured_rows(missing_ranks={1})).is_empty()
+
+
+def test_missing_non_top_outcome_cannot_redefine_the_full_pool_threshold() -> None:
+    predictions = pl.DataFrame({
+        "ticker": [f"T{rank}" for rank in range(1, 21)],
+        "decision_date": [date(2025, 1, 2)] * 20,
+        "score": [float(21 - rank) for rank in range(1, 21)],
+        "rank": list(range(1, 21)),
+        "strategy_version": ["rank-v1"] * 20,
+        "universe_size": [20] * 20,
+    })
+    labels = pl.DataFrame({
+        "ticker": [f"T{rank}" for rank in range(1, 20)],
+        "dt": [date(2025, 1, 2)] * 19,
+        "result_date": [date(2025, 1, 23)] * 19,
+        "forward_return": [0.20 if rank == 1 else 0.0 for rank in range(1, 20)],
+    })
+
+    matured = mature_predictions(predictions, labels)
+
+    assert matured.height == 20
+    assert matured["hit_threshold"].null_count() == 20
+    assert matured["is_explosion"].null_count() == 20
+    assert evaluate_daily_rankings(matured).is_empty()
 
 
 def test_prediction_ledgers_are_immutable_per_date_and_strategy(tmp_path, monkeypatch) -> None:

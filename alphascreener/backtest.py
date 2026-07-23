@@ -112,7 +112,9 @@ def run_backtest(
             pl.lit(ranking.height).cast(pl.Int64).alias("universe_size"),
         )
         matured = mature_predictions(predictions, labels)
-        outcome_coverage = matured.height / ranking.height
+        outcome_coverage = (
+            matured["forward_return"].is_not_null().sum() / ranking.height
+        )
         if outcome_coverage < MIN_OUTCOME_COVERAGE:
             records.append(
                 _invalid_record(
@@ -125,7 +127,10 @@ def run_backtest(
             )
             continue
         top_ranks = set(
-            matured.filter(pl.col("rank") <= DEFAULT_TOP_K)["rank"].to_list()
+            matured.filter(
+                (pl.col("rank") <= DEFAULT_TOP_K)
+                & pl.col("forward_return").is_not_null()
+            )["rank"].to_list()
         )
         if top_ranks != set(range(1, DEFAULT_TOP_K + 1)):
             records.append(
@@ -133,6 +138,17 @@ def run_backtest(
                     decision_date,
                     result_date,
                     f"top_{DEFAULT_TOP_K}_outcomes_incomplete",
+                    universe_size=ranking.height,
+                    outcome_coverage=outcome_coverage,
+                )
+            )
+            continue
+        if outcome_coverage < 1.0:
+            records.append(
+                _invalid_record(
+                    decision_date,
+                    result_date,
+                    "complete_universe_outcomes_required",
                     universe_size=ranking.height,
                     outcome_coverage=outcome_coverage,
                 )

@@ -252,9 +252,13 @@ def _render_matured_evidence(ohlcv: pl.DataFrame) -> None:
         outcome_group = matured.filter(pl.col("decision_date") == decision_date)
         sizes = group["universe_size"].unique().to_list()
         universe_size = int(sizes[0]) if len(sizes) == 1 else 0
-        coverage = outcome_group.height / universe_size if universe_size else 0.0
+        outcome_count = outcome_group["forward_return"].is_not_null().sum()
+        coverage = outcome_count / universe_size if universe_size else 0.0
         top_ranks = set(
-            outcome_group.filter(pl.col("rank") <= DEFAULT_TOP_K)["rank"].to_list()
+            outcome_group.filter(
+                (pl.col("rank") <= DEFAULT_TOP_K)
+                & pl.col("forward_return").is_not_null()
+            )["rank"].to_list()
         )
         metric = daily.filter(pl.col("decision_date") == decision_date)
         if universe_size < DEFAULT_TOP_K:
@@ -263,6 +267,8 @@ def _render_matured_evidence(ohlcv: pl.DataFrame) -> None:
             reason = "outcome_coverage_below_90pct"
         elif top_ranks != set(range(1, DEFAULT_TOP_K + 1)):
             reason = f"top_{DEFAULT_TOP_K}_outcomes_incomplete"
+        elif coverage < 1.0:
+            reason = "complete_universe_outcomes_required"
         elif metric.height != 1:
             reason = "evaluation_failed"
         else:
