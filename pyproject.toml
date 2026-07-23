@@ -27,6 +27,9 @@ dev = [
     "pytest>=7.4",
     "ruff>=0.2",
 ]
+research = [
+    "lightgbm==4.7.0",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

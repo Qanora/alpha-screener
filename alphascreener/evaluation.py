@@ -159,12 +159,20 @@ def mature_predictions(
         labels.select(["ticker", "dt", "result_date", "forward_return"]),
         left_on=["ticker", "decision_date"],
         right_on=["ticker", "dt"],
-        how="inner",
+        how="left",
     )
     matured: list[pl.DataFrame] = []
     for _, group in joined.group_by(
         ["strategy_version", "decision_date"], maintain_order=True
     ):
+        if group["forward_return"].null_count():
+            matured.append(
+                group.with_columns(
+                    pl.lit(None, dtype=pl.Float64).alias("hit_threshold"),
+                    pl.lit(None, dtype=pl.Boolean).alias("is_explosion"),
+                )
+            )
+            continue
         threshold = spec.threshold(group["forward_return"].to_list())
         matured.append(
             group.with_columns(
@@ -210,8 +218,11 @@ def evaluate_daily_rankings(
         if len(sizes) != 1 or sizes[0] < top_k:
             continue
         universe_size = int(sizes[0])
-        outcome_coverage = group.height / universe_size
+        outcome_count = group["forward_return"].is_not_null().sum()
+        outcome_coverage = outcome_count / universe_size
         if outcome_coverage < MIN_OUTCOME_COVERAGE:
+            continue
+        if outcome_count != universe_size or group["is_explosion"].null_count():
             continue
         expected_top_ranks = set(range(1, top_k + 1))
         ordered = group.filter(pl.col("rank") <= top_k).sort("rank")

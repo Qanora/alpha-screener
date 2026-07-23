@@ -16,7 +16,7 @@ from alphascreener.prediction_contract import (
     MIN_CANDIDATE_CLOSE,
 )
 
-_RANK_SIGNALS = (
+RANK_V6_SIGNALS = (
     "return_5d",
     "return_20d",
     "distance_to_60d_high",
@@ -63,9 +63,27 @@ def rank_candidate_dates(
     """Rank many decision dates from one backward-looking feature panel."""
     if not decision_dates:
         return _empty_rankings()
-    features = compute_60d_features(ohlcv).filter(
-        pl.col("dt").is_in(list(decision_dates))
-    )
+    features = compute_60d_features(ohlcv)
+    candidates = select_eligible_candidate_features(features, decision_dates)
+    return score_rank_v6(candidates)
+
+
+def select_eligible_candidate_features(
+    features: pl.DataFrame,
+    decision_dates: Sequence[date],
+) -> pl.DataFrame:
+    """Return the exact daily prefiltered universe shared by every ranker."""
+    required = {
+        "ticker",
+        "dt",
+        "raw_close",
+        "history_complete_60d",
+        "average_dollar_volume_20d",
+        *RANK_V6_SIGNALS,
+    }
+    if missing := required - set(features.columns):
+        raise ValueError(f"feature data missing columns: {sorted(missing)}")
+    features = features.filter(pl.col("dt").is_in(list(decision_dates)))
     eligible = features.filter(
         pl.col("history_complete_60d")
         & (pl.col("raw_close") >= MIN_CANDIDATE_CLOSE)
@@ -81,19 +99,27 @@ def rank_candidate_dates(
         pl.col("ticker").cum_count().over("dt").alias("_liquidity_rank")
     ).filter(
         pl.col("_liquidity_rank") <= MAX_CANDIDATES
-    )
+    ).drop("_liquidity_rank")
+    return candidates
+
+
+def score_rank_v6(candidates: pl.DataFrame) -> pl.DataFrame:
+    """Apply the frozen rank-v6 score to an already eligible feature panel."""
     if candidates.is_empty():
         return _empty_rankings()
+    required = {"ticker", "dt", *RANK_V6_SIGNALS}
+    if missing := required - set(candidates.columns):
+        raise ValueError(f"candidate features missing columns: {sorted(missing)}")
     ranked = candidates.with_columns([
         pl.col(signal)
         .fill_null(0.0)
         .rank("average")
         .over("dt")
         .alias(f"_rank_{signal}")
-        for signal in _RANK_SIGNALS
+        for signal in RANK_V6_SIGNALS
     ]).with_columns(
         pl.mean_horizontal([
-            pl.col(f"_rank_{signal}") for signal in _RANK_SIGNALS
+            pl.col(f"_rank_{signal}") for signal in RANK_V6_SIGNALS
         ]).alias("score")
     )
     return (

@@ -7,7 +7,7 @@ from datetime import date
 import polars as pl
 
 from alphascreener.market_calendar import infer_market_dates, market_dates_between
-from alphascreener.ranking import rank_candidate_dates
+from alphascreener.ranking import rank_candidate_dates, score_rank_v6
 
 
 def _market_dates(count: int) -> list[date]:
@@ -99,3 +99,22 @@ def test_absolute_price_prefilter_uses_unadjusted_close() -> None:
 
     assert "HIGH" not in ranking["ticker"].to_list()
     assert "MID" in ranking["ticker"].to_list()
+
+
+def test_rank_v6_is_a_frozen_duplicate_weighted_baseline() -> None:
+    decision_date = date(2025, 1, 2)
+    candidates = pl.DataFrame({
+        "ticker": ["A", "B", "C"],
+        "dt": [decision_date] * 3,
+        "return_5d": [3.0, 2.0, 1.0],
+        "return_20d": [1.0, 3.0, 2.0],
+        "distance_to_60d_high": [-0.1, 0.0, -0.2],
+        "volume_zscore_20": [2.0, 1.0, 3.0],
+        "relative_strength_20d": [1.0, 3.0, 2.0],
+    })
+
+    ranked = score_rank_v6(candidates)
+
+    assert ranked["ticker"].to_list() == ["B", "A", "C"]
+    assert ranked["score"].to_list() == [2.4, 1.8, 1.8]
+    assert ranked["rank"].to_list() == [1, 2, 3]
