@@ -30,6 +30,9 @@ from alphascreener.prediction_contract import (
     DEFAULT_TOP_K,
     FORECAST_HORIZON_SESSIONS,
     INPUT_LOOKBACK_SESSIONS,
+    MAX_RISK_RERANK_POSITIONS,
+    RISK_RERANK_CANDIDATES,
+    RiskLabelSpec,
 )
 from alphascreener.ranking import (
     score_rank_v6,
@@ -49,9 +52,27 @@ from alphascreener.research_features import (
 EVIDENCE_TYPE = "CURRENT_SURVIVOR_UNIVERSE_RESEARCH_DIAGNOSTIC"
 INCUMBENT_NAME = "rank-v6"
 LINEAR_NAME = "ridge-rank-v1"
-LIGHTGBM_NAME = "lambdamart-rank-v1"
-FEATURE_VERSION = "ohlcv-60d-v1"
+LIGHTGBM_NAME = "guarded-rank-ensemble-v1"
+OFFICIAL_LIGHTGBM_NAME = "guarded-official-signals-v1"
+FEATURE_VERSION = "ohlcv-60d-risk-v6"
 RESEARCH_CHUNK_DECISION_DATES = 63
+RIDGE_FIT_BATCH_ROWS = 100_000
+_RISK_LABEL_SPEC = RiskLabelSpec()
+SEVERE_DOWNSIDE_RETURN = _RISK_LABEL_SPEC.severe_return
+CATASTROPHIC_LOSS_RETURN = _RISK_LABEL_SPEC.catastrophic_return
+RISK_RERANK_TOP_N = RISK_RERANK_CANDIDATES
+RISK_LAMBDA_CANDIDATES = tuple(float(value) for value in range(MAX_RISK_RERANK_POSITIONS + 1))
+RISK_VALIDATION_PRECISION_TOLERANCE = 0.005
+BOOM_BLEND_CANDIDATES = (0.0, 0.25, 0.5, 0.75, 1.0)
+EXPECTED_SHORTFALL_TAIL = _RISK_LABEL_SPEC.expected_shortfall_quantile
+MINIMUM_DOWNSIDE_IMPROVEMENT = 0.02
+MINIMUM_CATASTROPHIC_IMPROVEMENT = 0.005
+MINIMUM_ES_RELATIVE_IMPROVEMENT = 0.10
+EXPLOSION_RELEVANCE_GAIN = 31
+EXTERNAL_DATA_EXPLORATORY_REASON = (
+    "official-data challenger is exploratory because its feature family was "
+    "introduced after the current 252-day holdout had already been observed"
+)
 
 _REQUIRED_OHLCV_COLUMNS = {
     "ticker",
@@ -74,7 +95,10 @@ LGBM_RANK_V1_PARAMS: dict[str, Any] = {
     "objective": "lambdarank",
     "metric": "ndcg",
     "ndcg_eval_at": [DEFAULT_TOP_K],
-    "label_gain": [0, 1],
+    # One explosion remains worth more than an entire Top-10 filled with
+    # ordinary non-severe outcomes; ordinary outcomes only break ties against
+    # severe downside after the primary target has been preserved.
+    "label_gain": [0, 1, EXPLOSION_RELEVANCE_GAIN],
     "lambdarank_truncation_level": DEFAULT_TOP_K + 3,
     "lambdarank_norm": True,
     "boosting": "gbdt",
@@ -87,6 +111,28 @@ LGBM_RANK_V1_PARAMS: dict[str, Any] = {
     "bagging_fraction": 0.8,
     "bagging_freq": 1,
     "bagging_by_query": True,
+    "seed": 20_260_723,
+    "data_random_seed": 20_260_723,
+    "feature_fraction_seed": 20_260_723,
+    "bagging_seed": 20_260_723,
+    "deterministic": True,
+    "force_col_wise": True,
+    "num_threads": 4,
+    "verbosity": -1,
+}
+
+LGBM_RISK_V1_PARAMS: dict[str, Any] = {
+    "objective": "binary",
+    "metric": "average_precision",
+    "boosting": "gbdt",
+    "learning_rate": 0.03,
+    "num_leaves": 15,
+    "max_depth": 4,
+    "min_data_in_leaf": 2_000,
+    "lambda_l2": 10.0,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 1,
     "seed": 20_260_723,
     "data_random_seed": 20_260_723,
     "feature_fraction_seed": 20_260_723,
@@ -111,6 +157,12 @@ class ResearchConfig:
     random_seed: int = 20_260_723
     minimum_uplift: float = 0.02
     linear_l2: float = 10.0
+    risk_l2: float = 10.0
+    risk_rerank_top_n: int = RISK_RERANK_TOP_N
+    risk_lambda_candidates: tuple[float, ...] = RISK_LAMBDA_CANDIDATES
+    risk_validation_precision_tolerance: float = RISK_VALIDATION_PRECISION_TOLERANCE
+    boom_blend_candidates: tuple[float, ...] = BOOM_BLEND_CANDIDATES
+    expected_shortfall_tail: float = EXPECTED_SHORTFALL_TAIL
     num_boost_round: int = 1_000
     early_stopping_rounds: int = 50
     early_stopping_min_delta: float = 1e-4
@@ -123,6 +175,7 @@ class ResearchConfig:
             "retrain_interval": self.retrain_interval,
             "bootstrap_block_dates": self.bootstrap_block_dates,
             "bootstrap_replications": self.bootstrap_replications,
+            "risk_rerank_top_n": self.risk_rerank_top_n,
             "num_boost_round": self.num_boost_round,
             "early_stopping_rounds": self.early_stopping_rounds,
         }
@@ -130,8 +183,24 @@ class ResearchConfig:
             raise ValueError(f"research config values must be positive: {invalid}")
         if self.bootstrap_block_dates < FORECAST_HORIZON_SESSIONS:
             raise ValueError("bootstrap blocks cannot be shorter than the label horizon")
-        if self.minimum_uplift <= 0 or self.linear_l2 <= 0:
+        if self.minimum_uplift <= 0 or self.linear_l2 <= 0 or self.risk_l2 <= 0:
             raise ValueError("uplift and linear regularization must be positive")
+        if self.risk_rerank_top_n < DEFAULT_TOP_K:
+            raise ValueError("risk rerank pool cannot be smaller than Top-K")
+        if not self.risk_lambda_candidates or any(
+            value < 0 for value in self.risk_lambda_candidates
+        ):
+            raise ValueError("risk lambda candidates must be non-empty and non-negative")
+        if not 0 <= self.risk_validation_precision_tolerance <= 1:
+            raise ValueError("risk validation precision tolerance must be in [0, 1]")
+        if (
+            not self.boom_blend_candidates
+            or 0.0 not in self.boom_blend_candidates
+            or any(not 0.0 <= value <= 1.0 for value in self.boom_blend_candidates)
+        ):
+            raise ValueError("boom blend candidates must include zero and stay in [0, 1]")
+        if not 0 < self.expected_shortfall_tail <= 1:
+            raise ValueError("expected-shortfall tail must be in (0, 1]")
 
 
 @dataclass(frozen=True)
@@ -143,6 +212,8 @@ class ResearchData:
     valid_dates: tuple[date, ...]
     snapshot_id: str
     feature_digest: str
+    extra_model_features: tuple[str, ...] = ()
+    external_coverage: pl.DataFrame | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +237,15 @@ class BootstrapInterval:
 
 
 @dataclass(frozen=True)
+class TailRiskBootstrap:
+    """Paired block-bootstrap changes; negative rates and positive ES are better."""
+
+    downside_change: BootstrapInterval
+    catastrophic_loss_change: BootstrapInterval
+    expected_shortfall_change: BootstrapInterval
+
+
+@dataclass(frozen=True)
 class ResearchReport:
     """All evidence needed to accept or reject the frozen challenger."""
 
@@ -174,12 +254,14 @@ class ResearchReport:
     folds: pl.DataFrame
     stability: pl.DataFrame
     bootstrap: BootstrapInterval
+    tail_risk_bootstrap: TailRiskBootstrap
     recent_45_uplift: float
     promotion_passed: bool
     promotion_reasons: tuple[str, ...]
     snapshot_id: str
     feature_digest: str
     config_digest: str
+    external_coverage: pl.DataFrame | None
 
 
 def build_research_data(
@@ -200,10 +282,14 @@ def build_research_data(
     if missing := _REQUIRED_OHLCV_COLUMNS - set(source.collect_schema().names()):
         raise ValueError(f"research OHLCV data missing columns: {sorted(missing)}")
     source = source.select(sorted(_REQUIRED_OHLCV_COLUMNS))
-    bounds = source.select(
-        pl.col("dt").cast(pl.Date).min().alias("start"),
-        pl.col("dt").cast(pl.Date).max().alias("end"),
-    ).collect().row(0, named=True)
+    bounds = (
+        source.select(
+            pl.col("dt").cast(pl.Date).min().alias("start"),
+            pl.col("dt").cast(pl.Date).max().alias("end"),
+        )
+        .collect()
+        .row(0, named=True)
+    )
     if bounds["start"] is None or bounds["end"] is None:
         raise ValueError("research OHLCV data is empty")
     market_dates = market_dates_between(bounds["start"], bounds["end"])
@@ -228,8 +314,9 @@ def build_research_data(
         first_position = date_positions[chunk_dates[0]]
         last_position = date_positions[chunk_dates[-1]]
         window_dates = market_dates[
-            first_position - INPUT_LOOKBACK_SESSIONS + 1 :
-            last_position + FORECAST_HORIZON_SESSIONS + 1
+            first_position - INPUT_LOOKBACK_SESSIONS + 1 : last_position
+            + FORECAST_HORIZON_SESSIONS
+            + 1
         ]
         window = (
             source.filter(pl.col("dt").is_in(window_dates))
@@ -238,13 +325,15 @@ def build_research_data(
             .unique(subset=["ticker", "dt"], keep="last")
             .sort(["ticker", "dt"])
         )
-        result_calendar = pl.DataFrame({
-            "dt": chunk_dates,
-            "result_date": [
-                market_dates[date_positions[value] + FORECAST_HORIZON_SESSIONS]
-                for value in chunk_dates
-            ],
-        })
+        result_calendar = pl.DataFrame(
+            {
+                "dt": chunk_dates,
+                "result_date": [
+                    market_dates[date_positions[value] + FORECAST_HORIZON_SESSIONS]
+                    for value in chunk_dates
+                ],
+            }
+        )
         built = _build_research_chunk(window, chunk_dates, result_calendar)
         if built is not None:
             panel_chunk, quality_chunk = built
@@ -259,44 +348,50 @@ def build_research_data(
     observed_quality = pl.concat(quality_chunks, rechunk=False).drop("result_date")
     del panel_chunks, quality_chunks
     gc.collect()
-    decision_calendar = pl.DataFrame({
-        "dt": decision_dates,
-        "result_date": [
-            market_dates[date_positions[value] + FORECAST_HORIZON_SESSIONS]
-            for value in decision_dates
-        ],
-    })
-    quality = decision_calendar.join(
-        observed_quality,
-        on="dt",
-        how="left",
-        validate="1:1",
-    ).with_columns(
-        pl.col("universe_size").is_null().alias("_missing_universe")
-    ).with_columns(
-        pl.col("universe_size").fill_null(0),
-        pl.col("outcome_count").fill_null(0),
-        pl.col("outcome_coverage").fill_null(0.0),
-        pl.col("date_valid").fill_null(False),
-        pl.when(pl.col("_missing_universe"))
-        .then(pl.lit(f"eligible_universe_below_top_{DEFAULT_TOP_K}"))
-        .otherwise(pl.col("invalid_reason"))
-        .alias("invalid_reason"),
-    ).drop("_missing_universe").sort("dt")
-    valid_dates = tuple(
-        quality.filter(pl.col("date_valid"))["dt"].sort().to_list()
+    decision_calendar = pl.DataFrame(
+        {
+            "dt": decision_dates,
+            "result_date": [
+                market_dates[date_positions[value] + FORECAST_HORIZON_SESSIONS]
+                for value in decision_dates
+            ],
+        }
     )
+    quality = (
+        decision_calendar.join(
+            observed_quality,
+            on="dt",
+            how="left",
+            validate="1:1",
+        )
+        .with_columns(pl.col("universe_size").is_null().alias("_missing_universe"))
+        .with_columns(
+            pl.col("universe_size").fill_null(0),
+            pl.col("outcome_count").fill_null(0),
+            pl.col("outcome_coverage").fill_null(0.0),
+            pl.col("date_valid").fill_null(False),
+            pl.when(pl.col("_missing_universe"))
+            .then(pl.lit(f"eligible_universe_below_top_{DEFAULT_TOP_K}"))
+            .otherwise(pl.col("invalid_reason"))
+            .alias("invalid_reason"),
+        )
+        .drop("_missing_universe")
+        .sort("dt")
+    )
+    valid_dates = tuple(quality.filter(pl.col("date_valid"))["dt"].sort().to_list())
     if not valid_dates:
         raise ValueError("no research dates have complete eligible-universe outcomes")
 
     snapshot_id = _snapshot_id(source)
-    feature_digest = _digest_json({
-        "version": FEATURE_VERSION,
-        "chunk_decision_dates": chunk_decision_dates,
-        "stock": RESEARCH_STOCK_FEATURES,
-        "linear": LINEAR_FEATURES,
-        "lightgbm": LIGHTGBM_FEATURES,
-    })
+    feature_digest = _digest_json(
+        {
+            "version": FEATURE_VERSION,
+            "chunk_decision_dates": chunk_decision_dates,
+            "stock": RESEARCH_STOCK_FEATURES,
+            "linear": LINEAR_FEATURES,
+            "lightgbm": LIGHTGBM_FEATURES,
+        }
+    )
     return ResearchData(
         panel=panel,
         date_quality=quality.rename({"dt": "decision_date"}),
@@ -316,11 +411,13 @@ def _build_research_chunk(
     eligible = select_eligible_candidate_features(base_features, decision_dates)
     if eligible.is_empty():
         return None
-    incumbent = score_rank_v6(eligible).rename({
-        "decision_date": "dt",
-        "score": "rank_v6_score",
-        "rank": "rank_v6_rank",
-    })
+    incumbent = score_rank_v6(eligible).rename(
+        {
+            "decision_date": "dt",
+            "score": "rank_v6_score",
+            "rank": "rank_v6_rank",
+        }
+    )
     eligible_keys = eligible.select("ticker", "dt")
     research_tickers = eligible["ticker"].unique().to_list()
     if "SPY" not in research_tickers:
@@ -347,76 +444,114 @@ def _build_research_chunk(
         pl.col("dt").alias("result_date"),
         pl.col("close").alias("future_close"),
     )
-    candidates = candidates.join(result_calendar, on="dt", how="inner").join(
-        future_prices,
-        on=["ticker", "result_date"],
-        how="left",
-        validate="m:1",
-    ).with_columns(
-        (pl.col("future_close") / pl.col("close") - 1.0).alias("forward_return")
+    candidates = (
+        candidates.join(result_calendar, on="dt", how="inner")
+        .join(
+            future_prices,
+            on=["ticker", "result_date"],
+            how="left",
+            validate="m:1",
+        )
+        .with_columns((pl.col("future_close") / pl.col("close") - 1.0).alias("forward_return"))
     )
-    quality = candidates.group_by("dt").agg(
-        pl.col("result_date").first(),
-        pl.len().cast(pl.Int64).alias("universe_size"),
-        pl.col("forward_return").is_not_null().sum().cast(pl.Int64).alias(
-            "outcome_count"
-        ),
-    ).with_columns(
-        (pl.col("outcome_count") / pl.col("universe_size")).alias(
-            "outcome_coverage"
-        ),
-        (
-            (pl.col("universe_size") >= DEFAULT_TOP_K)
-            & (pl.col("outcome_count") == pl.col("universe_size"))
-        ).alias("date_valid"),
-    ).with_columns(
-        pl.when(pl.col("universe_size") < DEFAULT_TOP_K)
-        .then(pl.lit(f"eligible_universe_below_top_{DEFAULT_TOP_K}"))
-        .when(pl.col("outcome_count") != pl.col("universe_size"))
-        .then(pl.lit("complete_universe_outcomes_required"))
-        .otherwise(pl.lit(None, dtype=pl.String))
-        .alias("invalid_reason")
-    ).sort("dt")
+    quality = (
+        candidates.group_by("dt")
+        .agg(
+            pl.col("result_date").first(),
+            pl.len().cast(pl.Int64).alias("universe_size"),
+            pl.col("forward_return").is_not_null().sum().cast(pl.Int64).alias("outcome_count"),
+        )
+        .with_columns(
+            (pl.col("outcome_count") / pl.col("universe_size")).alias("outcome_coverage"),
+            (
+                (pl.col("universe_size") >= DEFAULT_TOP_K)
+                & (pl.col("outcome_count") == pl.col("universe_size"))
+            ).alias("date_valid"),
+        )
+        .with_columns(
+            pl.when(pl.col("universe_size") < DEFAULT_TOP_K)
+            .then(pl.lit(f"eligible_universe_below_top_{DEFAULT_TOP_K}"))
+            .when(pl.col("outcome_count") != pl.col("universe_size"))
+            .then(pl.lit("complete_universe_outcomes_required"))
+            .otherwise(pl.lit(None, dtype=pl.String))
+            .alias("invalid_reason")
+        )
+        .sort("dt")
+    )
     thresholds = _complete_pool_thresholds(candidates, quality)
-    candidates = candidates.join(
-        quality.select(
-            "dt",
-            "universe_size",
-            "outcome_coverage",
-            "date_valid",
-        ),
-        on="dt",
-        how="inner",
-        validate="m:1",
-    ).join(
-        thresholds,
-        on="dt",
-        how="left",
-        validate="m:1",
-    ).with_columns(
-        pl.when(pl.col("date_valid"))
-        .then(pl.col("forward_return") >= pl.col("hit_threshold"))
-        .otherwise(pl.lit(None, dtype=pl.Boolean))
-        .alias("is_explosion")
-    ).rename({"dt": "decision_date"})
+    candidates = (
+        candidates.join(
+            quality.select(
+                "dt",
+                "universe_size",
+                "outcome_coverage",
+                "date_valid",
+            ),
+            on="dt",
+            how="inner",
+            validate="m:1",
+        )
+        .join(
+            thresholds,
+            on="dt",
+            how="left",
+            validate="m:1",
+        )
+        .with_columns(
+            pl.when(pl.col("date_valid"))
+            .then(pl.col("forward_return") >= pl.col("hit_threshold"))
+            .otherwise(pl.lit(None, dtype=pl.Boolean))
+            .alias("is_explosion"),
+            pl.when(pl.col("date_valid"))
+            .then(pl.col("forward_return") <= SEVERE_DOWNSIDE_RETURN)
+            .otherwise(pl.lit(None, dtype=pl.Boolean))
+            .alias("is_severe_downside"),
+            pl.when(pl.col("date_valid"))
+            .then(pl.col("forward_return") <= CATASTROPHIC_LOSS_RETURN)
+            .otherwise(pl.lit(None, dtype=pl.Boolean))
+            .alias("is_catastrophic_loss"),
+        )
+        .with_columns(
+            pl.when(~pl.col("date_valid"))
+            .then(pl.lit(None, dtype=pl.Int8))
+            .when(pl.col("is_explosion"))
+            .then(pl.lit(2, dtype=pl.Int8))
+            .when(pl.col("is_severe_downside"))
+            .then(pl.lit(0, dtype=pl.Int8))
+            .otherwise(pl.lit(1, dtype=pl.Int8))
+            .alias("ranking_relevance"),
+        )
+        .rename({"dt": "decision_date"})
+    )
     _require_finite_features(
         candidates.filter(pl.col("date_valid")),
         list(_MODEL_COLUMNS),
     )
-    panel = candidates.select(
-        "ticker",
-        "decision_date",
-        "result_date",
-        "universe_size",
-        "outcome_coverage",
-        "date_valid",
-        "forward_return",
-        "hit_threshold",
-        "is_explosion",
-        "rank_v6_score",
-        "rank_v6_rank",
-        *_MODEL_COLUMNS,
-    ).sort(["decision_date", "ticker"])
+    panel = (
+        candidates.select(
+            "ticker",
+            "decision_date",
+            "result_date",
+            "universe_size",
+            "outcome_coverage",
+            "date_valid",
+            "forward_return",
+            "hit_threshold",
+            "is_explosion",
+            "is_severe_downside",
+            "is_catastrophic_loss",
+            "ranking_relevance",
+            "rank_v6_score",
+            "rank_v6_rank",
+            "average_volume_20d",
+            *_MODEL_COLUMNS,
+        )
+        .with_columns(
+            pl.col(pl.Float64).cast(pl.Float32),
+            pl.col("universe_size", "rank_v6_rank").cast(pl.Int32),
+        )
+        .sort(["decision_date", "ticker"])
+    )
     return panel, quality
 
 
@@ -426,15 +561,10 @@ def make_walk_forward_folds(
 ) -> tuple[WalkForwardFold, ...]:
     """Create expanding fits with purged training and a final locked test year."""
     valid_dates = data.valid_dates
-    minimum = (
-        config.minimum_training_dates
-        + config.validation_dates
-        + config.locked_test_dates
-    )
+    minimum = config.minimum_training_dates + config.validation_dates + config.locked_test_dates
     if len(valid_dates) < minimum:
         raise ValueError(
-            f"research needs at least {minimum} complete mature dates; "
-            f"found {len(valid_dates)}"
+            f"research needs at least {minimum} complete mature dates; found {len(valid_dates)}"
         )
     locked_dates = valid_dates[-config.locked_test_dates :]
     quality_by_date = {
@@ -448,8 +578,7 @@ def make_walk_forward_folds(
         matured_dates = tuple(
             decision_date
             for decision_date in valid_dates
-            if decision_date < model_as_of
-            and quality_by_date[decision_date] < model_as_of
+            if decision_date < model_as_of and quality_by_date[decision_date] < model_as_of
         )
         if len(matured_dates) < config.validation_dates:
             raise ValueError(f"not enough matured dates before {model_as_of}")
@@ -485,34 +614,60 @@ def make_walk_forward_folds(
 
 
 class RidgeRanker:
-    """Small deterministic regularized linear probability rank baseline."""
+    """Small deterministic, date-weighted regularized binary ranker."""
 
-    def __init__(self, *, l2: float) -> None:
+    def __init__(self, *, l2: float, label_column: str = "is_explosion") -> None:
         self._l2 = l2
+        self._label_column = label_column
         self._coefficients: np.ndarray | None = None
 
     def fit(self, frame: pl.DataFrame) -> None:
-        features = frame.select(LINEAR_FEATURES).to_numpy().astype(np.float64)
-        labels = frame["is_explosion"].cast(pl.Int8).to_numpy().astype(np.float64)
-        date_counts = frame.group_by("decision_date").len().sort("decision_date")
-        group_sizes = date_counts["len"].to_numpy()
-        weights = np.concatenate([
-            np.full(int(size), 1.0 / float(size), dtype=np.float64)
-            for size in group_sizes
-        ])
+        if frame.is_empty():
+            raise ValueError("linear training data is empty")
+        labels_and_weights = frame.select(
+            pl.col(self._label_column).cast(pl.Float64).alias("_label"),
+            (1.0 / pl.len().over("decision_date")).alias("_weight"),
+        )
+        labels = labels_and_weights["_label"].to_numpy()
+        weights = labels_and_weights["_weight"].to_numpy().copy()
         positive_weight = float(weights[labels == 1].sum())
         negative_weight = float(weights[labels == 0].sum())
         if positive_weight <= 0 or negative_weight <= 0:
-            raise ValueError("linear training data must contain both label classes")
+            raise ValueError(
+                f"linear training data for {self._label_column} must contain both label classes"
+            )
         weights[labels == 1] *= 0.5 / positive_weight
         weights[labels == 0] *= 0.5 / negative_weight
-        design = np.column_stack([np.ones(features.shape[0]), features])
-        weighted_design = design * np.sqrt(weights)[:, None]
-        weighted_labels = labels * np.sqrt(weights)
-        penalty = np.eye(design.shape[1], dtype=np.float64) * self._l2
+        # Keep mean weight at one so the fixed L2 value is on the same scale
+        # as an ordinary per-row regression objective.  The former total-one
+        # normalization made L2 dominate as the sample count grew.
+        weights *= frame.height
+
+        feature_count = len(LINEAR_FEATURES)
+        gram = np.zeros((feature_count + 1, feature_count + 1), dtype=np.float64)
+        target = np.zeros(feature_count + 1, dtype=np.float64)
+        for offset in range(0, frame.height, RIDGE_FIT_BATCH_ROWS):
+            end = min(offset + RIDGE_FIT_BATCH_ROWS, frame.height)
+            features = (
+                frame.slice(offset, end - offset)
+                .select(LINEAR_FEATURES)
+                .to_numpy()
+                .astype(np.float64, copy=False)
+            )
+            batch_weights = weights[offset:end]
+            weighted_features = features * batch_weights[:, None]
+            gram[0, 0] += batch_weights.sum()
+            feature_sums = weighted_features.sum(axis=0)
+            gram[0, 1:] += feature_sums
+            gram[1:, 0] += feature_sums
+            gram[1:, 1:] += features.T @ weighted_features
+            weighted_labels = batch_weights * labels[offset:end]
+            target[0] += weighted_labels.sum()
+            target[1:] += features.T @ weighted_labels
+
+        penalty = np.eye(feature_count + 1, dtype=np.float64) * self._l2
         penalty[0, 0] = 0.0
-        gram = weighted_design.T @ weighted_design + penalty
-        target = weighted_design.T @ weighted_labels
+        gram += penalty
         try:
             self._coefficients = np.linalg.solve(gram, target)
         except np.linalg.LinAlgError:
@@ -526,6 +681,293 @@ class RidgeRanker:
         return design @ self._coefficients
 
 
+def date_equal_weights(frame: pl.DataFrame) -> np.ndarray:
+    """Give every date equal influence while keeping mean sample weight at one."""
+    if "decision_date" not in frame.columns:
+        raise ValueError("training data missing decision_date")
+    if frame.is_empty():
+        raise ValueError("training data is empty")
+    date_counts = {
+        row["decision_date"]: int(row["len"])
+        for row in frame.group_by("decision_date").len().iter_rows(named=True)
+    }
+    date_weight = frame.height / len(date_counts)
+    return np.array(
+        [
+            date_weight / date_counts[decision_date]
+            for decision_date in frame["decision_date"].to_list()
+        ],
+        dtype=np.float64,
+    )
+
+
+def top_n_score_candidates(
+    frame: pl.DataFrame,
+    scores: np.ndarray,
+    *,
+    top_n: int,
+) -> pl.DataFrame:
+    """Select each date's model Top-N while preserving the input row order."""
+    required = {"ticker", "decision_date"}
+    if missing := required - set(frame.columns):
+        raise ValueError(f"training data missing columns: {sorted(missing)}")
+    if top_n <= 0:
+        raise ValueError("top_n must be positive")
+    values = np.asarray(scores, dtype=np.float64)
+    if values.shape != (frame.height,) or not np.isfinite(values).all():
+        raise ValueError("scores must contain one finite value per row")
+    selected_rows = (
+        frame.select("ticker", "decision_date")
+        .with_row_index("_row")
+        .with_columns(pl.Series("_score", values))
+        .sort(
+            ["decision_date", "_score", "ticker"],
+            descending=[False, True, False],
+        )
+        .with_columns(pl.col("ticker").cum_count().over("decision_date").alias("_rank"))
+        .filter(pl.col("_rank") <= top_n)
+        .select("_row")
+    )
+    return (
+        frame.with_row_index("_row")
+        .join(selected_rows, on="_row", how="semi")
+        .sort("_row")
+        .drop("_row")
+    )
+
+
+def rank_blend_scores(
+    frame: pl.DataFrame,
+    incumbent_scores: np.ndarray,
+    challenger_scores: np.ndarray,
+    *,
+    challenger_weight: float,
+) -> np.ndarray:
+    """Blend daily ordinal ranks so score scales cannot dominate the ensemble."""
+    if not 0.0 <= challenger_weight <= 1.0:
+        raise ValueError("challenger_weight must be in [0, 1]")
+    incumbent = np.asarray(incumbent_scores, dtype=np.float64)
+    challenger = np.asarray(challenger_scores, dtype=np.float64)
+    if incumbent.shape != (frame.height,) or challenger.shape != (frame.height,):
+        raise ValueError("blend scores must contain one value per row")
+    if not np.isfinite(incumbent).all() or not np.isfinite(challenger).all():
+        raise ValueError("blend scores must be finite")
+    tickers = frame["ticker"].to_list()
+    by_date: dict[date, list[int]] = {}
+    for index, decision_date in enumerate(frame["decision_date"].to_list()):
+        by_date.setdefault(decision_date, []).append(index)
+
+    blended = np.empty(frame.height, dtype=np.float64)
+    for indices in by_date.values():
+        count = len(indices)
+        if count == 1:
+            blended[indices[0]] = 1.0
+            continue
+
+        def percentiles(values: np.ndarray) -> dict[int, float]:
+            ordered = sorted(
+                indices,
+                key=lambda index: (-values[index], tickers[index]),
+            )
+            result: dict[int, float] = {}
+            tie_start = 0
+            while tie_start < count:
+                tie_end = tie_start + 1
+                while tie_end < count and values[ordered[tie_end]] == values[ordered[tie_start]]:
+                    tie_end += 1
+                average_position = (tie_start + tie_end - 1) / 2.0
+                percentile = 1.0 - average_position / (count - 1)
+                for position in range(tie_start, tie_end):
+                    result[ordered[position]] = percentile
+                tie_start = tie_end
+            return result
+
+        incumbent_percentile = percentiles(incumbent)
+        challenger_percentile = percentiles(challenger)
+        for index in indices:
+            blended[index] = (1.0 - challenger_weight) * incumbent_percentile[
+                index
+            ] + challenger_weight * challenger_percentile[index]
+    return blended
+
+
+def choose_boom_blend(
+    validation: pl.DataFrame,
+    challenger_scores: np.ndarray,
+    *,
+    candidates: tuple[float, ...] = BOOM_BLEND_CANDIDATES,
+    expected_shortfall_tail: float = EXPECTED_SHORTFALL_TAIL,
+) -> tuple[float, dict[str, object]]:
+    """Choose the highest-precision validation blend with no tail-risk regression."""
+    if (
+        not candidates
+        or 0.0 not in candidates
+        or any(not 0.0 <= value <= 1.0 for value in candidates)
+    ):
+        raise ValueError("blend candidates must include zero and stay in [0, 1]")
+    incumbent_scores = validation["rank_v6_score"].to_numpy()
+    results: list[dict[str, object]] = []
+    for candidate in candidates:
+        scores = rank_blend_scores(
+            validation,
+            incumbent_scores,
+            challenger_scores,
+            challenger_weight=candidate,
+        )
+        daily = evaluate_daily_scores(
+            validation.with_columns(pl.Series("_boom_blend_score", scores)),
+            "_boom_blend_score",
+            f"boom-blend-{candidate:g}",
+        )
+        row = summarize_daily_scores(
+            daily,
+            expected_shortfall_tail=expected_shortfall_tail,
+        ).row(0, named=True)
+        row["boom_blend_weight"] = float(candidate)
+        results.append(row)
+
+    baseline = next(row for row in results if float(row["boom_blend_weight"]) == 0.0)
+    eligible = [
+        row
+        for row in results
+        if float(row["downside_at_10"]) <= float(baseline["downside_at_10"]) + 1e-12
+        and float(row["catastrophic_loss_at_10"])
+        <= float(baseline["catastrophic_loss_at_10"]) + 1e-12
+        and float(row["expected_shortfall_10"]) >= float(baseline["expected_shortfall_10"]) - 1e-12
+    ]
+    chosen = max(
+        eligible,
+        key=lambda row: (
+            float(row["precision_at_10"]),
+            float(row["passing_date_rate"]),
+            -float(row["downside_at_10"]),
+            -float(row["catastrophic_loss_at_10"]),
+            float(row["expected_shortfall_10"]),
+            -float(row["boom_blend_weight"]),
+        ),
+    )
+    return float(chosen["boom_blend_weight"]), chosen
+
+
+def risk_adjusted_scores(
+    frame: pl.DataFrame,
+    boom_scores: np.ndarray,
+    risk_scores: np.ndarray,
+    *,
+    risk_lambda: float,
+    top_n: int = RISK_RERANK_TOP_N,
+) -> np.ndarray:
+    """Rerank only the boom model's Top-N by a bounded downside penalty.
+
+    Risk is ranked only inside the boom Top-N and converted to four discrete
+    buckets.  This guarantees that a non-zero penalty actually changes close
+    decisions while bounding every stock's movement to ``risk_lambda`` places.
+    No low-boom defensive stock can enter the candidate set.
+    """
+    if risk_lambda < 0:
+        raise ValueError("risk lambda must be non-negative")
+    if top_n < DEFAULT_TOP_K:
+        raise ValueError("risk rerank pool cannot be smaller than Top-K")
+    boom = np.asarray(boom_scores, dtype=np.float64)
+    risk = np.asarray(risk_scores, dtype=np.float64)
+    if boom.shape != (frame.height,) or risk.shape != (frame.height,):
+        raise ValueError("boom and risk scores must contain one value per row")
+    if not np.isfinite(boom).all() or not np.isfinite(risk).all():
+        raise ValueError("boom and risk scores must be finite")
+
+    dates = frame["decision_date"].to_list()
+    tickers = frame["ticker"].to_list()
+    by_date: dict[date, list[int]] = {}
+    for index, decision_date in enumerate(dates):
+        by_date.setdefault(decision_date, []).append(index)
+
+    final_scores = np.empty(frame.height, dtype=np.float64)
+    for indices in by_date.values():
+        boom_order = sorted(indices, key=lambda index: (-boom[index], tickers[index]))
+        count = len(indices)
+        boom_rank = {index: position + 1 for position, index in enumerate(boom_order)}
+        pool_size = min(top_n, count)
+        risk_order = sorted(
+            boom_order[:pool_size],
+            key=lambda index: (risk[index], tickers[index]),
+        )
+        risk_bucket = {
+            index: min(3, (4 * position) // pool_size) for position, index in enumerate(risk_order)
+        }
+        candidate_pool = sorted(
+            boom_order[:pool_size],
+            key=lambda index: (
+                boom_rank[index] + min(risk_lambda, risk_bucket[index]),
+                risk[index],
+                boom_rank[index],
+                tickers[index],
+            ),
+        )
+        final_order = candidate_pool + boom_order[pool_size:]
+        for final_rank, index in enumerate(final_order, start=1):
+            final_scores[index] = -float(final_rank)
+    return final_scores
+
+
+def choose_risk_lambda(
+    validation: pl.DataFrame,
+    boom_scores: np.ndarray,
+    risk_scores: np.ndarray,
+    *,
+    candidates: tuple[float, ...] = RISK_LAMBDA_CANDIDATES,
+    precision_tolerance: float = RISK_VALIDATION_PRECISION_TOLERANCE,
+    top_n: int = RISK_RERANK_TOP_N,
+    expected_shortfall_tail: float = EXPECTED_SHORTFALL_TAIL,
+) -> tuple[float, dict[str, object]]:
+    """Choose risk strength on validation without consulting the locked test.
+
+    Precision is lexicographically primary: only settings within 0.5 percentage
+    points of the best validation Precision@10 may compete on downside rate.
+    Remaining ties prefer fewer catastrophic losses and then the smaller
+    penalty, keeping the risk overlay deliberately light.
+    """
+    if not candidates or any(value < 0 for value in candidates):
+        raise ValueError("risk lambda candidates must be non-empty and non-negative")
+    if not 0 <= precision_tolerance <= 1:
+        raise ValueError("precision tolerance must be in [0, 1]")
+    results: list[dict[str, object]] = []
+    for candidate in candidates:
+        adjusted = risk_adjusted_scores(
+            validation,
+            boom_scores,
+            risk_scores,
+            risk_lambda=candidate,
+            top_n=top_n,
+        )
+        candidate_scored = validation.with_columns(pl.Series("_risk_adjusted_score", adjusted))
+        daily = evaluate_daily_scores(
+            candidate_scored,
+            "_risk_adjusted_score",
+            f"risk-lambda-{candidate:g}",
+        )
+        row = summarize_daily_scores(daily, expected_shortfall_tail=expected_shortfall_tail).row(
+            0, named=True
+        )
+        row["risk_lambda"] = float(candidate)
+        results.append(row)
+
+    best_precision = max(float(row["precision_at_10"]) for row in results)
+    eligible = [
+        row
+        for row in results
+        if float(row["precision_at_10"]) >= best_precision - precision_tolerance - 1e-12
+    ]
+    chosen = min(
+        eligible,
+        key=lambda row: (
+            float(row["downside_at_10"]),
+            float(row["catastrophic_loss_at_10"]),
+            float(row["risk_lambda"]),
+        ),
+    )
+    return float(chosen["risk_lambda"]), chosen
+
+
 def run_walk_forward_research(
     data: ResearchData,
     *,
@@ -535,9 +977,18 @@ def run_walk_forward_research(
     try:
         import lightgbm as lgb
     except ImportError as exc:
-        raise RuntimeError(
-            "LightGBM is required; run `uv sync --extra research` first"
-        ) from exc
+        raise RuntimeError("LightGBM is required; run `uv sync --extra research` first") from exc
+
+    lightgbm_features = (*LIGHTGBM_FEATURES, *data.extra_model_features)
+    challenger_name = OFFICIAL_LIGHTGBM_NAME if data.extra_model_features else LIGHTGBM_NAME
+    if len(set(lightgbm_features)) != len(lightgbm_features):
+        raise ValueError("research model feature names must be unique")
+    if missing := set(lightgbm_features) - set(data.panel.columns):
+        raise ValueError(f"research panel missing model features: {sorted(missing)}")
+    _require_finite_features(
+        data.panel.filter(pl.col("date_valid")),
+        list(lightgbm_features),
+    )
 
     folds = make_walk_forward_folds(data, config)
     scored_blocks: list[pl.DataFrame] = []
@@ -552,21 +1003,20 @@ def run_walk_forward_research(
         linear = RidgeRanker(l2=config.linear_l2)
         linear.fit(train)
         linear_scores = linear.score(test)
-
         train_groups = _group_sizes(train)
         validation_groups = _group_sizes(validation)
         train_set = lgb.Dataset(
-            train.select(LIGHTGBM_FEATURES),
-            label=train["is_explosion"].cast(pl.Int8),
+            train.select(lightgbm_features),
+            label=train["ranking_relevance"],
             group=train_groups,
-            feature_name=list(LIGHTGBM_FEATURES),
+            feature_name=list(lightgbm_features),
             free_raw_data=True,
         )
         validation_set = lgb.Dataset(
-            validation.select(LIGHTGBM_FEATURES),
-            label=validation["is_explosion"].cast(pl.Int8),
+            validation.select(lightgbm_features),
+            label=validation["ranking_relevance"],
             group=validation_groups,
-            feature_name=list(LIGHTGBM_FEATURES),
+            feature_name=list(lightgbm_features),
             reference=train_set,
             free_raw_data=True,
         )
@@ -586,9 +1036,105 @@ def run_walk_forward_research(
                 lgb.log_evaluation(period=0),
             ],
         )
-        lightgbm_scores = model.predict(
-            test.select(LIGHTGBM_FEATURES),
+        validation_lightgbm_scores = model.predict(
+            validation.select(lightgbm_features),
             num_iteration=model.best_iteration,
+        )
+        lightgbm_boom_scores = model.predict(
+            test.select(lightgbm_features),
+            num_iteration=model.best_iteration,
+        )
+        boom_blend_weight, validation_boom_choice = choose_boom_blend(
+            validation,
+            validation_lightgbm_scores,
+            candidates=config.boom_blend_candidates,
+            expected_shortfall_tail=config.expected_shortfall_tail,
+        )
+        validation_boom_scores = rank_blend_scores(
+            validation,
+            validation["rank_v6_score"].to_numpy(),
+            validation_lightgbm_scores,
+            challenger_weight=boom_blend_weight,
+        )
+        test_boom_scores = rank_blend_scores(
+            test,
+            test["rank_v6_score"].to_numpy(),
+            lightgbm_boom_scores,
+            challenger_weight=boom_blend_weight,
+        )
+        risk_train = top_n_score_candidates(
+            train,
+            train["rank_v6_score"].to_numpy(),
+            top_n=config.risk_rerank_top_n,
+        )
+        risk_validation = top_n_score_candidates(
+            validation,
+            validation_boom_scores,
+            top_n=config.risk_rerank_top_n,
+        )
+        risk_train_set = lgb.Dataset(
+            risk_train.select(lightgbm_features),
+            label=risk_train["is_severe_downside"].cast(pl.Int8),
+            weight=date_equal_weights(risk_train),
+            feature_name=list(lightgbm_features),
+            free_raw_data=True,
+        )
+        risk_validation_set = lgb.Dataset(
+            risk_validation.select(lightgbm_features),
+            label=risk_validation["is_severe_downside"].cast(pl.Int8),
+            weight=date_equal_weights(risk_validation),
+            feature_name=list(lightgbm_features),
+            reference=risk_train_set,
+            free_raw_data=True,
+        )
+        risk_model = lgb.train(
+            {**LGBM_RISK_V1_PARAMS, "lambda_l2": config.risk_l2},
+            risk_train_set,
+            num_boost_round=config.num_boost_round,
+            valid_sets=[risk_validation_set],
+            valid_names=["validation"],
+            callbacks=[
+                lgb.early_stopping(
+                    config.early_stopping_rounds,
+                    first_metric_only=True,
+                    verbose=False,
+                    min_delta=config.early_stopping_min_delta,
+                ),
+                lgb.log_evaluation(period=0),
+            ],
+        )
+        risk_best_iteration = int(risk_model.best_iteration)
+        validation_risk_scores = risk_model.predict(
+            validation.select(lightgbm_features),
+            num_iteration=risk_best_iteration,
+        )
+        test_risk_scores = risk_model.predict(
+            test.select(lightgbm_features),
+            num_iteration=risk_best_iteration,
+        )
+        del (
+            risk_train,
+            risk_validation,
+            risk_train_set,
+            risk_validation_set,
+            risk_model,
+        )
+        gc.collect()
+        risk_lambda, validation_choice = choose_risk_lambda(
+            validation,
+            validation_boom_scores,
+            validation_risk_scores,
+            candidates=config.risk_lambda_candidates,
+            precision_tolerance=config.risk_validation_precision_tolerance,
+            top_n=config.risk_rerank_top_n,
+            expected_shortfall_tail=config.expected_shortfall_tail,
+        )
+        lightgbm_scores = risk_adjusted_scores(
+            test,
+            test_boom_scores,
+            test_risk_scores,
+            risk_lambda=risk_lambda,
+            top_n=config.risk_rerank_top_n,
         )
         scored_blocks.append(
             test.select(
@@ -596,7 +1142,10 @@ def run_walk_forward_research(
                 "decision_date",
                 "result_date",
                 "universe_size",
+                "forward_return",
                 "is_explosion",
+                "is_severe_downside",
+                "is_catastrophic_loss",
                 "rank_v6_score",
                 "spy_return_20d",
             ).with_columns(
@@ -604,45 +1153,67 @@ def run_walk_forward_research(
                 pl.Series("lightgbm_score", lightgbm_scores),
             )
         )
-        audits.append({
-            "model_as_of": fold.model_as_of,
-            "maximum_training_result_date": fold.maximum_training_result_date,
-            "training_dates": len(fold.training_dates),
-            "training_rows": train.height,
-            "validation_dates": len(fold.validation_dates),
-            "validation_rows": validation.height,
-            "test_dates": len(fold.test_dates),
-            "test_rows": test.height,
-            "lightgbm_best_iteration": int(model.best_iteration),
-        })
+        audits.append(
+            {
+                "model_as_of": fold.model_as_of,
+                "maximum_training_result_date": fold.maximum_training_result_date,
+                "training_dates": len(fold.training_dates),
+                "training_rows": train.height,
+                "validation_dates": len(fold.validation_dates),
+                "validation_rows": validation.height,
+                "test_dates": len(fold.test_dates),
+                "test_rows": test.height,
+                "lightgbm_best_iteration": int(model.best_iteration),
+                "risk_best_iteration": risk_best_iteration,
+                "risk_training_source": INCUMBENT_NAME,
+                "boom_blend_weight": boom_blend_weight,
+                "validation_boom_precision_at_10": validation_boom_choice["precision_at_10"],
+                "validation_boom_downside_at_10": validation_boom_choice["downside_at_10"],
+                "risk_lambda": risk_lambda,
+                "validation_precision_at_10": validation_choice["precision_at_10"],
+                "validation_downside_at_10": validation_choice["downside_at_10"],
+            }
+        )
         del train, validation, test, train_set, validation_set, model
         gc.collect()
 
     scored = pl.concat(scored_blocks).sort(["decision_date", "ticker"])
-    daily = pl.concat([
-        evaluate_daily_scores(scored, "rank_v6_score", INCUMBENT_NAME),
-        evaluate_daily_scores(scored, "linear_score", LINEAR_NAME),
-        evaluate_daily_scores(scored, "lightgbm_score", LIGHTGBM_NAME),
-    ]).sort(["strategy", "decision_date"])
-    summary = summarize_daily_scores(daily)
-    stability = paired_stability(daily, folds)
+    daily = pl.concat(
+        [
+            evaluate_daily_scores(scored, "rank_v6_score", INCUMBENT_NAME),
+            evaluate_daily_scores(scored, "linear_score", LINEAR_NAME),
+            evaluate_daily_scores(scored, "lightgbm_score", challenger_name),
+        ]
+    ).sort(["strategy", "decision_date"])
+    summary = summarize_daily_scores(daily, expected_shortfall_tail=config.expected_shortfall_tail)
+    stability = paired_stability(
+        daily,
+        folds,
+        challenger_name=challenger_name,
+    )
     bootstrap = paired_date_block_bootstrap(
-        daily.filter(pl.col("strategy") == LIGHTGBM_NAME),
+        daily.filter(pl.col("strategy") == challenger_name),
         daily.filter(pl.col("strategy") == INCUMBENT_NAME),
         block_dates=config.bootstrap_block_dates,
         replications=config.bootstrap_replications,
         seed=config.random_seed,
     )
-    recent = daily.filter(
-        pl.col("decision_date").is_in(list(data.valid_dates[-45:]))
+    tail_risk_bootstrap = paired_tail_risk_block_bootstrap(
+        daily.filter(pl.col("strategy") == challenger_name),
+        daily.filter(pl.col("strategy") == INCUMBENT_NAME),
+        block_dates=config.bootstrap_block_dates,
+        replications=config.bootstrap_replications,
+        seed=config.random_seed,
+        expected_shortfall_tail=config.expected_shortfall_tail,
     )
+    recent = daily.filter(pl.col("decision_date").is_in(list(data.valid_dates[-45:])))
     recent_precision = {
         row["strategy"]: row["precision_at_10"]
-        for row in summarize_daily_scores(recent).iter_rows(named=True)
+        for row in summarize_daily_scores(
+            recent, expected_shortfall_tail=config.expected_shortfall_tail
+        ).iter_rows(named=True)
     }
-    recent_45_uplift = (
-        recent_precision[LIGHTGBM_NAME] - recent_precision[INCUMBENT_NAME]
-    )
+    recent_45_uplift = recent_precision[challenger_name] - recent_precision[INCUMBENT_NAME]
     promotion_passed, reasons = promotion_decision(
         summary,
         bootstrap,
@@ -650,24 +1221,39 @@ def run_walk_forward_research(
         minimum_uplift=config.minimum_uplift,
         required_dates=config.locked_test_dates,
         stability=stability,
+        challenger_name=challenger_name,
     )
-    config_digest = _digest_json({
-        "protocol": asdict(config),
-        "lightgbm": LGBM_RANK_V1_PARAMS,
-        "lightgbm_version": lgb.__version__,
-    })
+    if data.extra_model_features:
+        reasons = (
+            (EXTERNAL_DATA_EXPLORATORY_REASON,)
+            if promotion_passed
+            else (*reasons, EXTERNAL_DATA_EXPLORATORY_REASON)
+        )
+        promotion_passed = False
+    config_digest = _digest_json(
+        {
+            "protocol": asdict(config),
+            "lightgbm": LGBM_RANK_V1_PARAMS,
+            "risk_lightgbm": LGBM_RISK_V1_PARAMS,
+            "lightgbm_version": lgb.__version__,
+            "lightgbm_features": lightgbm_features,
+            "challenger_name": challenger_name,
+        }
+    )
     return ResearchReport(
         daily=daily,
         summary=summary,
         folds=pl.DataFrame(audits),
         stability=stability,
         bootstrap=bootstrap,
+        tail_risk_bootstrap=tail_risk_bootstrap,
         recent_45_uplift=recent_45_uplift,
         promotion_passed=promotion_passed,
         promotion_reasons=reasons,
         snapshot_id=data.snapshot_id,
         feature_digest=data.feature_digest,
         config_digest=config_digest,
+        external_coverage=data.external_coverage,
     )
 
 
@@ -683,6 +1269,9 @@ def evaluate_daily_scores(
         "result_date",
         "universe_size",
         "is_explosion",
+        "is_severe_downside",
+        "is_catastrophic_loss",
+        "forward_return",
         "spy_return_20d",
         score_column,
     }
@@ -691,53 +1280,127 @@ def evaluate_daily_scores(
     ordered = scored.sort(
         ["decision_date", score_column, "ticker"],
         descending=[False, True, False],
-    ).with_columns(
-        pl.col("ticker").cum_count().over("decision_date").alias("_model_rank")
+    ).with_columns(pl.col("ticker").cum_count().over("decision_date").alias("_model_rank"))
+    return (
+        ordered.group_by("decision_date")
+        .agg(
+            pl.col("result_date").first(),
+            pl.col("universe_size").first(),
+            pl.col("spy_return_20d").first(),
+            pl.col("is_explosion").mean().alias("base_explosion_rate"),
+            pl.when(pl.col("_model_rank") <= DEFAULT_TOP_K)
+            .then(pl.col("is_explosion").cast(pl.Int64))
+            .otherwise(0)
+            .sum()
+            .cast(pl.Int64)
+            .alias("hits_at_10"),
+            pl.when(pl.col("_model_rank") <= DEFAULT_TOP_K)
+            .then(pl.col("is_severe_downside").cast(pl.Int64))
+            .otherwise(0)
+            .sum()
+            .cast(pl.Int64)
+            .alias("downside_count_at_10"),
+            pl.when(pl.col("_model_rank") <= DEFAULT_TOP_K)
+            .then(pl.col("is_catastrophic_loss").cast(pl.Int64))
+            .otherwise(0)
+            .sum()
+            .cast(pl.Int64)
+            .alias("catastrophic_loss_count_at_10"),
+            pl.when(pl.col("_model_rank") <= DEFAULT_TOP_K)
+            .then(pl.col("forward_return"))
+            .otherwise(pl.lit(None, dtype=pl.Float64))
+            .mean()
+            .alias("basket_return"),
+        )
+        .with_columns(
+            pl.lit(strategy).alias("strategy"),
+            (pl.col("hits_at_10") / DEFAULT_TOP_K).alias("precision_at_10"),
+            (pl.col("downside_count_at_10") / DEFAULT_TOP_K).alias("downside_at_10"),
+            (pl.col("catastrophic_loss_count_at_10") / DEFAULT_TOP_K).alias(
+                "catastrophic_loss_at_10"
+            ),
+        )
+        .with_columns(
+            (
+                (pl.col("precision_at_10") >= 0.10)
+                & (pl.col("precision_at_10") > pl.col("base_explosion_rate"))
+            ).alias("passed")
+        )
+        .select(
+            "strategy",
+            "decision_date",
+            "result_date",
+            "universe_size",
+            "spy_return_20d",
+            "hits_at_10",
+            "precision_at_10",
+            "downside_count_at_10",
+            "downside_at_10",
+            "catastrophic_loss_count_at_10",
+            "catastrophic_loss_at_10",
+            "basket_return",
+            "base_explosion_rate",
+            "passed",
+        )
+        .sort("decision_date")
     )
-    return ordered.group_by("decision_date").agg(
-        pl.col("result_date").first(),
-        pl.col("universe_size").first(),
-        pl.col("spy_return_20d").first(),
-        pl.col("is_explosion").mean().alias("base_explosion_rate"),
-        pl.when(pl.col("_model_rank") <= DEFAULT_TOP_K)
-        .then(pl.col("is_explosion").cast(pl.Int64))
-        .otherwise(0)
-        .sum()
-        .cast(pl.Int64)
-        .alias("hits_at_10"),
-    ).with_columns(
-        pl.lit(strategy).alias("strategy"),
-        (pl.col("hits_at_10") / DEFAULT_TOP_K).alias("precision_at_10"),
-    ).with_columns(
-        (
-            (pl.col("precision_at_10") >= 0.10)
-            & (pl.col("precision_at_10") > pl.col("base_explosion_rate"))
-        ).alias("passed")
-    ).select(
-        "strategy",
-        "decision_date",
-        "result_date",
-        "universe_size",
-        "spy_return_20d",
-        "hits_at_10",
-        "precision_at_10",
-        "base_explosion_rate",
-        "passed",
-    ).sort("decision_date")
 
 
-def summarize_daily_scores(daily: pl.DataFrame) -> pl.DataFrame:
+def summarize_daily_scores(
+    daily: pl.DataFrame,
+    *,
+    expected_shortfall_tail: float = EXPECTED_SHORTFALL_TAIL,
+) -> pl.DataFrame:
     """Return equal-date pooled Precision@10 and pass rates by strategy."""
     if daily.is_empty():
         raise ValueError("daily research metrics are empty")
-    return daily.group_by("strategy").agg(
+    if not 0 < expected_shortfall_tail <= 1:
+        raise ValueError("expected-shortfall tail must be in (0, 1]")
+    required = {
+        "strategy",
+        "hits_at_10",
+        "downside_count_at_10",
+        "catastrophic_loss_count_at_10",
+        "basket_return",
+        "base_explosion_rate",
+        "passed",
+    }
+    if missing := required - set(daily.columns):
+        raise ValueError(f"daily metrics missing columns: {sorted(missing)}")
+    summary = daily.group_by("strategy").agg(
         pl.len().cast(pl.Int64).alias("valid_dates"),
         pl.col("hits_at_10").sum().cast(pl.Int64).alias("hits_at_10"),
-        (pl.col("hits_at_10").sum() / (pl.len() * DEFAULT_TOP_K)).alias(
-            "precision_at_10"
+        (pl.col("hits_at_10").sum() / (pl.len() * DEFAULT_TOP_K)).alias("precision_at_10"),
+        pl.col("downside_count_at_10").sum().cast(pl.Int64).alias("downside_count_at_10"),
+        (pl.col("downside_count_at_10").sum() / (pl.len() * DEFAULT_TOP_K)).alias("downside_at_10"),
+        pl.col("catastrophic_loss_count_at_10")
+        .sum()
+        .cast(pl.Int64)
+        .alias("catastrophic_loss_count_at_10"),
+        (pl.col("catastrophic_loss_count_at_10").sum() / (pl.len() * DEFAULT_TOP_K)).alias(
+            "catastrophic_loss_at_10"
         ),
+        pl.col("basket_return").mean().alias("mean_basket_return"),
         pl.col("base_explosion_rate").mean().alias("mean_base_explosion_rate"),
         pl.col("passed").mean().alias("passing_date_rate"),
+    )
+    expected_shortfall_rows = []
+    for group in daily.partition_by("strategy", maintain_order=True):
+        values = np.sort(group["basket_return"].to_numpy().astype(np.float64))
+        if not np.isfinite(values).all():
+            raise ValueError("daily basket returns must be finite")
+        tail_count = max(1, ceil(len(values) * expected_shortfall_tail))
+        expected_shortfall_rows.append(
+            {
+                "strategy": group.item(0, "strategy"),
+                "expected_shortfall_10": float(values[:tail_count].mean()),
+            }
+        )
+    return summary.join(
+        pl.DataFrame(expected_shortfall_rows),
+        on="strategy",
+        how="inner",
+        validate="1:1",
     ).sort("strategy")
 
 
@@ -764,12 +1427,8 @@ def paired_date_block_bootstrap(
     )
     if set(left["decision_date"].to_list()) != set(right["decision_date"].to_list()):
         raise ValueError("challenger and incumbent dates must match exactly")
-    paired = left.join(right, on="decision_date", how="inner", validate="1:1").sort(
-        "decision_date"
-    )
-    deltas = (
-        paired["challenger_precision"] - paired["incumbent_precision"]
-    ).to_numpy()
+    paired = left.join(right, on="decision_date", how="inner", validate="1:1").sort("decision_date")
+    deltas = (paired["challenger_precision"] - paired["incumbent_precision"]).to_numpy()
     count = len(deltas)
     if count < block_dates * 5:
         raise ValueError("at least five complete bootstrap blocks are required")
@@ -792,19 +1451,117 @@ def paired_date_block_bootstrap(
     )
 
 
+def paired_tail_risk_block_bootstrap(
+    challenger: pl.DataFrame,
+    incumbent: pl.DataFrame,
+    *,
+    block_dates: int,
+    replications: int,
+    seed: int,
+    expected_shortfall_tail: float = EXPECTED_SHORTFALL_TAIL,
+) -> TailRiskBootstrap:
+    """Recompute paired tail-rate and ES changes inside every block sample."""
+    if block_dates < FORECAST_HORIZON_SESSIONS:
+        raise ValueError("bootstrap block is shorter than the outcome horizon")
+    if replications <= 0:
+        raise ValueError("bootstrap replications must be positive")
+    if not 0 < expected_shortfall_tail <= 1:
+        raise ValueError("expected-shortfall tail must be in (0, 1]")
+    metric_columns = (
+        "downside_at_10",
+        "catastrophic_loss_at_10",
+        "basket_return",
+    )
+    required = {"decision_date", *metric_columns}
+    for name, frame in (("challenger", challenger), ("incumbent", incumbent)):
+        if missing := required - set(frame.columns):
+            raise ValueError(f"{name} daily metrics missing columns: {sorted(missing)}")
+    left = challenger.select("decision_date", *metric_columns)
+    right = incumbent.select(
+        "decision_date",
+        *[pl.col(column).alias(f"incumbent_{column}") for column in metric_columns],
+    )
+    if set(left["decision_date"].to_list()) != set(right["decision_date"].to_list()):
+        raise ValueError("challenger and incumbent dates must match exactly")
+    paired = left.join(right, on="decision_date", how="inner", validate="1:1").sort("decision_date")
+    count = paired.height
+    if count < block_dates * 5:
+        raise ValueError("at least five complete bootstrap blocks are required")
+    rng = np.random.default_rng(seed)
+    blocks_per_sample = ceil(count / block_dates)
+    starts = rng.integers(
+        0,
+        count - block_dates + 1,
+        size=(replications, blocks_per_sample),
+    )
+    offsets = np.arange(block_dates)
+    indices = (starts[..., None] + offsets).reshape(replications, -1)[:, :count]
+
+    challenger_downside = paired["downside_at_10"].to_numpy()
+    incumbent_downside = paired["incumbent_downside_at_10"].to_numpy()
+    challenger_catastrophic = paired["catastrophic_loss_at_10"].to_numpy()
+    incumbent_catastrophic = paired["incumbent_catastrophic_loss_at_10"].to_numpy()
+    challenger_basket = paired["basket_return"].to_numpy()
+    incumbent_basket = paired["incumbent_basket_return"].to_numpy()
+    sampled_downside = challenger_downside[indices].mean(axis=1) - incumbent_downside[indices].mean(
+        axis=1
+    )
+    sampled_catastrophic = challenger_catastrophic[indices].mean(axis=1) - incumbent_catastrophic[
+        indices
+    ].mean(axis=1)
+    tail_count = max(1, ceil(count * expected_shortfall_tail))
+    sampled_es = np.sort(challenger_basket[indices], axis=1)[:, :tail_count].mean(axis=1) - np.sort(
+        incumbent_basket[indices], axis=1
+    )[:, :tail_count].mean(axis=1)
+
+    def interval(estimate: float, sampled: np.ndarray) -> BootstrapInterval:
+        return BootstrapInterval(
+            estimate=estimate,
+            lower_95=float(np.quantile(sampled, 0.025)),
+            upper_95=float(np.quantile(sampled, 0.975)),
+            probability_positive=float((sampled > 0).mean()),
+            paired_dates=count,
+        )
+
+    original_tail_count = max(1, ceil(count * expected_shortfall_tail))
+    original_es_change = float(
+        np.sort(challenger_basket)[:original_tail_count].mean()
+        - np.sort(incumbent_basket)[:original_tail_count].mean()
+    )
+    return TailRiskBootstrap(
+        downside_change=interval(
+            float((challenger_downside - incumbent_downside).mean()),
+            sampled_downside,
+        ),
+        catastrophic_loss_change=interval(
+            float((challenger_catastrophic - incumbent_catastrophic).mean()),
+            sampled_catastrophic,
+        ),
+        expected_shortfall_change=interval(original_es_change, sampled_es),
+    )
+
+
 def paired_stability(
     daily: pl.DataFrame,
     folds: tuple[WalkForwardFold, ...],
+    *,
+    challenger_name: str = LIGHTGBM_NAME,
 ) -> pl.DataFrame:
     """Report paired uplift in every test block and both simple market regimes."""
-    challenger = daily.filter(pl.col("strategy") == LIGHTGBM_NAME).select(
+    challenger = daily.filter(pl.col("strategy") == challenger_name).select(
         "decision_date",
         "spy_return_20d",
         pl.col("precision_at_10").alias("challenger_precision"),
+        pl.col("downside_at_10").alias("challenger_downside"),
+        pl.col("catastrophic_loss_at_10").alias("challenger_catastrophic"),
+        pl.col("basket_return").alias("challenger_basket"),
     )
     incumbent = daily.filter(pl.col("strategy") == INCUMBENT_NAME).select(
         "decision_date",
         pl.col("precision_at_10").alias("incumbent_precision"),
+        pl.col("downside_at_10").alias("incumbent_downside"),
+        pl.col("catastrophic_loss_at_10").alias("incumbent_catastrophic"),
+        pl.col("basket_return").alias("incumbent_basket"),
     )
     paired = challenger.join(
         incumbent,
@@ -812,30 +1569,38 @@ def paired_stability(
         how="inner",
         validate="1:1",
     ).with_columns(
-        (pl.col("challenger_precision") - pl.col("incumbent_precision")).alias(
-            "uplift"
-        )
+        (pl.col("challenger_precision") - pl.col("incumbent_precision")).alias("uplift"),
+        (pl.col("challenger_downside") - pl.col("incumbent_downside")).alias("downside_change"),
+        (pl.col("challenger_catastrophic") - pl.col("incumbent_catastrophic")).alias(
+            "catastrophic_change"
+        ),
     )
+
+    def segment_row(name: str, subset: pl.DataFrame) -> dict[str, object]:
+        if subset.is_empty():
+            raise ValueError(f"locked test contains no dates for segment {name}")
+        tail_count = max(1, ceil(subset.height * EXPECTED_SHORTFALL_TAIL))
+        challenger_es = float(np.sort(subset["challenger_basket"].to_numpy())[:tail_count].mean())
+        incumbent_es = float(np.sort(subset["incumbent_basket"].to_numpy())[:tail_count].mean())
+        return {
+            "segment": name,
+            "dates": subset.height,
+            "precision_uplift": float(subset["uplift"].mean()),
+            "downside_change": float(subset["downside_change"].mean()),
+            "catastrophic_loss_change": float(subset["catastrophic_change"].mean()),
+            "expected_shortfall_change": challenger_es - incumbent_es,
+        }
+
     segments: list[dict[str, object]] = []
     for index, fold in enumerate(folds, start=1):
         subset = paired.filter(pl.col("decision_date").is_in(list(fold.test_dates)))
-        segments.append({
-            "segment": f"test_block_{index}",
-            "dates": subset.height,
-            "precision_uplift": float(subset["uplift"].mean()),
-        })
+        segments.append(segment_row(f"test_block_{index}", subset))
     for name, predicate in (
         ("spy_20d_nonnegative", pl.col("spy_return_20d") >= 0),
         ("spy_20d_negative", pl.col("spy_return_20d") < 0),
     ):
         subset = paired.filter(predicate)
-        if subset.is_empty():
-            raise ValueError(f"locked test contains no dates for regime {name}")
-        segments.append({
-            "segment": name,
-            "dates": subset.height,
-            "precision_uplift": float(subset["uplift"].mean()),
-        })
+        segments.append(segment_row(name, subset))
     return pl.DataFrame(segments).sort("segment")
 
 
@@ -847,19 +1612,31 @@ def promotion_decision(
     minimum_uplift: float,
     required_dates: int,
     stability: pl.DataFrame,
+    challenger_name: str = LIGHTGBM_NAME,
 ) -> tuple[bool, tuple[str, ...]]:
     """Apply all preregistered gates without discretionary interpretation."""
     rows = {row["strategy"]: row for row in summary.iter_rows(named=True)}
-    if INCUMBENT_NAME not in rows or LIGHTGBM_NAME not in rows:
+    if INCUMBENT_NAME not in rows or challenger_name not in rows:
         raise ValueError("promotion summary is missing incumbent or LightGBM")
     incumbent = rows[INCUMBENT_NAME]
-    challenger = rows[LIGHTGBM_NAME]
+    challenger = rows[challenger_name]
+    risk_metrics = {
+        "downside_at_10",
+        "catastrophic_loss_at_10",
+        "expected_shortfall_10",
+    }
+    for strategy, row in (
+        (INCUMBENT_NAME, incumbent),
+        (challenger_name, challenger),
+    ):
+        if missing := risk_metrics - set(row):
+            raise ValueError(
+                f"promotion summary for {strategy} missing risk metrics: {sorted(missing)}"
+            )
     uplift = challenger["precision_at_10"] - incumbent["precision_at_10"]
     failures: list[str] = []
     if challenger["valid_dates"] != required_dates:
-        failures.append(
-            f"locked valid dates {challenger['valid_dates']} != {required_dates}"
-        )
+        failures.append(f"locked valid dates {challenger['valid_dates']} != {required_dates}")
     if uplift + 1e-12 < minimum_uplift:
         failures.append(f"Precision@10 uplift {uplift:.2%} < {minimum_uplift:.2%}")
     if bootstrap.lower_95 <= 0:
@@ -868,13 +1645,71 @@ def promotion_decision(
         failures.append("passing-date rate declined")
     if recent_45_uplift < 0:
         failures.append(f"recent-45 Precision@10 declined by {-recent_45_uplift:.2%}")
-    unstable = stability.filter(pl.col("precision_uplift") < -1e-12)
+    if challenger["downside_at_10"] > incumbent["downside_at_10"] + 1e-12:
+        failures.append(
+            "Downside@10 increased "
+            f"from {incumbent['downside_at_10']:.2%} "
+            f"to {challenger['downside_at_10']:.2%}"
+        )
+    if challenger["catastrophic_loss_at_10"] > incumbent["catastrophic_loss_at_10"] + 1e-12:
+        failures.append(
+            "CatastrophicLoss@10 increased "
+            f"from {incumbent['catastrophic_loss_at_10']:.2%} "
+            f"to {challenger['catastrophic_loss_at_10']:.2%}"
+        )
+    if challenger["expected_shortfall_10"] < incumbent["expected_shortfall_10"] - 1e-12:
+        failures.append(
+            "ES10 worsened "
+            f"from {incumbent['expected_shortfall_10']:.2%} "
+            f"to {challenger['expected_shortfall_10']:.2%}"
+        )
+    downside_improvement = incumbent["downside_at_10"] - challenger["downside_at_10"]
+    catastrophic_improvement = (
+        incumbent["catastrophic_loss_at_10"] - challenger["catastrophic_loss_at_10"]
+    )
+    es_improvement = challenger["expected_shortfall_10"] - incumbent["expected_shortfall_10"]
+    es_relative_improvement = (
+        es_improvement / abs(incumbent["expected_shortfall_10"])
+        if incumbent["expected_shortfall_10"] < 0
+        else 0.0
+    )
+    if (
+        downside_improvement + 1e-12 < MINIMUM_DOWNSIDE_IMPROVEMENT
+        and catastrophic_improvement + 1e-12 < MINIMUM_CATASTROPHIC_IMPROVEMENT
+        and es_relative_improvement + 1e-12 < MINIMUM_ES_RELATIVE_IMPROVEMENT
+    ):
+        failures.append(
+            "no material tail-risk improvement "
+            f"(downside={downside_improvement:.2%}, "
+            f"catloss={catastrophic_improvement:.2%}, "
+            f"ES={es_relative_improvement:.1%})"
+        )
+    stability_metrics = {
+        "segment",
+        "precision_uplift",
+        "downside_change",
+        "catastrophic_loss_change",
+        "expected_shortfall_change",
+    }
+    if missing := stability_metrics - set(stability.columns):
+        raise ValueError(f"stability report missing columns: {sorted(missing)}")
+    unstable = stability.filter(
+        (pl.col("precision_uplift") < -1e-12)
+        | (pl.col("downside_change") > 1e-12)
+        | (pl.col("catastrophic_loss_change") > 1e-12)
+        | (pl.col("expected_shortfall_change") < -1e-12)
+    )
     if not unstable.is_empty():
         segments = ", ".join(
-            f"{row['segment']}={row['precision_uplift']:.2%}"
+            (
+                f"{row['segment']}:P={row['precision_uplift']:.2%},"
+                f"Down={row['downside_change']:.2%},"
+                f"Cat={row['catastrophic_loss_change']:.2%},"
+                f"ES={row['expected_shortfall_change']:.2%}"
+            )
             for row in unstable.iter_rows(named=True)
         )
-        failures.append(f"segment Precision@10 declined: {segments}")
+        failures.append(f"segment explosion/risk metrics declined: {segments}")
     return not failures, tuple(failures or ["all preregistered gates passed"])
 
 
@@ -885,11 +1720,32 @@ def render_report(report: ResearchReport) -> None:
     print(f"Snapshot: {report.snapshot_id}")
     print(f"Feature digest: {report.feature_digest}")
     print(f"Config digest: {report.config_digest}")
+    if report.external_coverage is not None:
+        locked_dates = report.daily["decision_date"].unique().to_list()
+        coverage = (
+            report.external_coverage.filter(pl.col("decision_date").is_in(locked_dates))
+            .select(
+                pl.col("filing_coverage_rate").mean().alias("filing"),
+                pl.col("insider_coverage_rate").mean().alias("insider"),
+                pl.col("short_interest_coverage_rate").mean().alias("short_interest"),
+            )
+            .row(0, named=True)
+        )
+        print(
+            "Locked external coverage: "
+            f"filings={coverage['filing']:.2%} "
+            f"insider={coverage['insider']:.2%} "
+            f"short-interest={coverage['short_interest']:.2%}"
+        )
     print("\nLocked walk-forward summary")
     for row in report.summary.iter_rows(named=True):
         print(
             f"  {row['strategy']}: dates={row['valid_dates']} "
             f"P@10={row['precision_at_10']:.2%} "
+            f"downside@10={row['downside_at_10']:.2%} "
+            f"catloss@10={row['catastrophic_loss_at_10']:.2%} "
+            f"basket={row['mean_basket_return']:.2%} "
+            f"ES10={row['expected_shortfall_10']:.2%} "
             f"pass_rate={row['passing_date_rate']:.2%} "
             f"mean_base={row['mean_base_explosion_rate']:.2%}"
         )
@@ -901,11 +1757,27 @@ def render_report(report: ResearchReport) -> None:
         f"P(uplift>0)={interval.probability_positive:.1%}, "
         f"recent45={report.recent_45_uplift:.2%}"
     )
+    tail = report.tail_risk_bootstrap
+    print(
+        "Paired tail-risk block bootstrap: "
+        f"Downside change={tail.downside_change.estimate:.2%} "
+        f"[{tail.downside_change.lower_95:.2%}, "
+        f"{tail.downside_change.upper_95:.2%}], "
+        f"CatLoss change={tail.catastrophic_loss_change.estimate:.2%} "
+        f"[{tail.catastrophic_loss_change.lower_95:.2%}, "
+        f"{tail.catastrophic_loss_change.upper_95:.2%}], "
+        f"ES10 change={tail.expected_shortfall_change.estimate:.2%} "
+        f"[{tail.expected_shortfall_change.lower_95:.2%}, "
+        f"{tail.expected_shortfall_change.upper_95:.2%}]"
+    )
     print("\nStability")
     for row in report.stability.iter_rows(named=True):
         print(
             f"  {row['segment']}: dates={row['dates']} "
-            f"uplift={row['precision_uplift']:.2%}"
+            f"P={row['precision_uplift']:.2%} "
+            f"Down={row['downside_change']:.2%} "
+            f"Cat={row['catastrophic_loss_change']:.2%} "
+            f"ES={row['expected_shortfall_change']:.2%}"
         )
     print("\nLeakage audit")
     for row in report.folds.iter_rows(named=True):
@@ -913,7 +1785,10 @@ def render_report(report: ResearchReport) -> None:
             f"  model_as_of={row['model_as_of']} "
             f"max_training_result={row['maximum_training_result_date']} "
             f"train_dates={row['training_dates']} validation_dates={row['validation_dates']} "
-            f"test_dates={row['test_dates']} trees={row['lightgbm_best_iteration']}"
+            f"test_dates={row['test_dates']} trees={row['lightgbm_best_iteration']} "
+            f"boom_blend={row['boom_blend_weight']:.2f} "
+            f"risk_trees={row['risk_best_iteration']} "
+            f"risk_lambda={row['risk_lambda']:.0f}"
         )
     print(f"\nPromotion: {'PASS' if report.promotion_passed else 'REJECT'}")
     for reason in report.promotion_reasons:
@@ -925,10 +1800,14 @@ def render_report(report: ResearchReport) -> None:
 
 
 def _frame_for_dates(panel: pl.DataFrame, dates: tuple[date, ...]) -> pl.DataFrame:
-    frame = panel.filter(
-        pl.col("date_valid") & pl.col("decision_date").is_in(list(dates))
-    ).sort(["decision_date", "ticker"])
-    if frame["is_explosion"].null_count():
+    frame = panel.filter(pl.col("date_valid") & pl.col("decision_date").is_in(list(dates)))
+    label_columns = (
+        "is_explosion",
+        "is_severe_downside",
+        "is_catastrophic_loss",
+        "ranking_relevance",
+    )
+    if any(frame[column].null_count() for column in label_columns):
         raise AssertionError("valid training or test rows contain missing labels")
     return frame
 
@@ -938,19 +1817,20 @@ def _complete_pool_thresholds(
     quality: pl.DataFrame,
 ) -> pl.DataFrame:
     """Implement the contract's nearest-rank P95 exactly, only on complete dates."""
-    ordered = candidates.filter(pl.col("forward_return").is_not_null()).sort(
-        ["dt", "forward_return", "ticker"]
-    ).with_columns(
-        pl.col("ticker").cum_count().over("dt").alias("_return_order")
-    ).join(
-        quality.select("dt", "universe_size", "date_valid"),
-        on="dt",
-        how="inner",
-        validate="m:1",
+    ordered = (
+        candidates.filter(pl.col("forward_return").is_not_null())
+        .sort(["dt", "forward_return", "ticker"])
+        .with_columns(pl.col("ticker").cum_count().over("dt").alias("_return_order"))
+        .join(
+            quality.select("dt", "universe_size", "date_valid"),
+            on="dt",
+            how="inner",
+            validate="m:1",
+        )
     )
     threshold_order = (
-        pl.col("universe_size") * DEFAULT_CROSS_SECTION_HIT_QUANTILE
-    ).ceil().cast(pl.Int64)
+        (pl.col("universe_size") * DEFAULT_CROSS_SECTION_HIT_QUANTILE).ceil().cast(pl.Int64)
+    )
     return ordered.filter(
         pl.col("date_valid") & (pl.col("_return_order") == threshold_order)
     ).select(
@@ -963,12 +1843,7 @@ def _complete_pool_thresholds(
 
 
 def _group_sizes(frame: pl.DataFrame) -> list[int]:
-    sizes = (
-        frame.group_by("decision_date")
-        .len()
-        .sort("decision_date")["len"]
-        .to_list()
-    )
+    sizes = frame.group_by("decision_date").len().sort("decision_date")["len"].to_list()
     if sum(sizes) != frame.height:
         raise AssertionError("LightGBM query groups do not cover the ordered frame")
     return sizes
@@ -978,10 +1853,9 @@ def _require_finite_features(frame: pl.DataFrame, columns: list[str]) -> None:
     if missing := set(columns) - set(frame.columns):
         raise ValueError(f"model features missing columns: {sorted(missing)}")
     invalid = frame.select(
-        pl.any_horizontal([
-            pl.col(column).is_null() | ~pl.col(column).is_finite()
-            for column in columns
-        ]).sum()
+        pl.any_horizontal(
+            [pl.col(column).is_null() | ~pl.col(column).is_finite() for column in columns]
+        ).sum()
     ).item()
     if invalid:
         raise ValueError(f"model feature matrix contains {invalid} non-finite rows")
@@ -989,14 +1863,18 @@ def _require_finite_features(frame: pl.DataFrame, columns: list[str]) -> None:
 
 def _snapshot_id(data: pl.DataFrame | pl.LazyFrame) -> str:
     source = data.lazy() if isinstance(data, pl.DataFrame) else data
-    stats = source.select(
-        pl.len().alias("rows"),
-        pl.col("ticker").n_unique().alias("tickers"),
-        pl.col("dt").min().alias("first_date"),
-        pl.col("dt").max().alias("last_date"),
-        pl.col("close").sum().alias("close_checksum"),
-        pl.col("volume").sum().alias("volume_checksum"),
-    ).collect().row(0, named=True)
+    stats = (
+        source.select(
+            pl.len().alias("rows"),
+            pl.col("ticker").n_unique().alias("tickers"),
+            pl.col("dt").min().alias("first_date"),
+            pl.col("dt").max().alias("last_date"),
+            pl.col("close").sum().alias("close_checksum"),
+            pl.col("volume").sum().alias("volume_checksum"),
+        )
+        .collect()
+        .row(0, named=True)
+    )
     return _digest_json(stats)
 
 
@@ -1010,6 +1888,61 @@ def _parse_date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("date must use YYYY-MM-DD") from exc
+
+
+def add_official_research_features(
+    data: ResearchData,
+    *,
+    loader=None,
+) -> ResearchData:
+    """Attach the frozen, no-key SEC and FINRA feature family."""
+    from alphascreener.alternative_features import (
+        ALTERNATIVE_SOURCE_COLUMNS,
+        enrich_research_data,
+    )
+    from alphascreener.official_research_data import (
+        load_official_research_features,
+    )
+
+    if "average_volume_20d" not in data.panel.columns:
+        raise ValueError("research panel is missing average_volume_20d")
+    decisions = data.panel.select(
+        "ticker",
+        "decision_date",
+        "average_volume_20d",
+    )
+    decision_end = decisions["decision_date"].max()
+    if decision_end is None:
+        raise ValueError("research panel has no decision dates")
+    feature_loader = loader or load_official_research_features
+    official = feature_loader(
+        decisions,
+        end=decision_end,
+        average_daily_volume_column="average_volume_20d",
+        shares_outstanding_column=None,
+    )
+    source_snapshot_id = official.snapshot_digest
+    source_features = official.features.select(ALTERNATIVE_SOURCE_COLUMNS)
+    del official
+    enriched = enrich_research_data(
+        data,
+        source_features,
+        source_snapshot_id=source_snapshot_id,
+    )
+    coverage = enriched.external_coverage
+    if coverage is not None:
+        mean_coverage = coverage.select(
+            pl.col("filing_coverage_rate").mean().alias("filing"),
+            pl.col("insider_coverage_rate").mean().alias("insider"),
+            pl.col("short_interest_coverage_rate").mean().alias("short"),
+        ).row(0, named=True)
+        _logger.info(
+            "Official research coverage: filings=%.1f%% insider=%.1f%% short-interest=%.1f%%",
+            mean_coverage["filing"] * 100,
+            mean_coverage["insider"] * 100,
+            mean_coverage["short"] * 100,
+        )
+    return enriched
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1029,13 +1962,13 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(f"market data is stale at {sync.as_of_date}")
     if sync.coverage < MIN_SYNC_COVERAGE:
         raise RuntimeError(f"current-directory coverage is only {sync.coverage:.1%}")
-    current = scan_ohlcv().filter(
-        pl.col("ticker").is_in(list(sync.requested_symbols))
-    )
+    current = scan_ohlcv().filter(pl.col("ticker").is_in(list(sync.requested_symbols)))
     if sync.as_of_date is not None:
         current = current.filter(pl.col("dt") <= sync.as_of_date)
     research_data = build_research_data(current)
     del current
+    gc.collect()
+    research_data = add_official_research_features(research_data)
     gc.collect()
     report = run_walk_forward_research(research_data)
     render_report(report)

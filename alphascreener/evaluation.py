@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from math import ceil
 from pathlib import Path
 
 import polars as pl
@@ -11,7 +12,11 @@ import polars as pl
 from alphascreener.data.locking import exclusive_file_lock
 from alphascreener.data.paths import get_data_home
 from alphascreener.market_calendar import infer_market_dates, require_spy
-from alphascreener.prediction_contract import DEFAULT_TOP_K, ExplosionLabelSpec
+from alphascreener.prediction_contract import (
+    DEFAULT_TOP_K,
+    ExplosionLabelSpec,
+    RiskLabelSpec,
+)
 
 MIN_OUTCOME_COVERAGE = 0.90
 DAILY_PRECISION_TARGET = 0.10
@@ -22,6 +27,7 @@ def compute_forward_labels(
     ohlcv: pl.DataFrame,
     *,
     spec: ExplosionLabelSpec = ExplosionLabelSpec(),
+    risk_spec: RiskLabelSpec = RiskLabelSpec(),
 ) -> pl.DataFrame:
     """Compute returns on the exact 14th later NYSE session.
 
@@ -36,30 +42,66 @@ def compute_forward_labels(
     require_spy(ohlcv)
     market_dates = infer_market_dates(ohlcv)
     if len(market_dates) <= spec.horizon_sessions:
-        raise ValueError(
-            f"SPY market calendar needs more than {spec.horizon_sessions} sessions"
-        )
-    calendar = pl.DataFrame({
-        "dt": market_dates[:-spec.horizon_sessions],
-        "result_date": market_dates[spec.horizon_sessions:],
-    })
+        raise ValueError(f"SPY market calendar needs more than {spec.horizon_sessions} sessions")
+    calendar = pl.DataFrame(
+        {
+            "dt": market_dates[: -spec.horizon_sessions],
+            "result_date": market_dates[spec.horizon_sessions :],
+        }
+    )
     prices = (
         ohlcv.select("ticker", pl.col("dt").cast(pl.Date), "close")
         .unique(subset=["ticker", "dt"], keep="last")
+        .join(
+            pl.DataFrame(
+                {
+                    "dt": market_dates,
+                    "_market_index": range(len(market_dates)),
+                }
+            ),
+            on="dt",
+            how="inner",
+        )
+        .sort(["ticker", "_market_index"])
+    )
+    horizon = risk_spec.horizon_sessions
+    future_path = (
+        prices.with_columns(
+            pl.min_horizontal(
+                [pl.col("close").shift(-offset).over("ticker") for offset in range(1, horizon + 1)]
+            ).alias("future_min_close"),
+            (
+                pl.col("_market_index").shift(-horizon).over("ticker")
+                == pl.col("_market_index") + horizon
+            ).alias("_path_complete"),
+        )
+        .with_columns(
+            pl.when(pl.col("_path_complete"))
+            .then(pl.col("future_min_close"))
+            .otherwise(None)
+            .alias("future_min_close")
+        )
+        .select("ticker", "dt", "future_min_close")
     )
     future_prices = prices.select(
         "ticker",
         pl.col("dt").alias("result_date"),
         pl.col("close").alias("future_close"),
     )
-    labels = prices.join(calendar, on="dt", how="inner").join(
-        future_prices,
-        on=["ticker", "result_date"],
-        how="inner",
+    labels = (
+        prices.select("ticker", "dt", "close")
+        .join(calendar, on="dt", how="inner")
+        .join(
+            future_prices,
+            on=["ticker", "result_date"],
+            how="inner",
+        )
+        .join(future_path, on=["ticker", "dt"], how="left", validate="1:1")
     )
     return (
         labels.with_columns(
-            ((pl.col("future_close") / pl.col("close")) - 1.0).alias("forward_return")
+            ((pl.col("future_close") / pl.col("close")) - 1.0).alias("forward_return"),
+            ((pl.col("future_min_close") / pl.col("close")) - 1.0).alias("max_adverse_return"),
         )
         .select(_label_schema().keys())
         .sort(["dt", "ticker"])
@@ -93,11 +135,7 @@ def write_prediction_ledger(predictions: pl.DataFrame) -> Path:
         raise ValueError("rank must contain every ordinal from 1 through universe_size")
 
     prediction_root = get_data_home() / "predictions"
-    path = (
-        prediction_root
-        / f"dt={dates[0].isoformat()}"
-        / f"strategy={strategy}"
-    )
+    path = prediction_root / f"dt={dates[0].isoformat()}" / f"strategy={strategy}"
     with exclusive_file_lock(prediction_root / ".write.lock"):
         path.mkdir(parents=True, exist_ok=True)
         output = path / "ranking.parquet"
@@ -121,9 +159,7 @@ def write_prediction_ledger(predictions: pl.DataFrame) -> Path:
 
 def read_prediction_ledger() -> pl.DataFrame:
     """Read complete rankings written under the current ledger contract."""
-    paths = sorted(
-        (get_data_home() / "predictions").glob("dt=*/strategy=*/ranking.parquet")
-    )
+    paths = sorted((get_data_home() / "predictions").glob("dt=*/strategy=*/ranking.parquet"))
     if not paths:
         return pl.DataFrame(schema=_prediction_schema())
     frames: list[pl.DataFrame] = []
@@ -147,29 +183,48 @@ def mature_predictions(
     labels: pl.DataFrame,
     *,
     spec: ExplosionLabelSpec = ExplosionLabelSpec(),
+    risk_spec: RiskLabelSpec = RiskLabelSpec(),
 ) -> pl.DataFrame:
     """Join outcomes and classify explosions within each ranked eligible universe."""
     required_predictions = set(_prediction_schema())
-    required_labels = {"ticker", "dt", "result_date", "forward_return"}
+    required_labels = {
+        "ticker",
+        "dt",
+        "result_date",
+        "forward_return",
+        "max_adverse_return",
+    }
     if missing := required_predictions - set(predictions.columns):
         raise ValueError(f"predictions missing columns: {sorted(missing)}")
     if missing := required_labels - set(labels.columns):
         raise ValueError(f"labels missing columns: {sorted(missing)}")
     joined = predictions.join(
-        labels.select(["ticker", "dt", "result_date", "forward_return"]),
+        labels.select(
+            [
+                "ticker",
+                "dt",
+                "result_date",
+                "forward_return",
+                "max_adverse_return",
+            ]
+        ),
         left_on=["ticker", "decision_date"],
         right_on=["ticker", "dt"],
         how="left",
     )
     matured: list[pl.DataFrame] = []
-    for _, group in joined.group_by(
-        ["strategy_version", "decision_date"], maintain_order=True
-    ):
+    for _, group in joined.group_by(["strategy_version", "decision_date"], maintain_order=True):
         if group["forward_return"].null_count():
             matured.append(
                 group.with_columns(
                     pl.lit(None, dtype=pl.Float64).alias("hit_threshold"),
                     pl.lit(None, dtype=pl.Boolean).alias("is_explosion"),
+                    pl.lit(None, dtype=pl.Boolean).alias("is_severe_downside"),
+                    pl.lit(None, dtype=pl.Boolean).alias("is_catastrophic_loss"),
+                    pl.when(pl.col("max_adverse_return").is_not_null())
+                    .then(pl.col("max_adverse_return") <= risk_spec.adverse_path_return)
+                    .otherwise(None)
+                    .alias("has_adverse_path"),
                 )
             )
             continue
@@ -178,12 +233,23 @@ def mature_predictions(
             group.with_columns(
                 pl.lit(threshold).alias("hit_threshold"),
                 (pl.col("forward_return") >= threshold).alias("is_explosion"),
+                (pl.col("forward_return") <= risk_spec.severe_return).alias("is_severe_downside"),
+                (pl.col("forward_return") <= risk_spec.catastrophic_return).alias(
+                    "is_catastrophic_loss"
+                ),
+                pl.when(pl.col("max_adverse_return").is_not_null())
+                .then(pl.col("max_adverse_return") <= risk_spec.adverse_path_return)
+                .otherwise(None)
+                .alias("has_adverse_path"),
             )
         )
     if not matured:
         return joined.with_columns(
             pl.lit(None, dtype=pl.Float64).alias("hit_threshold"),
             pl.lit(None, dtype=pl.Boolean).alias("is_explosion"),
+            pl.lit(None, dtype=pl.Boolean).alias("is_severe_downside"),
+            pl.lit(None, dtype=pl.Boolean).alias("is_catastrophic_loss"),
+            pl.lit(None, dtype=pl.Boolean).alias("has_adverse_path"),
         )
     return pl.concat(matured)
 
@@ -203,6 +269,9 @@ def evaluate_daily_rankings(
         "strategy_version",
         "universe_size",
         "is_explosion",
+        "is_severe_downside",
+        "is_catastrophic_loss",
+        "has_adverse_path",
         "forward_return",
     }
     if missing := required - set(matured.columns):
@@ -222,7 +291,12 @@ def evaluate_daily_rankings(
         outcome_coverage = outcome_count / universe_size
         if outcome_coverage < MIN_OUTCOME_COVERAGE:
             continue
-        if outcome_count != universe_size or group["is_explosion"].null_count():
+        if (
+            outcome_count != universe_size
+            or group["is_explosion"].null_count()
+            or group["is_severe_downside"].null_count()
+            or group["is_catastrophic_loss"].null_count()
+        ):
             continue
         expected_top_ranks = set(range(1, top_k + 1))
         ordered = group.filter(pl.col("rank") <= top_k).sort("rank")
@@ -230,15 +304,28 @@ def evaluate_daily_rankings(
             continue
         base_rate = float(group["is_explosion"].mean())
         precision = float(ordered["is_explosion"].mean())
-        results.append({
-            "strategy_version": str(strategy),
-            "decision_date": decision_date,
-            "universe_size": universe_size,
-            "outcome_coverage": outcome_coverage,
-            "precision_at_k": precision,
-            "base_explosion_rate": base_rate,
-            "passed": precision >= DAILY_PRECISION_TARGET and precision > base_rate,
-        })
+        downside = float(ordered["is_severe_downside"].mean())
+        catastrophic_loss = float(ordered["is_catastrophic_loss"].mean())
+        adverse_path = (
+            None
+            if ordered["has_adverse_path"].null_count()
+            else float(ordered["has_adverse_path"].mean())
+        )
+        results.append(
+            {
+                "strategy_version": str(strategy),
+                "decision_date": decision_date,
+                "universe_size": universe_size,
+                "outcome_coverage": outcome_coverage,
+                "precision_at_k": precision,
+                "base_explosion_rate": base_rate,
+                "downside_at_k": downside,
+                "catastrophic_loss_at_k": catastrophic_loss,
+                "adverse_path_at_k": adverse_path,
+                "basket_return_14": float(ordered["forward_return"].mean()),
+                "passed": precision >= DAILY_PRECISION_TARGET and precision > base_rate,
+            }
+        )
     return pl.DataFrame(results, schema=_daily_metric_schema()).sort(
         ["strategy_version", "decision_date"]
     )
@@ -274,6 +361,21 @@ def longest_consecutive_passes(
     return longest
 
 
+def expected_shortfall(
+    returns: list[float],
+    *,
+    quantile: float = RiskLabelSpec().expected_shortfall_quantile,
+) -> float:
+    """Return the arithmetic mean of the lower tail, using at least one observation."""
+    if not returns:
+        raise ValueError("returns must not be empty")
+    if not 0.0 < quantile < 0.5:
+        raise ValueError("quantile must be between 0 and 0.5")
+    values = sorted(float(value) for value in returns)
+    count = max(1, ceil(len(values) * quantile))
+    return sum(values[:count]) / count
+
+
 def _prediction_schema() -> dict[str, pl.DataType]:
     return {
         "ticker": pl.String,
@@ -292,7 +394,9 @@ def _label_schema() -> dict[str, pl.DataType]:
         "result_date": pl.Date,
         "close": pl.Float64,
         "future_close": pl.Float64,
+        "future_min_close": pl.Float64,
         "forward_return": pl.Float64,
+        "max_adverse_return": pl.Float64,
     }
 
 
@@ -304,5 +408,9 @@ def _daily_metric_schema() -> dict[str, pl.DataType]:
         "outcome_coverage": pl.Float64,
         "precision_at_k": pl.Float64,
         "base_explosion_rate": pl.Float64,
+        "downside_at_k": pl.Float64,
+        "catastrophic_loss_at_k": pl.Float64,
+        "adverse_path_at_k": pl.Float64,
+        "basket_return_14": pl.Float64,
         "passed": pl.Boolean,
     }

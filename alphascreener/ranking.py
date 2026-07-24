@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 
 import polars as pl
@@ -14,6 +14,9 @@ from alphascreener.prediction_contract import (
     MAX_CANDIDATES,
     MIN_AVERAGE_DOLLAR_VOLUME,
     MIN_CANDIDATE_CLOSE,
+    MIN_MEDIAN_DOLLAR_VOLUME_PRIOR_20D,
+    MIN_VALID_PRICE_VOLUME_SESSIONS_PRIOR_20D,
+    RISK_RERANK_CANDIDATES,
 )
 
 RANK_V6_SIGNALS = (
@@ -35,9 +38,7 @@ def rank_candidates(ohlcv: pl.DataFrame) -> tuple[pl.DataFrame, date]:
         raise ValueError(f"SPY benchmark unavailable on {cutoff}: missing")
     market_dates = all_market_dates[-INPUT_LOOKBACK_SESSIONS:]
     if len(market_dates) < INPUT_LOOKBACK_SESSIONS:
-        raise ValueError(
-            f"SPY benchmark unavailable on {cutoff}: insufficient_history"
-        )
+        raise ValueError(f"SPY benchmark unavailable on {cutoff}: insufficient_history")
     window = ohlcv.filter(pl.col("dt").is_in(market_dates))
     rankings = rank_candidate_dates(window, [cutoff])
     ranking = (
@@ -47,9 +48,7 @@ def rank_candidates(ohlcv: pl.DataFrame) -> tuple[pl.DataFrame, date]:
     )
     if ranking.is_empty():
         features = compute_60d_features(window)
-        benchmark = features.filter(
-            (pl.col("ticker") == "SPY") & (pl.col("dt") == cutoff)
-        )
+        benchmark = features.filter((pl.col("ticker") == "SPY") & (pl.col("dt") == cutoff))
         reason = _benchmark_exclusion_reason(benchmark)
         if reason is not None:
             raise ValueError(f"SPY benchmark unavailable on {cutoff}: {reason}")
@@ -68,6 +67,64 @@ def rank_candidate_dates(
     return score_rank_v6(candidates)
 
 
+def apply_definitive_transaction_filter(
+    ranking: pl.DataFrame,
+    decision_date: date,
+    *,
+    status_provider: Callable[[Sequence[str], date], Mapping[str, object]] | None = None,
+    inspect_count: int = RISK_RERANK_CANDIDATES,
+) -> tuple[pl.DataFrame, dict[str, object]]:
+    """Remove point-in-time definitive transactions from the preliminary leaders.
+
+    The check expands when an exclusion promotes a previously unchecked stock,
+    so every member of the final preliminary Top-N has a complete SEC status.
+    The remaining full ranking is kept in original score order and receives
+    contiguous ranks.
+    """
+    if inspect_count <= 0:
+        raise ValueError("inspect_count must be positive")
+    if ranking.is_empty():
+        return ranking, {}
+    required = {"ticker", "score", "rank"}
+    if missing := required - set(ranking.columns):
+        raise ValueError(f"ranking missing columns: {sorted(missing)}")
+    if status_provider is None:
+        from alphascreener.corporate_actions import corporate_action_statuses
+
+        status_provider = corporate_action_statuses
+
+    ordered = ranking.sort("rank")
+    checked: dict[str, object] = {}
+    excluded: set[str] = set()
+    while True:
+        leaders = [
+            str(ticker)
+            for ticker in ordered.filter(~pl.col("ticker").is_in(sorted(excluded)))
+            .head(inspect_count)["ticker"]
+            .to_list()
+        ]
+        unchecked = [ticker for ticker in leaders if ticker not in checked]
+        if not unchecked:
+            break
+        batch = dict(status_provider(unchecked, decision_date))
+        if set(batch) != set(unchecked):
+            missing = sorted(set(unchecked) - set(batch))
+            extra = sorted(set(batch) - set(unchecked))
+            raise ValueError(
+                f"corporate-action status coverage mismatch: missing={missing}, extra={extra}"
+            )
+        for ticker, status in batch.items():
+            if not hasattr(status, "exclude_from_ranking"):
+                raise ValueError(f"corporate-action status for {ticker} has no exclusion decision")
+            checked[ticker] = status
+            if bool(getattr(status, "exclude_from_ranking")):
+                excluded.add(ticker)
+
+    filtered = ordered.filter(~pl.col("ticker").is_in(sorted(excluded))).drop("rank")
+    filtered = filtered.with_row_index("rank", offset=1).with_columns(pl.col("rank").cast(pl.Int64))
+    return filtered.select(ranking.columns), checked
+
+
 def select_eligible_candidate_features(
     features: pl.DataFrame,
     decision_dates: Sequence[date],
@@ -79,6 +136,8 @@ def select_eligible_candidate_features(
         "raw_close",
         "history_complete_60d",
         "average_dollar_volume_20d",
+        "median_dollar_volume_prior_20d",
+        "valid_price_volume_sessions_prior_20d",
         *RANK_V6_SIGNALS,
     }
     if missing := required - set(features.columns):
@@ -88,18 +147,23 @@ def select_eligible_candidate_features(
         pl.col("history_complete_60d")
         & (pl.col("raw_close") >= MIN_CANDIDATE_CLOSE)
         & (pl.col("average_dollar_volume_20d") >= MIN_AVERAGE_DOLLAR_VOLUME)
+        & (pl.col("median_dollar_volume_prior_20d") >= MIN_MEDIAN_DOLLAR_VOLUME_PRIOR_20D)
+        & (
+            pl.col("valid_price_volume_sessions_prior_20d")
+            >= MIN_VALID_PRICE_VOLUME_SESSIONS_PRIOR_20D
+        )
     )
     benchmark_dates = eligible.filter(pl.col("ticker") == "SPY")["dt"].unique()
-    candidates = eligible.filter(
-        (pl.col("ticker") != "SPY") & pl.col("dt").is_in(benchmark_dates.implode())
-    ).sort(
-        ["dt", "average_dollar_volume_20d", "ticker"],
-        descending=[False, True, False],
-    ).with_columns(
-        pl.col("ticker").cum_count().over("dt").alias("_liquidity_rank")
-    ).filter(
-        pl.col("_liquidity_rank") <= MAX_CANDIDATES
-    ).drop("_liquidity_rank")
+    candidates = (
+        eligible.filter((pl.col("ticker") != "SPY") & pl.col("dt").is_in(benchmark_dates.implode()))
+        .sort(
+            ["dt", "average_dollar_volume_20d", "ticker"],
+            descending=[False, True, False],
+        )
+        .with_columns(pl.col("ticker").cum_count().over("dt").alias("_liquidity_rank"))
+        .filter(pl.col("_liquidity_rank") <= MAX_CANDIDATES)
+        .drop("_liquidity_rank")
+    )
     return candidates
 
 
@@ -110,17 +174,13 @@ def score_rank_v6(candidates: pl.DataFrame) -> pl.DataFrame:
     required = {"ticker", "dt", *RANK_V6_SIGNALS}
     if missing := required - set(candidates.columns):
         raise ValueError(f"candidate features missing columns: {sorted(missing)}")
-    ranked = candidates.with_columns([
-        pl.col(signal)
-        .fill_null(0.0)
-        .rank("average")
-        .over("dt")
-        .alias(f"_rank_{signal}")
-        for signal in RANK_V6_SIGNALS
-    ]).with_columns(
-        pl.mean_horizontal([
-            pl.col(f"_rank_{signal}") for signal in RANK_V6_SIGNALS
-        ]).alias("score")
+    ranked = candidates.with_columns(
+        [
+            pl.col(signal).fill_null(0.0).rank("average").over("dt").alias(f"_rank_{signal}")
+            for signal in RANK_V6_SIGNALS
+        ]
+    ).with_columns(
+        pl.mean_horizontal([pl.col(f"_rank_{signal}") for signal in RANK_V6_SIGNALS]).alias("score")
     )
     return (
         ranked.select(
@@ -149,13 +209,21 @@ def _benchmark_exclusion_reason(benchmark: pl.DataFrame) -> str | None:
         return "low_price"
     if row["average_dollar_volume_20d"] < MIN_AVERAGE_DOLLAR_VOLUME:
         return "low_dollar_volume"
+    valid_sessions = row["valid_price_volume_sessions_prior_20d"]
+    if valid_sessions is None or valid_sessions < MIN_VALID_PRICE_VOLUME_SESSIONS_PRIOR_20D:
+        return "insufficient_liquidity_history"
+    median_dollar_volume = row["median_dollar_volume_prior_20d"]
+    if median_dollar_volume is None or median_dollar_volume < MIN_MEDIAN_DOLLAR_VOLUME_PRIOR_20D:
+        return "low_median_dollar_volume"
     return None
 
 
 def _empty_rankings() -> pl.DataFrame:
-    return pl.DataFrame(schema={
-        "ticker": pl.String,
-        "decision_date": pl.Date,
-        "score": pl.Float64,
-        "rank": pl.Int64,
-    })
+    return pl.DataFrame(
+        schema={
+            "ticker": pl.String,
+            "decision_date": pl.Date,
+            "score": pl.Float64,
+            "rank": pl.Int64,
+        }
+    )

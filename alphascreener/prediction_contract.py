@@ -21,10 +21,14 @@ DEFAULT_BACKTEST_DAYS = 30
 MAX_BACKTEST_DAYS = 45
 MIN_CANDIDATE_CLOSE = 5.0
 MIN_AVERAGE_DOLLAR_VOLUME = 10_000_000.0
+MIN_MEDIAN_DOLLAR_VOLUME_PRIOR_20D = 5_000_000.0
+MIN_VALID_PRICE_VOLUME_SESSIONS_PRIOR_20D = 18
 MAX_CANDIDATES = 2_000
+RISK_RERANK_CANDIDATES = 30
+MAX_RISK_RERANK_POSITIONS = 3
 DEFAULT_ABSOLUTE_HIT_RETURN = 0.15
 DEFAULT_CROSS_SECTION_HIT_QUANTILE = 0.95
-STRATEGY_VERSION = "rank-v6"
+STRATEGY_VERSION = "rank-v7-guardrails"
 PREDICTION_HISTORY_SESSIONS = INPUT_LOOKBACK_SESSIONS
 BACKTEST_HISTORY_SESSIONS = (
     INPUT_LOOKBACK_SESSIONS + FORECAST_HORIZON_SESSIONS + MAX_BACKTEST_DAYS - 1
@@ -61,3 +65,28 @@ class ExplosionLabelSpec:
         ordered = sorted(float(value) for value in forward_returns)
         index = max(0, ceil(len(ordered) * self.cross_section_quantile) - 1)
         return max(self.absolute_return, ordered[index])
+
+
+@dataclass(frozen=True)
+class RiskLabelSpec:
+    """Frozen economically meaningful downside outcomes for the 14-session horizon."""
+
+    horizon_sessions: int = FORECAST_HORIZON_SESSIONS
+    severe_return: float = -0.10
+    catastrophic_return: float = -0.20
+    adverse_path_return: float = -0.15
+    expected_shortfall_quantile: float = 0.10
+
+    def __post_init__(self) -> None:
+        if self.horizon_sessions <= 0:
+            raise ValueError("horizon_sessions must be positive")
+        if not self.catastrophic_return < self.severe_return < 0.0:
+            raise ValueError(
+                "catastrophic_return must be below severe_return and both must be negative"
+            )
+        if not self.catastrophic_return <= self.adverse_path_return < 0.0:
+            raise ValueError(
+                "adverse_path_return must be negative and no worse than catastrophic_return"
+            )
+        if not 0.0 < self.expected_shortfall_quantile < 0.5:
+            raise ValueError("expected_shortfall_quantile must be between 0 and 0.5")

@@ -6,14 +6,19 @@ import csv
 import io
 import logging
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import polars as pl
 import yfinance as yf
 
 from alphascreener.data.io import scan_ohlcv, write_ohlcv
+from alphascreener.data.universe import (
+    parse_symbol_directories,
+    save_universe_snapshot,
+)
 from alphascreener.market_calendar import (
     latest_completed_market_date,
     market_dates_between,
@@ -24,6 +29,7 @@ from alphascreener.prediction_contract import (
 )
 
 _logger = logging.getLogger(__name__)
+_NEW_YORK = ZoneInfo("America/New_York")
 
 _BATCH_SIZE = 50
 _NETWORK_BATCHES_PER_CHECKPOINT = 20
@@ -102,9 +108,12 @@ def _default_universe() -> list[str]:
     """Return US-listed equities from the official Nasdaq Trader directories."""
     tickers: set[str] = set()
     failures: list[str] = []
+    payloads: dict[str, str] = {}
     for url in _SYMBOL_DIRECTORY_URLS:
         try:
-            directory_tickers = _parse_symbol_directory(_download_symbol_directory(url))
+            payload = _download_symbol_directory(url)
+            payloads[url.rsplit("/", 1)[-1].removesuffix(".txt")] = payload
+            directory_tickers = _parse_symbol_directory(payload)
             if not directory_tickers:
                 raise ValueError("symbol directory contained no eligible equities")
             tickers.update(directory_tickers)
@@ -113,9 +122,29 @@ def _default_universe() -> list[str]:
             failures.append(url)
     if failures:
         raise RuntimeError(
-            "complete US-equity universe unavailable; failed directories: "
-            + ", ".join(failures)
+            "complete US-equity universe unavailable; failed directories: " + ", ".join(failures)
         )
+    observed_at = datetime.now(UTC)
+    normalized = parse_symbol_directories(
+        payloads["nasdaqlisted"],
+        payloads["otherlisted"],
+        available_at=observed_at,
+    )
+    creation_dates = {
+        value.astimezone(_NEW_YORK).date()
+        for value in normalized["file_creation_time"].unique().to_list()
+    }
+    if len(creation_dates) != 1:
+        raise RuntimeError(
+            "complete US-equity universe unavailable; symbol directories "
+            "have different creation dates"
+        )
+    save_universe_snapshot(
+        payloads["nasdaqlisted"],
+        payloads["otherlisted"],
+        as_of=creation_dates.pop(),
+        available_at=observed_at,
+    )
     tickers.add("SPY")
     return sorted(tickers)
 
@@ -151,7 +180,13 @@ def sync_ohlcv(
     # yfinance treats ``end`` as exclusive.  After a same-calendar-day US
     # close, requesting through today would otherwise omit the required bar.
     end = expected_market_date + timedelta(days=1)
-    existing = _stored_history().filter(pl.col("dt") <= expected_market_date)
+    recent_history_dates = market_dates_between(
+        expected_market_date - timedelta(days=BACKTEST_HISTORY_SESSIONS * 3),
+        expected_market_date,
+    )[-BACKTEST_HISTORY_SESSIONS:]
+    recent_history_start = recent_history_dates[0] if recent_history_dates else expected_market_date
+    history_start = None if start is not None else recent_history_start
+    existing = _stored_history(start=history_start).filter(pl.col("dt") <= expected_market_date)
     stats = _history_stats(existing)
     if start is not None:
         plans = [(requested, start)]
@@ -175,20 +210,13 @@ def sync_ohlcv(
             and not outcome_work
         ):
             return _sync_result(0, requested, ready, benchmark_date)
-        backfill = tuple(
-            ticker
-            for ticker in requested
-            if ticker not in history_ready
-        )
+        backfill = tuple(ticker for ticker in requested if ticker not in history_ready)
         refresh_all = benchmark_date != expected_market_date
         refresh = tuple(
             ticker
             for ticker in requested
             if ticker not in backfill
-            and (
-                refresh_all
-                or _ticker_last_date(stats, ticker) != benchmark_date
-            )
+            and (refresh_all or _ticker_last_date(stats, ticker) != benchmark_date)
         )
         plans = [
             (backfill, date.today() - timedelta(days=_BACKFILL_CALENDAR_DAYS)),
@@ -196,9 +224,7 @@ def sync_ohlcv(
         ]
 
     if outcome_work:
-        outcome_start = min(requirement[1] for requirement in outcome_work) - timedelta(
-            days=7
-        )
+        outcome_start = min(requirement[1] for requirement in outcome_work) - timedelta(days=7)
         outcome_symbols = tuple(sorted({requirement[0] for requirement in outcome_work}))
         plans.append((outcome_symbols, outcome_start))
 
@@ -219,7 +245,7 @@ def sync_ohlcv(
                 checkpoint_records = []
         rows_written += _write_checkpoint(checkpoint_records)
 
-    stored = _stored_history().filter(pl.col("dt") <= expected_market_date)
+    stored = _stored_history(start=history_start).filter(pl.col("dt") <= expected_market_date)
     ready_stats = _history_stats(stored)
     benchmark_date = _coverage_date(ready_stats, requested)
     ready = _ready_tickers(stored, requested, benchmark_date)
@@ -312,28 +338,30 @@ def _download_batch(
             ticker_data = ticker_data.astype({column: "float64" for column in required_columns})
         except (TypeError, ValueError):
             continue
-        finite_prices = np.isfinite(
-            ticker_data[["open", "high", "low", "close", "raw_close"]]
-        ).all(axis=1)
+        finite_prices = np.isfinite(ticker_data[["open", "high", "low", "close", "raw_close"]]).all(
+            axis=1
+        )
         finite_volume = np.isfinite(ticker_data["volume"])
-        positive_prices = (
-            ticker_data[["open", "high", "low", "close", "raw_close"]] > 0
-        ).all(axis=1)
+        positive_prices = (ticker_data[["open", "high", "low", "close", "raw_close"]] > 0).all(
+            axis=1
+        )
         non_negative_volume = ticker_data["volume"] >= 0
         ticker_data = ticker_data.loc[
             finite_prices & finite_volume & positive_prices & non_negative_volume
         ]
         for index, row in ticker_data.iterrows():
-            batch_records.append({
-                "ticker": ticker,
-                "dt": index.date() if hasattr(index, "date") else index,
-                "open": float(row["open"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-                "close": float(row["close"]),
-                "raw_close": float(row["raw_close"]),
-                "volume": int(row["volume"]),
-            })
+            batch_records.append(
+                {
+                    "ticker": ticker,
+                    "dt": index.date() if hasattr(index, "date") else index,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "raw_close": float(row["raw_close"]),
+                    "volume": int(row["volume"]),
+                }
+            )
     return batch_records
 
 
@@ -345,9 +373,12 @@ def _write_checkpoint(records: list[dict[str, object]]) -> int:
     return len(records)
 
 
-def _stored_history() -> pl.DataFrame:
+def _stored_history(*, start: date | None = None) -> pl.DataFrame:
     try:
-        return scan_ohlcv().collect()
+        history = scan_ohlcv()
+        if start is not None:
+            history = history.filter(pl.col("dt") >= start)
+        return history.collect()
     except FileNotFoundError:
         return pl.DataFrame(schema={"ticker": pl.String, "dt": pl.Date})
 
@@ -357,9 +388,9 @@ def _history_stats(history: pl.DataFrame) -> dict[str, tuple[int, date]]:
         return {}
     return {
         ticker: (sessions, last_date)
-        for ticker, sessions, last_date in history.group_by("ticker").agg(
-            pl.len().alias("sessions"), pl.col("dt").max().alias("last_date")
-        ).iter_rows()
+        for ticker, sessions, last_date in history.group_by("ticker")
+        .agg(pl.len().alias("sessions"), pl.col("dt").max().alias("last_date"))
+        .iter_rows()
     }
 
 
@@ -384,8 +415,7 @@ def _ready_tickers(
     if len(expected_dates) < required_sessions:
         return set()
     eligible = history.filter(
-        pl.col("ticker").is_in(requested)
-        & pl.col("dt").is_in(expected_dates)
+        pl.col("ticker").is_in(requested) & pl.col("dt").is_in(expected_dates)
     )
     if "raw_close" in eligible.columns:
         eligible = eligible.filter(pl.col("raw_close").is_not_null())
@@ -397,9 +427,7 @@ def _ready_tickers(
     )
 
 
-def _coverage_date(
-    stats: dict[str, tuple[int, date]], requested: tuple[str, ...]
-) -> date | None:
+def _coverage_date(stats: dict[str, tuple[int, date]], requested: tuple[str, ...]) -> date | None:
     spy_date = _ticker_last_date(stats, "SPY")
     if spy_date is not None:
         return spy_date

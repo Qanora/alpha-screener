@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -37,20 +38,26 @@ def _backtest_records(
     rows = []
     for index in range(days):
         invalid = index in invalid_indexes
-        rows.append({
-            "strategy_version": STRATEGY_VERSION,
-            "decision_date": start + timedelta(days=index),
-            "result_date": start + timedelta(days=14 + index),
-            "status": "INVALID" if invalid else "VALID",
-            "invalid_reason": "missing_outcomes" if invalid else None,
-            "universe_size": 100,
-            "outcome_coverage": 0.5 if invalid else 1.0,
-            "hits_at_10": None if invalid else 1,
-            "precision_at_10": None if invalid else 0.1,
-            "base_explosion_rate": None if invalid else 0.05,
-            "passed": None if invalid else True,
-            "universe_source": "current-directory",
-        })
+        rows.append(
+            {
+                "strategy_version": STRATEGY_VERSION,
+                "decision_date": start + timedelta(days=index),
+                "result_date": start + timedelta(days=14 + index),
+                "status": "INVALID" if invalid else "VALID",
+                "invalid_reason": "missing_outcomes" if invalid else None,
+                "universe_size": 100,
+                "outcome_coverage": 0.5 if invalid else 1.0,
+                "hits_at_10": None if invalid else 1,
+                "precision_at_10": None if invalid else 0.1,
+                "base_explosion_rate": None if invalid else 0.05,
+                "downside_at_10": None if invalid else 0.0,
+                "catastrophic_loss_at_10": None if invalid else 0.0,
+                "adverse_path_at_10": None if invalid else 0.0,
+                "basket_return_14": None if invalid else 0.1,
+                "passed": None if invalid else True,
+                "universe_source": "current-directory",
+            }
+        )
     return pl.DataFrame(
         rows,
         schema={
@@ -64,6 +71,10 @@ def _backtest_records(
             "hits_at_10": pl.Int64,
             "precision_at_10": pl.Float64,
             "base_explosion_rate": pl.Float64,
+            "downside_at_10": pl.Float64,
+            "catastrophic_loss_at_10": pl.Float64,
+            "adverse_path_at_10": pl.Float64,
+            "basket_return_14": pl.Float64,
             "passed": pl.Boolean,
             "universe_source": pl.String,
         },
@@ -79,33 +90,37 @@ def _market_data(
     dates = _session_dates(sessions)
     for ticker, growth in tickers:
         for index, session_date in enumerate(dates):
-            rows.append({
-                "ticker": ticker,
-                "dt": session_date,
-                "open": 100.0,
-                "high": 101.0,
-                "low": 99.0,
-                "close": 100.0 * growth**index,
-                "volume": 2_000_000,
-            })
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "dt": session_date,
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0 * growth**index,
+                    "volume": 2_000_000,
+                }
+            )
     return pl.DataFrame(rows)
 
 
 def _empty_ledger() -> pl.DataFrame:
-    return pl.DataFrame(schema={
-        "ticker": pl.String,
-        "decision_date": pl.Date,
-        "score": pl.Float64,
-        "rank": pl.Int64,
-        "strategy_version": pl.String,
-        "universe_size": pl.Int64,
-    })
+    return pl.DataFrame(
+        schema={
+            "ticker": pl.String,
+            "decision_date": pl.Date,
+            "score": pl.Float64,
+            "rank": pl.Int64,
+            "strategy_version": pl.String,
+            "universe_size": pl.Int64,
+        }
+    )
 
 
 def _stub_backtest(monkeypatch, records: pl.DataFrame | None = None) -> None:
     monkeypatch.setattr(
         "alphascreener.backtest.run_backtest",
-        lambda data, *, days: records if records is not None else _backtest_records(days),
+        lambda data, *, days, **kwargs: records if records is not None else _backtest_records(days),
     )
 
 
@@ -118,6 +133,12 @@ def _stub_complete_sync(
         lambda **kwargs: SyncResult(0, 100, 100, (), ready_tickers),
     )
     monkeypatch.setattr("alphascreener.cli._ledger_outcome_requirements", lambda: ())
+    monkeypatch.setattr(
+        "alphascreener.cli._sec_status_provider",
+        lambda tickers, decision_date: {
+            ticker: SimpleNamespace(exclude_from_ranking=False) for ticker in tickers
+        },
+    )
 
 
 def _stub_screen_extras(monkeypatch, records: pl.DataFrame | None = None) -> None:
@@ -128,27 +149,29 @@ def _stub_screen_extras(monkeypatch, records: pl.DataFrame | None = None) -> Non
 def test_outcome_sync_tickers_are_driven_by_exact_result_rows(monkeypatch) -> None:
     decision_date = market_dates_between(date(2025, 1, 2), date(2025, 2, 28))[0]
     result_date = market_dates_between(decision_date, date(2025, 3, 31))[14]
-    ledger = pl.DataFrame({
-        "ticker": ["PRESENT", "MISSING"],
-        "decision_date": [decision_date, decision_date],
-        "score": [2.0, 1.0],
-        "rank": [1, 2],
-        "strategy_version": [STRATEGY_VERSION, STRATEGY_VERSION],
-        "universe_size": [2, 2],
-    })
-    observations = pl.DataFrame({
-        "ticker": ["PRESENT"],
-        "dt": [result_date],
-    })
+    ledger = pl.DataFrame(
+        {
+            "ticker": ["PRESENT", "MISSING"],
+            "decision_date": [decision_date, decision_date],
+            "score": [2.0, 1.0],
+            "rank": [1, 2],
+            "strategy_version": [STRATEGY_VERSION, STRATEGY_VERSION],
+            "universe_size": [2, 2],
+        }
+    )
+    observations = pl.DataFrame(
+        {
+            "ticker": ["PRESENT"],
+            "dt": [result_date],
+        }
+    )
     monkeypatch.setattr("alphascreener.evaluation.read_prediction_ledger", lambda: ledger)
     monkeypatch.setattr(
         "alphascreener.data.io.scan_ohlcv",
         lambda: observations.lazy(),
     )
 
-    assert _ledger_outcome_requirements() == (
-        ("MISSING", decision_date, result_date),
-    )
+    assert _ledger_outcome_requirements() == (("MISSING", decision_date, result_date),)
 
 
 def test_help_exposes_only_backtest_subcommand() -> None:
@@ -166,15 +189,17 @@ def test_rank_candidates_uses_the_60_session_window() -> None:
     dates = market_dates_between(date(2025, 1, 2), date(2025, 5, 1))[:60]
     for ticker, growth in [("SPY", 1.02), ("WIN", 1.01)]:
         for index, session_date in enumerate(dates):
-            rows.append({
-                "ticker": ticker,
-                "dt": session_date,
-                "open": 100.0,
-                "high": 101.0,
-                "low": 99.0,
-                "close": 100.0 * growth**index,
-                "volume": 2_000_000,
-            })
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "dt": session_date,
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0 * growth**index,
+                    "volume": 2_000_000,
+                }
+            )
 
     ranked, cutoff = rank_candidates(pl.DataFrame(rows))
 
@@ -186,12 +211,14 @@ def test_rank_candidates_requires_a_current_spy_benchmark() -> None:
     rows = []
     dates = market_dates_between(date(2025, 1, 2), date(2025, 5, 1))[:60]
     for index, session_date in enumerate(dates):
-        rows.append({
-            "ticker": "WIN",
-            "dt": session_date,
-            "close": 100.0 * 1.01**index,
-            "volume": 2_000_000,
-        })
+        rows.append(
+            {
+                "ticker": "WIN",
+                "dt": session_date,
+                "close": 100.0 * 1.01**index,
+                "volume": 2_000_000,
+            }
+        )
 
     with pytest.raises(ValueError, match="SPY benchmark unavailable"):
         rank_candidates(pl.DataFrame(rows))
@@ -203,7 +230,7 @@ def test_top_limits_display_but_ledger_receives_full_ranking_and_30_day_summary(
     seen_backtest_days = []
     monkeypatch.setattr(
         "alphascreener.backtest.run_backtest",
-        lambda data, *, days: seen_backtest_days.append(days) or _backtest_records(days),
+        lambda data, *, days, **kwargs: seen_backtest_days.append(days) or _backtest_records(days),
     )
     monkeypatch.setattr("alphascreener.cli._render_matured_evidence", lambda data: None)
     current = (
@@ -213,9 +240,12 @@ def test_top_limits_display_but_ledger_receives_full_ranking_and_30_day_summary(
         *((f"C{index}", 1.003 + index / 10_000) for index in range(8)),
     )
     _stub_complete_sync(monkeypatch, tuple(ticker for ticker, _ in current))
-    data = _market_data((*current,
-        ("STALE", 1.02),
-    ))
+    data = _market_data(
+        (
+            *current,
+            ("STALE", 1.02),
+        )
+    )
     ledger_writes = []
     monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
     monkeypatch.setattr(
@@ -298,14 +328,16 @@ def test_same_day_rerun_displays_the_immutable_recorded_ranking(monkeypatch) -> 
     _stub_complete_sync(monkeypatch)
     data = _market_data()
     decision_date = data["dt"].max()
-    recorded = pl.DataFrame({
-        "ticker": ["SAVED"],
-        "decision_date": [decision_date],
-        "score": [42.0],
-        "rank": [1],
-        "strategy_version": [STRATEGY_VERSION],
-        "universe_size": [1],
-    })
+    recorded = pl.DataFrame(
+        {
+            "ticker": ["SAVED"],
+            "decision_date": [decision_date],
+            "score": [42.0],
+            "rank": [1],
+            "strategy_version": [STRATEGY_VERSION],
+            "universe_size": [1],
+        }
+    )
     monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
     monkeypatch.setattr(
         "alphascreener.evaluation.write_prediction_ledger",
@@ -370,7 +402,7 @@ def test_backtest_exception_does_not_block_current_ranking(monkeypatch) -> None:
     monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
     monkeypatch.setattr(
         "alphascreener.backtest.run_backtest",
-        lambda data, *, days: (_ for _ in ()).throw(ValueError("history unavailable")),
+        lambda data, *, days, **kwargs: (_ for _ in ()).throw(ValueError("history unavailable")),
     )
     monkeypatch.setattr(
         "alphascreener.evaluation.write_prediction_ledger",
@@ -444,31 +476,42 @@ def test_asc_automatically_shows_matured_current_strategy_evidence(monkeypatch) 
     data = _market_data()
     market_dates = data.filter(pl.col("ticker") == "SPY")["dt"].sort().to_list()
     decision_dates = market_dates[-30:-25]
-    ledger = pl.DataFrame([
-        {
-            "ticker": f"L{rank}",
-            "decision_date": decision_date,
-            "score": float(11 - rank),
-            "rank": rank,
-            "strategy_version": STRATEGY_VERSION,
-            "universe_size": 10,
-        }
-        for decision_date in decision_dates
-        for rank in range(1, 11)
-    ])
+    ledger = pl.DataFrame(
+        [
+            {
+                "ticker": f"L{rank}",
+                "decision_date": decision_date,
+                "score": float(11 - rank),
+                "rank": rank,
+                "strategy_version": STRATEGY_VERSION,
+                "universe_size": 10,
+            }
+            for decision_date in decision_dates
+            for rank in range(1, 11)
+        ]
+    )
     matured = ledger.with_columns(
         pl.lit(0.2).alias("forward_return"),
         pl.lit(True).alias("is_explosion"),
+        pl.lit(False).alias("is_severe_downside"),
+        pl.lit(False).alias("is_catastrophic_loss"),
+        pl.lit(False).alias("has_adverse_path"),
     )
-    daily = pl.DataFrame({
-        "strategy_version": [STRATEGY_VERSION] * 5,
-        "decision_date": decision_dates,
-        "universe_size": [10] * 5,
-        "outcome_coverage": [1.0] * 5,
-        "precision_at_k": [0.1] * 5,
-        "base_explosion_rate": [0.05] * 5,
-        "passed": [True] * 5,
-    })
+    daily = pl.DataFrame(
+        {
+            "strategy_version": [STRATEGY_VERSION] * 5,
+            "decision_date": decision_dates,
+            "universe_size": [10] * 5,
+            "outcome_coverage": [1.0] * 5,
+            "precision_at_k": [0.1] * 5,
+            "base_explosion_rate": [0.05] * 5,
+            "downside_at_k": [0.0] * 5,
+            "catastrophic_loss_at_k": [0.0] * 5,
+            "adverse_path_at_k": [0.0] * 5,
+            "basket_return_14": [0.1] * 5,
+            "passed": [True] * 5,
+        }
+    )
     monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
     monkeypatch.setattr(
         "alphascreener.evaluation.write_prediction_ledger",
@@ -509,18 +552,18 @@ def test_matured_ledger_with_missing_original_top_rank_is_shown_as_invalid(
     market_dates = data.filter(pl.col("ticker") == "SPY")["dt"].sort().to_list()
     decision_date = market_dates[-20]
     result_date = market_dates[-6]
-    data = data.filter(
-        ~((pl.col("ticker") == "WIN") & (pl.col("dt") == result_date))
-    )
+    data = data.filter(~((pl.col("ticker") == "WIN") & (pl.col("dt") == result_date)))
     ledger_tickers = ["WIN", *(f"T{index}" for index in range(9))]
-    ledger = pl.DataFrame({
-        "ticker": ledger_tickers,
-        "decision_date": [decision_date] * 10,
-        "score": [float(10 - index) for index in range(10)],
-        "rank": list(range(1, 11)),
-        "strategy_version": [STRATEGY_VERSION] * 10,
-        "universe_size": [10] * 10,
-    })
+    ledger = pl.DataFrame(
+        {
+            "ticker": ledger_tickers,
+            "decision_date": [decision_date] * 10,
+            "score": [float(10 - index) for index in range(10)],
+            "rank": list(range(1, 11)),
+            "strategy_version": [STRATEGY_VERSION] * 10,
+            "universe_size": [10] * 10,
+        }
+    )
     monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
     monkeypatch.setattr(
         "alphascreener.evaluation.write_prediction_ledger",
@@ -565,7 +608,7 @@ def test_backtest_command_forwards_days_and_never_writes_ledger(
     monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
     monkeypatch.setattr(
         "alphascreener.backtest.run_backtest",
-        lambda ohlcv, *, days: seen_days.append(days) or _backtest_records(days),
+        lambda ohlcv, *, days, **kwargs: seen_days.append(days) or _backtest_records(days),
     )
     monkeypatch.setattr(
         "alphascreener.evaluation.write_prediction_ledger",
@@ -588,7 +631,10 @@ def test_backtest_command_displays_invalid_reason_and_continues(monkeypatch) -> 
     monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
     monkeypatch.setattr(
         "alphascreener.backtest.run_backtest",
-        lambda ohlcv, *, days: _backtest_records(days, invalid_indexes={0}),
+        lambda ohlcv, *, days, **kwargs: _backtest_records(
+            days,
+            invalid_indexes={0},
+        ),
     )
 
     result = CliRunner().invoke(cli, ["backtest", "--days", "2"])
@@ -604,12 +650,14 @@ def test_backtest_command_displays_invalid_reason_and_continues(monkeypatch) -> 
 def test_screen_keeps_current_directory_and_ledger_outcome_panels_separate(
     monkeypatch,
 ) -> None:
-    data = _market_data((
-        ("SPY", 1.001),
-        ("CURRENT", 1.01),
-        ("HISTORICAL", 1.005),
-        ("DELISTED", 0.999),
-    ))
+    data = _market_data(
+        (
+            ("SPY", 1.001),
+            ("CURRENT", 1.01),
+            ("HISTORICAL", 1.005),
+            ("DELISTED", 0.999),
+        )
+    )
     as_of_date = data["dt"].max()
     future_row = data.head(1).with_columns(
         pl.lit("FUTURE").alias("ticker"),
@@ -630,14 +678,22 @@ def test_screen_keeps_current_directory_and_ledger_outcome_panels_separate(
         ),
     )
     monkeypatch.setattr("alphascreener.data.io.scan_ohlcv", lambda: data.lazy())
-    ranking = pl.DataFrame({
-        "ticker": [f"R{rank}" for rank in range(1, 11)],
-        "score": [float(11 - rank) for rank in range(1, 11)],
-        "rank": list(range(1, 11)),
-    })
+    ranking = pl.DataFrame(
+        {
+            "ticker": [f"R{rank}" for rank in range(1, 11)],
+            "score": [float(11 - rank) for rank in range(1, 11)],
+            "rank": list(range(1, 11)),
+        }
+    )
     monkeypatch.setattr(
         "alphascreener.cli.rank_candidates",
         lambda ohlcv: (ranking, date.today()),
+    )
+    monkeypatch.setattr(
+        "alphascreener.cli._sec_status_provider",
+        lambda tickers, decision_date: {
+            ticker: SimpleNamespace(exclude_from_ranking=False) for ticker in tickers
+        },
     )
     monkeypatch.setattr(
         "alphascreener.evaluation.write_prediction_ledger",
@@ -645,7 +701,7 @@ def test_screen_keeps_current_directory_and_ledger_outcome_panels_separate(
     )
     seen: dict[str, set[str]] = {}
 
-    def capture_backtest(ohlcv, *, days):
+    def capture_backtest(ohlcv, *, days, **kwargs):
         seen["backtest"] = set(ohlcv["ticker"].unique().to_list())
         return _backtest_records(days)
 
