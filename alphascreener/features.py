@@ -18,31 +18,35 @@ def compute_60d_features(ohlcv: pl.DataFrame) -> pl.DataFrame:
     missing = required - set(ohlcv.columns)
     if missing:
         raise ValueError(f"OHLCV data missing columns: {sorted(missing)}")
-    data = (
-        ohlcv.with_columns(pl.col("dt").cast(pl.Date))
-        .unique(subset=["ticker", "dt"], keep="last")
+    data = ohlcv.with_columns(pl.col("dt").cast(pl.Date)).unique(
+        subset=["ticker", "dt"], keep="last"
     )
     if "raw_close" not in data.columns:
         data = data.with_columns(pl.col("close").alias("raw_close"))
     require_spy(data)
-    market_calendar = pl.DataFrame({"dt": infer_market_dates(data)}).with_row_index(
-        "market_index"
-    )
-    data = data.join(market_calendar, on="dt", how="inner").sort(
-        ["ticker", "market_index"]
-    )
+    market_calendar = pl.DataFrame({"dt": infer_market_dates(data)}).with_row_index("market_index")
+    data = data.join(market_calendar, on="dt", how="inner").sort(["ticker", "market_index"])
     ret_5 = pl.col("close") / pl.col("close").shift(5).over("ticker") - 1.0
     ret_20 = pl.col("close") / pl.col("close").shift(20).over("ticker") - 1.0
     high_60 = pl.col("close").rolling_max(60).over("ticker")
     volume_mean = pl.col("volume").rolling_mean(20).over("ticker")
     volume_std = pl.col("volume").rolling_std(20).over("ticker")
+    valid_price_volume = (
+        pl.col("raw_close").is_not_null()
+        & pl.col("raw_close").is_finite()
+        & (pl.col("raw_close") > 0)
+        & pl.col("volume").is_not_null()
+        & pl.col("volume").is_finite()
+        & (pl.col("volume") > 0)
+    )
+    valid_dollar_volume = (
+        pl.when(valid_price_volume).then(pl.col("raw_close") * pl.col("volume")).otherwise(None)
+    )
 
     features = data.with_columns(
-        (
-            pl.col("market_index")
-            - pl.col("market_index").shift(59).over("ticker")
-            == 59
-        ).fill_null(False).alias("history_complete_60d"),
+        (pl.col("market_index") - pl.col("market_index").shift(59).over("ticker") == 59)
+        .fill_null(False)
+        .alias("history_complete_60d"),
         ret_5.alias("return_5d"),
         ret_20.alias("return_20d"),
         (pl.col("close") / high_60 - 1.0).alias("distance_to_60d_high"),
@@ -50,6 +54,16 @@ def compute_60d_features(ohlcv: pl.DataFrame) -> pl.DataFrame:
         .rolling_mean(20)
         .over("ticker")
         .alias("average_dollar_volume_20d"),
+        volume_mean.alias("average_volume_20d"),
+        valid_dollar_volume.shift(1)
+        .rolling_median(20, min_samples=1)
+        .over("ticker")
+        .alias("median_dollar_volume_prior_20d"),
+        valid_price_volume.cast(pl.Int64)
+        .shift(1)
+        .rolling_sum(20)
+        .over("ticker")
+        .alias("valid_price_volume_sessions_prior_20d"),
         pl.when(volume_std > 0)
         .then((pl.col("volume") - volume_mean) / volume_std)
         .otherwise(0.0)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import click
 import polars as pl
@@ -16,6 +16,21 @@ from alphascreener.prediction_contract import (
 from alphascreener.ranking import rank_candidates
 
 
+class _SecStatusProvider:
+    """Callable SEC provider with an optional bulk cache warmup hook."""
+
+    def __call__(self, tickers, decision_date):
+        from alphascreener.corporate_actions import corporate_action_statuses
+
+        return corporate_action_statuses(tickers, decision_date)
+
+    def prefetch(self, tickers, decision_date):
+        return self(tickers, decision_date)
+
+
+_sec_status_provider = _SecStatusProvider()
+
+
 def _ledger_outcome_requirements() -> tuple[tuple[str, date, date], ...]:
     """Return ledger symbols and exact result dates still missing locally."""
     from alphascreener.evaluation import read_prediction_ledger
@@ -26,9 +41,7 @@ def _ledger_outcome_requirements() -> tuple[tuple[str, date, date], ...]:
     )
 
     try:
-        ledger = read_prediction_ledger().filter(
-            pl.col("strategy_version") == STRATEGY_VERSION
-        )
+        ledger = read_prediction_ledger().filter(pl.col("strategy_version") == STRATEGY_VERSION)
     except (OSError, ValueError):
         return ()
     if ledger.is_empty():
@@ -46,8 +59,10 @@ def _ledger_outcome_requirements() -> tuple[tuple[str, date, date], ...]:
     try:
         from alphascreener.data.io import scan_ohlcv
 
+        required_result_dates = sorted(set(result_dates.values()))
         observations = set(
             scan_ohlcv()
+            .filter(pl.col("dt").is_in(required_result_dates))
             .select("ticker", "dt")
             .unique()
             .collect()
@@ -67,12 +82,12 @@ def _load_synced_ohlcv() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame] | No
     """Return full, current-directory, and current-ready OHLCV panels."""
     from alphascreener.data.io import scan_ohlcv
     from alphascreener.data.sync import MIN_SYNC_COVERAGE, sync_ohlcv
+    from alphascreener.market_calendar import market_dates_between
+    from alphascreener.prediction_contract import BACKTEST_HISTORY_SESSIONS
 
     click.echo("  Updating data ...")
     try:
-        sync_status = sync_ohlcv(
-            outcome_requirements=_ledger_outcome_requirements()
-        )
+        sync_status = sync_ohlcv(outcome_requirements=_ledger_outcome_requirements())
         if not sync_status.is_fresh:
             warn_card(
                 "Market data is stale; analysis was not produced.",
@@ -85,9 +100,16 @@ def _load_synced_ohlcv() -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame] | No
                 f"Decision-ready coverage: {sync_status.coverage:.1%}",
             )
             return None
-        ohlcv = scan_ohlcv().collect()
+        history_dates: list[date] | None = None
         if sync_status.as_of_date is not None:
-            ohlcv = ohlcv.filter(pl.col("dt") <= sync_status.as_of_date)
+            history_dates = market_dates_between(
+                sync_status.as_of_date - timedelta(days=BACKTEST_HISTORY_SESSIONS * 3),
+                sync_status.as_of_date,
+            )[-BACKTEST_HISTORY_SESSIONS:]
+        source = scan_ohlcv()
+        if history_dates:
+            source = source.filter(pl.col("dt").is_in(history_dates))
+        ohlcv = source.collect()
     except Exception as exc:
         warn_card(f"Sync failed: {exc}")
         return None
@@ -148,6 +170,8 @@ def _record_or_restore_ranking(
 
 def _render_backtest_summary(records: pl.DataFrame, *, requested_days: int) -> None:
     """Render an aggregate diagnostic without printing every historical date."""
+    from alphascreener.evaluation import expected_shortfall
+
     valid = records.filter(pl.col("status") == "VALID")
     valid_days = valid.height
     invalid_days = requested_days - valid_days
@@ -155,13 +179,28 @@ def _render_backtest_summary(records: pl.DataFrame, *, requested_days: int) -> N
         hits = int(valid["hits_at_10"].sum())
         precision = hits / (valid_days * 10)
         base_rate = float(valid["base_explosion_rate"].mean())
+        downside_rate = float(valid["downside_at_10"].mean())
+        catastrophic_rate = float(valid["catastrophic_loss_at_10"].mean())
+        adverse_path_rate = (
+            None
+            if valid["adverse_path_at_10"].null_count()
+            else float(valid["adverse_path_at_10"].mean())
+        )
+        tail_return = expected_shortfall(valid["basket_return_14"].to_list())
         passing_days = int(valid["passed"].sum())
         precision_text = f"{precision:.1%} ({hits}/{valid_days * 10})"
         base_text = f"{base_rate:.1%}"
+        risk_text = (
+            f"Downside@10: {downside_rate:.1%}  |  "
+            f"CatLoss@10: {catastrophic_rate:.1%}  |  "
+            f"Path@10: {'n/a' if adverse_path_rate is None else f'{adverse_path_rate:.1%}'}"
+            f"  |  ES10: {tail_return:.1%}"
+        )
     else:
         passing_days = 0
         precision_text = "n/a"
         base_text = "n/a"
+        risk_text = "Downside@10: n/a  |  CatLoss@10: n/a  |  Path@10: n/a  |  ES10: n/a"
     overall_status = "COMPLETE" if invalid_days == 0 else "INCONCLUSIVE"
     invalid_details = [
         f"INVALID {row['decision_date']}: {row['invalid_reason']}"
@@ -174,6 +213,7 @@ def _render_backtest_summary(records: pl.DataFrame, *, requested_days: int) -> N
             f"Overall status: {overall_status}",
             f"Valid days: {valid_days}/{requested_days}  |  Invalid: {invalid_days}",
             f"Valid-date pooled Precision@10: {precision_text}  |  Mean base: {base_text}",
+            risk_text,
             f"Passing days: {passing_days}/{valid_days}",
             *invalid_details,
         ],
@@ -202,6 +242,10 @@ def _render_backtest_details(records: pl.DataFrame) -> None:
             f" | hits@10={integer(row['hits_at_10'])}"
             f" | P@10={percent(row['precision_at_10'], digits=0)}"
             f" | base={percent(row['base_explosion_rate'])}"
+            f" | downside={percent(row['downside_at_10'], digits=0)}"
+            f" | catloss={percent(row['catastrophic_loss_at_10'], digits=0)}"
+            f" | path={percent(row['adverse_path_at_10'], digits=0)}"
+            f" | basket={percent(row['basket_return_14'])}"
             f" | pass={pass_text}"
             f" | invalid_reason={row['invalid_reason'] or '—'}"
         )
@@ -256,8 +300,7 @@ def _render_matured_evidence(ohlcv: pl.DataFrame) -> None:
         coverage = outcome_count / universe_size if universe_size else 0.0
         top_ranks = set(
             outcome_group.filter(
-                (pl.col("rank") <= DEFAULT_TOP_K)
-                & pl.col("forward_return").is_not_null()
+                (pl.col("rank") <= DEFAULT_TOP_K) & pl.col("forward_return").is_not_null()
             )["rank"].to_list()
         )
         metric = daily.filter(pl.col("decision_date") == decision_date)
@@ -273,27 +316,37 @@ def _render_matured_evidence(ohlcv: pl.DataFrame) -> None:
             reason = "evaluation_failed"
         else:
             row = metric.row(0, named=True)
-            evidence_rows.append({
+            evidence_rows.append(
+                {
+                    "decision_date": decision_date,
+                    "result_date": result_date,
+                    "status": "VALID",
+                    "precision": float(row["precision_at_k"]),
+                    "base_rate": float(row["base_explosion_rate"]),
+                    "downside": float(row["downside_at_k"]),
+                    "catastrophic": float(row["catastrophic_loss_at_k"]),
+                    "basket_return": float(row["basket_return_14"]),
+                    "coverage": float(row["outcome_coverage"]),
+                    "passed": bool(row["passed"]),
+                    "reason": None,
+                }
+            )
+            continue
+        evidence_rows.append(
+            {
                 "decision_date": decision_date,
                 "result_date": result_date,
-                "status": "VALID",
-                "precision": float(row["precision_at_k"]),
-                "base_rate": float(row["base_explosion_rate"]),
-                "coverage": float(row["outcome_coverage"]),
-                "passed": bool(row["passed"]),
-                "reason": None,
-            })
-            continue
-        evidence_rows.append({
-            "decision_date": decision_date,
-            "result_date": result_date,
-            "status": "INVALID",
-            "precision": None,
-            "base_rate": None,
-            "coverage": coverage,
-            "passed": None,
-            "reason": reason,
-        })
+                "status": "INVALID",
+                "precision": None,
+                "base_rate": None,
+                "downside": None,
+                "catastrophic": None,
+                "basket_return": None,
+                "coverage": coverage,
+                "passed": None,
+                "reason": reason,
+            }
+        )
 
     if not evidence_rows:
         panel(
@@ -304,27 +357,35 @@ def _render_matured_evidence(ohlcv: pl.DataFrame) -> None:
 
     rule("Matured prospective predictions")
     result_table(
-        ["Decision", "Result", "Status", "P@10", "Base", "Coverage", "Pass / reason"],
+        [
+            "Decision",
+            "Result",
+            "Status",
+            "P@10",
+            "Down",
+            "Cat",
+            "Basket",
+            "Coverage",
+            "Pass / reason",
+        ],
         [
             [
                 str(row["decision_date"]),
                 str(row["result_date"]),
                 str(row["status"]),
                 "—" if row["precision"] is None else f"{row['precision']:.0%}",
-                "—" if row["base_rate"] is None else f"{row['base_rate']:.1%}",
+                "—" if row["downside"] is None else f"{row['downside']:.0%}",
+                "—" if row["catastrophic"] is None else f"{row['catastrophic']:.0%}",
+                "—" if row["basket_return"] is None else f"{row['basket_return']:.1%}",
                 f"{row['coverage']:.1%}",
-                row["reason"]
-                if row["reason"] is not None
-                else ("yes" if row["passed"] else "no"),
+                row["reason"] if row["reason"] is not None else ("yes" if row["passed"] else "no"),
             ]
             for row in evidence_rows[-5:]
         ],
     )
     for row in evidence_rows[-5:]:
         if row["status"] == "INVALID":
-            click.echo(
-                f"  INVALID {row['decision_date']}: {row['reason']}"
-            )
+            click.echo(f"  INVALID {row['decision_date']}: {row['reason']}")
     streak = longest_consecutive_passes(
         daily,
         market_dates,
@@ -341,6 +402,8 @@ def _render_matured_evidence(ohlcv: pl.DataFrame) -> None:
 
 def _run_screen(top: int) -> None:
     from alphascreener.backtest import run_backtest
+    from alphascreener.corporate_actions import CorporateActionDataError
+    from alphascreener.ranking import apply_definitive_transaction_filter
 
     synced = _load_synced_ohlcv()
     if synced is None:
@@ -349,7 +412,12 @@ def _run_screen(top: int) -> None:
 
     try:
         ranking, decision_date = rank_candidates(current_ready_data)
-    except (OSError, ValueError) as exc:
+        ranking, transaction_statuses = apply_definitive_transaction_filter(
+            ranking,
+            decision_date,
+            status_provider=_sec_status_provider,
+        )
+    except (CorporateActionDataError, OSError, ValueError) as exc:
         warn_card(f"Cannot rank candidates: {exc}")
         return
     if ranking.is_empty():
@@ -363,11 +431,15 @@ def _run_screen(top: int) -> None:
         return
 
     ranking, ledger_note = _record_or_restore_ranking(ranking, decision_date)
+    excluded_transactions = sum(
+        bool(getattr(status, "exclude_from_ranking")) for status in transaction_statuses.values()
+    )
 
     try:
         backtest_records = run_backtest(
             current_directory_data,
             days=DEFAULT_BACKTEST_DAYS,
+            corporate_action_status_provider=_sec_status_provider,
         )
     except Exception as exc:
         backtest_records = None
@@ -380,15 +452,14 @@ def _run_screen(top: int) -> None:
     rule("Alpha Screener")
     click.echo(
         f"  Date: {decision_date}  |  Displayed: {displayed.height}"
-        f"  |  Eligible universe: {ranking.height}\n"
+        f"  |  Eligible universe: {ranking.height}"
+        f"  |  Definitive transactions excluded: {excluded_transactions}\n"
     )
     result_table(
         ["#", "Ticker", "Score"],
         [
             [str(rank), str(ticker), f"{score:.4f}"]
-            for ticker, score, rank in displayed.select(
-                "ticker", "score", "rank"
-            ).iter_rows()
+            for ticker, score, rank in displayed.select("ticker", "score", "rank").iter_rows()
         ],
     )
     click.echo(f"\n  Ledger: {ledger_note}.\n")
@@ -425,7 +496,11 @@ def backtest_command(days: int) -> None:
         return
     _, current_directory_data, _ = synced
     try:
-        records = run_backtest(current_directory_data, days=days)
+        records = run_backtest(
+            current_directory_data,
+            days=days,
+            corporate_action_status_provider=_sec_status_provider,
+        )
     except Exception as exc:
         warn_card(f"Cannot run backtest: {exc}")
         return

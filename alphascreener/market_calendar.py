@@ -56,6 +56,14 @@ def future_market_date(decision_date: date, sessions: int) -> date:
     return window[-1].date()
 
 
+def market_session_close(session: date) -> datetime:
+    """Return the exchange-defined close for an NYSE session."""
+    calendar = _xnys_calendar()
+    if not calendar.is_session(session.isoformat()):
+        raise ValueError(f"{session} is not an NYSE session")
+    return calendar.session_close(session.isoformat()).to_pydatetime()
+
+
 def latest_completed_market_date(now: datetime | None = None) -> date:
     """Return the latest NYSE session whose regular close has passed."""
     current = now or datetime.now(UTC)
